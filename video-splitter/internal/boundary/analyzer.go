@@ -67,6 +67,8 @@ func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, 
 	}
 
 	analyzeArgs := []string{
+		"--proxy", proxyPath,
+		"--audio", audioPath,
 		"--source", sourcePath,
 		"--ffmpeg", utils.GetBinPath("ffmpeg"),
 		"--mode", mode,
