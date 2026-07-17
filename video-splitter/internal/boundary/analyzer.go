@@ -13,6 +13,9 @@ import (
 	"video-splitter/internal/project"
 	"video-splitter/internal/utils"
 
+	"crypto/sha1"
+	"encoding/hex"
+
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -319,8 +322,16 @@ func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, tot
 	}
 
 	// === BƯỚC 6: Đánh lại Index và ID ===
+	var hashKey string
+	if sourcePath != "" {
+		h := sha1.New()
+		h.Write([]byte(sourcePath))
+		hashKey = hex.EncodeToString(h.Sum(nil))[:8]
+	} else {
+		hashKey = "default"
+	}
 	for i := range clips {
-		clips[i].ID = fmt.Sprintf("clip_%d", i+1)
+		clips[i].ID = fmt.Sprintf("clip_%s_%d", hashKey, i+1)
 		clips[i].Index = i + 1
 	}
 

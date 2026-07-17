@@ -733,7 +733,7 @@ const loadProject = async (projId: string) => {
   } else {
     // Reset to default settings if no project config exists yet
     analyzerConfig.mode = 'smart'
-    analyzerConfig.sceneThreshold = 27.0
+    analyzerConfig.sceneThreshold = 20.0
     analyzerConfig.minClipDuration = 5.0
     analyzerConfig.maxClipDuration = 120.0
     analyzerConfig.exportPreset = 'fast'
