@@ -137,21 +137,21 @@ const globalMusicName = computed(() => {
 const showSettings = ref(false)
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
-  sceneThreshold: 20.0,
+  sceneThreshold: 15.0,
   minClipDuration: 5.0,
   maxClipDuration: 120.0,
-  autoAcceptScore: 60,
-  reviewMinScore: 35,
+  autoAcceptScore: 50,
+  reviewMinScore: 30,
   silenceThreshold: -30,
   silenceDuration: 0.5,
   proxyFPS: 15,
   weights: {
-    visualChange: 40,
+    visualChange: 55,
     blackFrame: 35,
     silence: 30,
     layoutChange: 25,
     audioChange: 20,
-    continuityPen: 15
+    continuityPen: 5
   },
   exportPreset: 'fast',
   exportCRF: 23
@@ -733,9 +733,11 @@ const loadProject = async (projId: string) => {
   } else {
     // Reset to default settings if no project config exists yet
     analyzerConfig.mode = 'smart'
-    analyzerConfig.sceneThreshold = 20.0
+    analyzerConfig.sceneThreshold = 15.0
     analyzerConfig.minClipDuration = 5.0
     analyzerConfig.maxClipDuration = 120.0
+    analyzerConfig.autoAcceptScore = 50
+    analyzerConfig.reviewMinScore = 30
     analyzerConfig.exportPreset = 'fast'
     analyzerConfig.exportCRF = 23
   }
