@@ -189,7 +189,7 @@ func DefaultWeights() SignalWeights {
 func DefaultConfig() AnalyzerConfig {
 	return AnalyzerConfig{
 		Mode:             ModeSmart,
-		SceneThreshold:   27.0,
+		SceneThreshold:   20.0,
 		MinClipDuration:  5.0,
 		MaxClipDuration:  120.0,
 		AutoAcceptScore:  60, // giảm từ 85: chỉ cần 2 tín hiệu trùng là đủ tin cậy

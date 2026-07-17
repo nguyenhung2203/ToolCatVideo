@@ -55,8 +55,8 @@ type scoredBoundary struct {
 // AnalyzeVideo gọi script Python và đọc kết quả cũng như tiến độ.
 // totalDuration là tổng thời lượng video nguồn (giây) — cần để đặt EndTime cho
 // clip cuối TRƯỚC khi chia clip quá dài; nếu <=0 sẽ để app.go cập nhật sau.
-// sourcePath là đường dẫn video gốc — Python dùng cho blackdetect/silencedetect
-// (timestamp chính xác), còn proxy chỉ dùng cho scenedetect/layout.
+// proxyPath và audioPath giữ cho backward compat nhưng Python worker giờ chạy
+// trực tiếp trên sourcePath — không cần proxy/audio riêng.
 func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, pythonExe string, cfg project.AnalyzerConfig, totalDuration float64) ([]project.Clip, error) {
 	mode := cfg.Mode
 	if mode == "" {
@@ -64,8 +64,6 @@ func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, 
 	}
 
 	analyzeArgs := []string{
-		"--proxy", proxyPath,
-		"--audio", audioPath,
 		"--source", sourcePath,
 		"--ffmpeg", utils.GetBinPath("ffmpeg"),
 		"--mode", mode,

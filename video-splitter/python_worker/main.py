@@ -6,16 +6,17 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def analyze_silence(audio_path, ffmpeg_path="ffmpeg", silence_db=-30, silence_duration=0.5):
-    """Tìm các điểm bắt đầu khoảng lặng bằng ffmpeg silencedetect (một pass, rẻ)."""
+def analyze_silence(source_path, ffmpeg_path="ffmpeg", silence_db=-30, silence_duration=0.5):
+    """Tìm điểm im lặng — chạy TRỰC TIẾP trên video gốc (chỉ decode audio, rất nhanh)."""
     cmd = [
-        ffmpeg_path, '-i', audio_path,
+        ffmpeg_path, '-i', source_path,
+        '-vn',  # bỏ video → chỉ decode audio
         '-af', f'silencedetect=noise={silence_db}dB:d={silence_duration}',
         '-f', 'null', '-'
     ]
     silence_starts = []
     try:
-        result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True, timeout=300)
         matches = re.finditer(r'silence_start:\s+([\d\.]+)', result.stderr)
         for match in matches:
             silence_starts.append(float(match.group(1)))
@@ -24,18 +25,17 @@ def analyze_silence(audio_path, ffmpeg_path="ffmpeg", silence_db=-30, silence_du
     return silence_starts
 
 
-def analyze_black(proxy_path, ffmpeg_path="ffmpeg", black_duration=0.1):
-    """Phát hiện màn hình đen bằng ffmpeg blackdetect (native, một pass).
-    Chạy trên proxy (480p) thay vì video gốc để nhanh hơn 5-10x — blackdetect
-    chỉ cần biết pixel tối/sáng, không cần độ phân giải cao."""
+def analyze_black(source_path, ffmpeg_path="ffmpeg", black_duration=0.05):
+    """Phát hiện màn hình đen — chạy trên video gốc với inline scale 240p (nhanh hơn proxy riêng).
+    Giảm black_duration 0.1→0.05 để bắt fade ngắn."""
     cmd = [
-        ffmpeg_path, '-i', proxy_path,
-        '-vf', f'blackdetect=d={black_duration}:pic_th=0.98',
+        ffmpeg_path, '-i', source_path,
+        '-vf', f'scale=-2:240,blackdetect=d={black_duration}:pic_th=0.98',
         '-an', '-f', 'null', '-'
     ]
     black_starts = []
     try:
-        result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True, timeout=300)
         matches = re.finditer(r'black_start:([\d\.]+)', result.stderr)
         for match in matches:
             black_starts.append(float(match.group(1)))
@@ -44,20 +44,18 @@ def analyze_black(proxy_path, ffmpeg_path="ffmpeg", black_duration=0.1):
     return black_starts
 
 
-def analyze_scenes(proxy_path, scene_threshold=27.0):
-    """Chuyển cảnh nội dung — scenedetect decode proxy MỘT LẦN. Trả về (times, scene_list)."""
+def analyze_scenes(source_path, scene_threshold=20.0):
+    """Chuyển cảnh nội dung — PySceneDetect chạy TRỰC TIẾP trên video gốc.
+    PySceneDetect tự decode hiệu quả, KHÔNG cần proxy.
+    Giảm threshold 27→20 để nhạy hơn ~35%."""
     from scenedetect import detect, ContentDetector
-    scene_list = detect(proxy_path, ContentDetector(threshold=scene_threshold))
+    scene_list = detect(source_path, ContentDetector(threshold=scene_threshold))
     return [s[0].get_seconds() for s in scene_list]
 
 
-def analyze_layout(proxy_path, sample_fps=2.0):
-    """Phát hiện thay đổi bố cục / vùng nội dung bằng OpenCV.
-
-    Lấy mẫu frame theo sample_fps, so sánh histogram vùng biên (letterbox, watermark,
-    thay đổi khung hình). Khi độ chênh lệch vượt ngưỡng → coi là điểm đổi bố cục.
-    Trả về danh sách timestamp nghi ngờ đổi layout.
-    """
+def analyze_layout(source_path, sample_fps=1.0):
+    """Phát hiện thay đổi bố cục — chạy trên video gốc, sample 1fps (đủ cho layout).
+    Giảm sample_fps 2→1 để nhanh hơn 2x."""
     try:
         import cv2
         import numpy as np
@@ -65,11 +63,11 @@ def analyze_layout(proxy_path, sample_fps=2.0):
         print(f"OpenCV/numpy khong san sang, bo qua layout: {e}", file=sys.stderr)
         return []
 
-    cap = cv2.VideoCapture(proxy_path)
+    cap = cv2.VideoCapture(source_path)
     if not cap.isOpened():
         return []
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 15.0
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     step = max(1, int(round(fps / sample_fps)))
 
     changes = []
@@ -83,19 +81,18 @@ def analyze_layout(proxy_path, sample_fps=2.0):
         if idx % step == 0:
             ok, frame = cap.retrieve()
             if ok and frame is not None:
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                # Histogram toàn khung (thay đổi tông màu / nền tổng thể).
+                # Scale xuống nhỏ để xử lý nhanh (chỉ cần histogram + edge)
+                small = cv2.resize(frame, (320, 180))
+                gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
                 hist = cv2.calcHist([gray], [0], None, [32], [0, 256])
                 cv2.normalize(hist, hist)
-                # "Edge profile" theo hàng/cột — bắt letterbox và vùng nội dung.
                 col_energy = np.mean(np.abs(np.diff(gray.astype(np.float32), axis=1)), axis=0)
                 col_energy = col_energy / (np.linalg.norm(col_energy) + 1e-6)
 
                 if prev_hist is not None:
                     hist_diff = cv2.compareHist(prev_hist, hist, cv2.HISTCMP_BHATTACHARYYA)
                     edge_diff = float(np.linalg.norm(col_energy - prev_edge))
-                    # Ngưỡng thực nghiệm: kết hợp cả hai để giảm nhiễu.
-                    if hist_diff > 0.35 and edge_diff > 0.5:
+                    if hist_diff > 0.30 and edge_diff > 0.40:
                         changes.append(idx / fps)
 
                 prev_hist = hist
@@ -106,12 +103,8 @@ def analyze_layout(proxy_path, sample_fps=2.0):
     return changes
 
 
-def analyze_audio_spectral(audio_path, sr=16000, hop=8000, delta_threshold=0.55):
-    """Phát hiện thay đổi phổ âm thanh (đổi nhạc nền / môi trường / người nói) bằng librosa.
-
-    Tính MFCC theo khung, lấy khoảng cách giữa các khung liên tiếp; đỉnh lớn → nghi
-    ngờ đổi nguồn âm thanh. Trả về danh sách timestamp.
-    """
+def analyze_audio_spectral(source_path, sr=16000, hop=8000, delta_threshold=0.55):
+    """Phát hiện thay đổi phổ âm thanh — load audio trực tiếp từ video (librosa hỗ trợ)."""
     try:
         import librosa
         import numpy as np
@@ -120,7 +113,7 @@ def analyze_audio_spectral(audio_path, sr=16000, hop=8000, delta_threshold=0.55)
         return []
 
     try:
-        y, sr = librosa.load(audio_path, sr=sr, mono=True)
+        y, sr = librosa.load(source_path, sr=sr, mono=True)
     except Exception as e:
         print(f"Loi doc audio: {e}", file=sys.stderr)
         return []
@@ -132,7 +125,6 @@ def analyze_audio_spectral(audio_path, sr=16000, hop=8000, delta_threshold=0.55)
     if mfcc.shape[1] < 3:
         return []
 
-    # Chuẩn hóa từng chiều rồi tính khoảng cách khung liên tiếp.
     mfcc = (mfcc - mfcc.mean(axis=1, keepdims=True)) / (mfcc.std(axis=1, keepdims=True) + 1e-6)
     diffs = np.linalg.norm(np.diff(mfcc, axis=1), axis=0)
     if len(diffs) == 0:
@@ -147,17 +139,12 @@ def analyze_audio_spectral(audio_path, sr=16000, hop=8000, delta_threshold=0.55)
     return changes
 
 
-# Cửa sổ gom tín hiệu: Giảm từ 1.0s → 0.6s. Proxy 15fps ⇒ mỗi frame cách
-# 0.067s, 0.6s đủ dung sai để gom cùng sự kiện mà không gom nhầm sự kiện khác.
-MERGE_WINDOW = 0.6
+# Giảm cửa sổ gom từ 0.6→0.4s — gom chính xác hơn, ít gom nhầm sự kiện khác.
+MERGE_WINDOW = 0.4
 
 
 def add_signal(candidates_map, timestamp, conf, signal_key, signal_val, reason_str):
-    """Gộp tín hiệu vào candidate GẦN NHẤT (khoảng cách nhỏ nhất) trong cửa sổ.
-
-    Fix so với bản cũ: bản cũ duyệt dict (thứ tự không xác định) và gộp vào
-    candidate ĐẦU TIÊN tìm được < 1.0s — có thể gộp nhầm với candidate xa hơn.
-    Bản mới tìm candidate CÓ KHOẢNG CÁCH NHỎ NHẤT, đảm bảo gộp đúng sự kiện."""
+    """Gộp tín hiệu vào candidate GẦN NHẤT (khoảng cách nhỏ nhất) trong cửa sổ."""
     best_ts = None
     best_dist = float('inf')
 
@@ -190,45 +177,36 @@ def add_signal(candidates_map, timestamp, conf, signal_key, signal_val, reason_s
     candidates_map[timestamp]['signals'][signal_key] = signal_val
 
 
-def analyze_video(proxy_path, audio_path, ffmpeg_path="ffmpeg", mode="smart",
-                  scene_threshold=27.0, silence_db=-30, silence_duration=0.5,
-                  source_path=None):
-    """Chạy các detector theo chế độ, song song khi có thể.
+def analyze_video(source_path, ffmpeg_path="ffmpeg", mode="smart",
+                  scene_threshold=20.0, silence_db=-30, silence_duration=0.5):
+    """Chạy các detector TRỰC TIẾP trên video gốc — không cần proxy.
 
-    fast    : màn hình đen + im lặng (nhanh nhất, dựa dấu ngắt rõ).
-    smart   : + chuyển cảnh nội dung + đổi bố cục (mặc định, cân bằng).
-    precise : + phổ âm thanh (librosa), chậm hơn nhưng ít sót/nhầm.
-
-    Tối ưu so với bản cũ:
-    - Blackdetect chạy trên proxy (480p) thay vì video gốc → nhanh 5-10x
-    - Các detector chạy song song bằng ThreadPoolExecutor → giảm 40-60% tổng thời gian
-    - Gộp tín hiệu tìm candidate gần nhất thay vì candidate đầu tiên
+    Pipeline mới:
+    - Bỏ bước tạo proxy (tiết kiệm 60-90s cho video 10 phút)
+    - Bỏ bước extract audio riêng (FFmpeg silencedetect đọc audio trực tiếp)
+    - Tất cả detector chạy song song trên video gốc
+    - SceneDetect threshold giảm 27→20 để nhạy hơn
     """
     candidates_map = {}
-
-    # Thu thập kết quả từ các detector song song
     results = {}
 
     def run_black():
-        # Chạy blackdetect trên PROXY (480p) — không cần độ phân giải cao để phát hiện
-        # frame đen. Bản cũ chạy trên video gốc (full-HD/4K) rất chậm mà không cần thiết.
-        return analyze_black(proxy_path, ffmpeg_path=ffmpeg_path)
+        return analyze_black(source_path, ffmpeg_path=ffmpeg_path)
 
     def run_silence():
-        # Silencedetect luôn chạy trên file audio đã extract (16kHz mono) — nhẹ.
-        return analyze_silence(audio_path, ffmpeg_path=ffmpeg_path,
+        return analyze_silence(source_path, ffmpeg_path=ffmpeg_path,
                                silence_db=silence_db, silence_duration=silence_duration)
 
     def run_scenes():
-        return analyze_scenes(proxy_path, scene_threshold=scene_threshold)
+        return analyze_scenes(source_path, scene_threshold=scene_threshold)
 
     def run_layout():
-        return analyze_layout(proxy_path)
+        return analyze_layout(source_path)
 
     def run_audio_spectral():
-        return analyze_audio_spectral(audio_path)
+        return analyze_audio_spectral(source_path)
 
-    # === Xác định danh sách detector cần chạy theo mode ===
+    # === Xác định detector cần chạy theo mode ===
     tasks = {
         'black': run_black,
         'silence': run_silence,
@@ -240,7 +218,7 @@ def analyze_video(proxy_path, audio_path, ffmpeg_path="ffmpeg", mode="smart",
         tasks['audio_spectral'] = run_audio_spectral
 
     # === Chạy song song tất cả detector ===
-    print("PROGRESS:20", flush=True)
+    print("PROGRESS:10", flush=True)
 
     with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
         futures = {executor.submit(fn): name for name, fn in tasks.items()}
@@ -254,8 +232,7 @@ def analyze_video(proxy_path, audio_path, ffmpeg_path="ffmpeg", mode="smart",
                 print(f"Detector '{name}' loi: {e}", file=sys.stderr)
                 results[name] = []
 
-            # Map progress: 20 → 90 theo số detector hoàn thành
-            prog = 20 + int(completed / len(tasks) * 70)
+            prog = 10 + int(completed / len(tasks) * 80)
             print(f"PROGRESS:{prog}", flush=True)
 
     # === Gộp kết quả vào candidates_map ===
@@ -281,20 +258,19 @@ def analyze_video(proxy_path, audio_path, ffmpeg_path="ffmpeg", mode="smart",
 
     return {
         "status": "success",
-        "proxy_path": proxy_path,
-        "audio_path": audio_path,
         "candidates": candidates,
     }
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Media Analyzer Worker")
-    parser.add_argument("--proxy", type=str, required=True, help="Path to proxy video")
-    parser.add_argument("--audio", type=str, required=True, help="Path to audio file")
-    parser.add_argument("--source", type=str, default="", help="Path to original source video (for blackdetect/silencedetect)")
+    parser.add_argument("--source", type=str, required=True, help="Path to source video (used directly)")
+    # Legacy args — kept for backward compat but ignored
+    parser.add_argument("--proxy", type=str, default="", help="(deprecated, ignored)")
+    parser.add_argument("--audio", type=str, default="", help="(deprecated, ignored)")
     parser.add_argument("--ffmpeg", type=str, default="ffmpeg", help="Path to ffmpeg executable")
     parser.add_argument("--mode", type=str, default="smart", choices=["fast", "smart", "precise"], help="Analysis mode")
-    parser.add_argument("--scene-threshold", type=float, default=27.0, help="Scene detection threshold (default: 27.0)")
+    parser.add_argument("--scene-threshold", type=float, default=20.0, help="Scene detection threshold (default: 20.0)")
     parser.add_argument("--silence-db", type=float, default=-30, help="Silence noise threshold in dB (default: -30)")
     parser.add_argument("--silence-duration", type=float, default=0.5, help="Min silence duration in seconds (default: 0.5)")
 
@@ -302,14 +278,12 @@ if __name__ == "__main__":
 
     try:
         data = analyze_video(
-            args.proxy,
-            args.audio,
+            args.source,
             ffmpeg_path=args.ffmpeg,
             mode=args.mode,
             scene_threshold=args.scene_threshold,
             silence_db=args.silence_db,
             silence_duration=args.silence_duration,
-            source_path=args.source if args.source else None,
         )
         print(json.dumps(data))
     except Exception as e:

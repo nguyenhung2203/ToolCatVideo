@@ -137,7 +137,7 @@ const globalMusicName = computed(() => {
 const showSettings = ref(false)
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
-  sceneThreshold: 27.0,
+  sceneThreshold: 20.0,
   minClipDuration: 5.0,
   maxClipDuration: 120.0,
   autoAcceptScore: 60,

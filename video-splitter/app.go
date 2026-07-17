@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"video-splitter/internal/boundary"
@@ -154,19 +153,10 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 		return a.analyzeFixed(sourcePath, cfg)
 	}
 
-	// Thư mục tạm riêng theo từng video (hash đường dẫn) — tránh nhiều video
-	// cùng thư mục ghi đè proxy.mp4/audio.wav của nhau.
+	// Thư mục tạm riêng theo từng video (hash đường dẫn).
 	key := hashPath(sourcePath)
 	workDir := filepath.Join(os.TempDir(), "video-splitter", key)
 	_ = os.MkdirAll(workDir, 0755)
-	proxyPath := filepath.Join(workDir, "proxy.mp4")
-	audioPath := filepath.Join(workDir, "audio.wav")
-
-	// Dọn proxy/audio sau khi phân tích xong (chúng chỉ dùng nội bộ).
-	defer func() {
-		_ = os.Remove(proxyPath)
-		_ = os.Remove(audioPath)
-	}()
 
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.cancelMu.Lock()
@@ -178,57 +168,39 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 		a.cancelMu.Unlock()
 	}()
 
-	// 1. Tạo proxy
-	runtime.EventsEmit(a.ctx, "analyze_log", "Bước 1/4: Đang tạo video nén phân giải thấp (proxy) để tối ưu hóa phân tích chuyển cảnh...")
+	// 1. Lấy thời lượng video
+	runtime.EventsEmit(a.ctx, "analyze_log", "Bước 1/2: Đang đọc thông tin video...")
 	runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": 5})
-	proxyFPS := strconv.Itoa(cfg.ProxyFPS)
-	if err := media.GenerateProxy(ctx, sourcePath, proxyPath, proxyFPS); err != nil {
-		return nil, fmt.Errorf("lỗi tạo proxy: %v", err)
-	}
-
-	// 2. Trích xuất audio
-	runtime.EventsEmit(a.ctx, "analyze_log", "Bước 2/4: Đang trích xuất kênh âm thanh WAV để phân tích khoảng lặng & nhịp điệu...")
-	runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": 10})
-	if err := media.ExtractAudio(ctx, sourcePath, audioPath); err != nil {
-		return nil, fmt.Errorf("lỗi tạo audio: %v", err)
-	}
-
-	// Lấy tổng thời lượng TRƯỚC khi phân tích để analyzer đặt EndTime cho clip cuối
-	// và chia clip quá dài ngay trong một bước (video liên tục không có ranh giới rõ).
 	info, _ := media.GetVideoInfo(sourcePath)
 	totalDuration := 0.0
 	if info != nil {
 		totalDuration = info.Duration
 	}
 
-	// 3. Chạy thuật toán lấy ranh giới (truyền config vào)
-	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 3/4: Đang chạy AI phân tích (scene=%.1f, minClip=%.0fs, maxClip=%.0fs)...", cfg.SceneThreshold, cfg.MinClipDuration, cfg.MaxClipDuration))
-	runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": 15})
-	clips, err := boundary.AnalyzeVideo(ctx, sourcePath, proxyPath, audioPath, "python", cfg, totalDuration)
+	// 2. Chạy Python worker TRỰC TIẾP trên video gốc (không cần proxy/audio)
+	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 2/2: Đang phân tích chuyển cảnh (scene=%.1f, minClip=%.0fs, maxClip=%.0fs)...", cfg.SceneThreshold, cfg.MinClipDuration, cfg.MaxClipDuration))
+	runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": 10})
+	clips, err := boundary.AnalyzeVideo(ctx, sourcePath, "", "", "python", cfg, totalDuration)
 	if err != nil {
-		return nil, fmt.Errorf("lỗi phân tích thuật toán: %v", err)
+		return nil, fmt.Errorf("lỗi phân tích: %v", err)
 	}
 
-	// An toàn: nếu analyzer chưa biết thời lượng, cập nhật lại EndTime clip cuối.
+	// An toàn: cập nhật EndTime clip cuối nếu analyzer chưa biết.
 	if info != nil && len(clips) > 0 && clips[len(clips)-1].EndTime <= 0 {
 		clips[len(clips)-1].EndTime = info.Duration
 		clips[len(clips)-1].Duration = info.Duration - clips[len(clips)-1].StartTime
 	}
 
-	// 4. Tạo thư mục thumbnails và trích xuất hình ảnh cho từng clip.
-	// Thumbnails giữ lại (UI cần hiển thị) nên nằm trong workDir theo video.
-	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 4/4: Đang trích xuất %d ảnh xem trước (thumbnails) cho từng phân đoạn...", len(clips)))
+	// Tạo thumbnails cho từng clip.
+	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Đang trích xuất %d ảnh xem trước...", len(clips)))
 	thumbDir := filepath.Join(workDir, "thumbnails")
 	_ = os.MkdirAll(thumbDir, 0755)
 
 	for i := 0; i < len(clips); i++ {
-		runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Đang trích xuất ảnh thumbnail %d/%d (Clip #%d)...", i+1, len(clips), clips[i].Index))
 		thumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumb_%s_%d.jpg", clips[i].ID, i))
 		_ = media.ExtractFrame(ctx, sourcePath, clips[i].StartTime, thumbPath)
 		clips[i].Thumbnail = thumbPath
 
-		// Thumbnail cuối clip: lấy khung ngay TRƯỚC điểm cắt (lùi 0.1s để tránh
-		// dính frame đầu của clip kế). Chỉ làm khi biết EndTime hợp lệ.
 		if clips[i].EndTime > clips[i].StartTime {
 			endThumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumbend_%s_%d.jpg", clips[i].ID, i))
 			endAt := clips[i].EndTime - 0.1
