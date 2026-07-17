@@ -138,8 +138,8 @@ const globalMusicName = computed(() => {
 const showSettings = ref(false)
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
-  sceneThreshold: 22.0,
-  minClipDuration: 5.0,
+  sceneThreshold: 26.0,
+  minClipDuration: 3.0,
   maxClipDuration: 120.0,
   autoAcceptScore: 60,
   reviewMinScore: 35,
@@ -959,6 +959,40 @@ const removeVideo = (index: number) => {
   addLog(`Đã xóa video khỏi danh sách: ${path.split('\\').pop()}`)
 }
 
+const removeSelectedVideos = () => {
+  const count = selectedVideos.value.size
+  if (count === 0) return
+  if (!confirm(`Bạn có chắc muốn xóa tất cả ${count} video đã chọn khỏi dự án không?`)) {
+    return
+  }
+  
+  const activePathBefore = activeVideoPath.value
+  const remaining = videoPaths.value.filter(p => !selectedVideos.value.has(p))
+  
+  selectedVideos.value.forEach(path => {
+    delete clipsMap.value[path]
+  })
+  
+  videoPaths.value = remaining
+  selectedVideos.value = new Set()
+  
+  if (videoPaths.value.length > 0) {
+    const newIdx = videoPaths.value.indexOf(activePathBefore)
+    if (newIdx >= 0) {
+      activeVideoIndex.value = newIdx
+    } else {
+      activeVideoIndex.value = 0
+    }
+    selectVideo(activeVideoIndex.value)
+  } else {
+    activeVideoIndex.value = -1
+    activeVideoSrc.value = ''
+    videoInfo.value = null
+  }
+  
+  addLog(`Đã xóa ${count} video khỏi danh sách.`)
+}
+
 const playExportedClip = async (clip: project.Clip) => {
   isPlayingExported.value = true
   currentPlayingClipIdx.value = clip.index
@@ -1515,10 +1549,20 @@ const formatSize = (bytes: number) => {
             <h2>🎥 Danh sách Video Gốc</h2>
             <span class="video-counter">({{ videoPaths.length }} video)</span>
           </div>
-          <label class="select-all-label" v-if="videoPaths.length > 0" @click.stop>
-            <input type="checkbox" :checked="isAllVideosSelected" @change="toggleSelectAllVideos" class="clip-checkbox" />
-            <span>Chọn tất cả video để xử lý</span>
-          </label>
+          <div class="title-right-actions flex-center" style="gap: 12px;" v-if="videoPaths.length > 0">
+            <button 
+              v-if="selectedVideos.size > 0" 
+              @click.stop="removeSelectedVideos" 
+              class="btn btn-danger-compact" 
+              style="padding: 4px 8px; font-size: 11px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #f87171; border-radius: 4px; cursor: pointer; transition: all 0.2s; font-weight: bold;"
+            >
+              🗑️ Xóa {{ selectedVideos.size }} video đã chọn
+            </button>
+            <label class="select-all-label" @click.stop>
+              <input type="checkbox" :checked="isAllVideosSelected" @change="toggleSelectAllVideos" class="clip-checkbox" />
+              <span>Chọn tất cả video để xử lý</span>
+            </label>
+          </div>
         </div>
 
         <div class="video-horizontal-grid" v-if="videoPaths.length > 0">

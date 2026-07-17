@@ -16,6 +16,12 @@ func GetBinPath(name string) string {
 	}
 	appDir := filepath.Dir(ex)
 	
+	// Thử tìm directly cùng cấp với file executable (khi đã build portable)
+	directPath := filepath.Join(appDir, name+".exe")
+	if _, err := os.Stat(directPath); err == nil {
+		return directPath
+	}
+
 	// Thử tìm trong thư mục bin cùng cấp với file executable (khi đã build)
 	localPath := filepath.Join(appDir, "bin", name+".exe")
 	if _, err := os.Stat(localPath); err == nil {

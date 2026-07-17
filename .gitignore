@@ -16,6 +16,7 @@ video-splitter/frontend/node_modules/
 *.sqlite
 video-splitter/video-splitter.db
 video-splitter/data/
+video-splitter/python_worker/_pyi_build/
 
 # Output directories
 videodacat/
