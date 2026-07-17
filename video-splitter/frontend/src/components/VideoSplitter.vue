@@ -140,18 +140,18 @@ const analyzerConfig = reactive(new project.AnalyzerConfig({
   sceneThreshold: 27.0,
   minClipDuration: 5.0,
   maxClipDuration: 120.0,
-  autoAcceptScore: 85,
-  reviewMinScore: 60,
+  autoAcceptScore: 60,
+  reviewMinScore: 35,
   silenceThreshold: -30,
   silenceDuration: 0.5,
   proxyFPS: 15,
   weights: {
-    visualChange: 30,
+    visualChange: 40,
     blackFrame: 35,
-    silence: 20,
+    silence: 30,
     layoutChange: 25,
     audioChange: 20,
-    continuityPen: 40
+    continuityPen: 15
   },
   exportPreset: 'fast',
   exportCRF: 23
