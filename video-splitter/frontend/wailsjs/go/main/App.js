@@ -10,12 +10,12 @@ export function CancelAnalysis() {
   return window['go']['main']['App']['CancelAnalysis']();
 }
 
-export function DeleteProject(arg1) {
-  return window['go']['main']['App']['DeleteProject'](arg1);
-}
-
 export function CancelExport() {
   return window['go']['main']['App']['CancelExport']();
+}
+
+export function DeleteProject(arg1) {
+  return window['go']['main']['App']['DeleteProject'](arg1);
 }
 
 export function ExportClips(arg1, arg2, arg3, arg4, arg5, arg6) {

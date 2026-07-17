@@ -392,8 +392,22 @@ const cancelCurrentAnalysis = async () => {
 }
 
 const analyzeAll = async () => {
-  const targets = videosForBatch()
-  if (targets.length === 0) return
+  const allTargets = videosForBatch()
+  if (allTargets.length === 0) return
+
+  // Lọc bỏ video đã cắt rồi (đã có clips) — tự động bỏ qua
+  const alreadyCut = allTargets.filter(p => clipsMap.value[p] && clipsMap.value[p].length > 0)
+  const targets = allTargets.filter(p => !clipsMap.value[p] || clipsMap.value[p].length === 0)
+
+  if (targets.length === 0) {
+    alert(`Tất cả ${alreadyCut.length} video đã được cắt rồi! Không cần cắt lại.`)
+    return
+  }
+
+  const skippedMsg = alreadyCut.length > 0
+    ? `\n(Bỏ qua ${alreadyCut.length} video đã cắt trước đó)`
+    : ''
+
   isAnalyzing.value = true
   isCancelled.value = false
   totalVideosCount.value = targets.length
@@ -428,9 +442,9 @@ const analyzeAll = async () => {
 
   isAnalyzing.value = false
   if (isCancelled.value) {
-    alert("Đã dừng cắt tự động!")
+    alert(`Đã dừng cắt tự động! (${processedVideosCount.value}/${targets.length} video đã xử lý)${skippedMsg}`)
   } else {
-    alert("Cắt tự động hoàn tất!")
+    alert(`Cắt tự động hoàn tất! ${processedVideosCount.value}/${targets.length} video thành công.${skippedMsg}`)
   }
 }
 
@@ -1390,10 +1404,14 @@ const formatSize = (bytes: number) => {
           Chọn Video Gốc
         </button>
 
-        <!-- Nút Bắt đầu quét phân tích -->
-        <button :disabled="isAnalyzing || videoPaths.length === 0" @click="analyzeAll" class="btn start-btn flex-center">
+        <!-- Nút Bắt đầu / Dừng quét phân tích -->
+        <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0" @click="analyzeAll" class="btn start-btn flex-center">
           <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
-          {{ isAnalyzing ? 'Đang cắt tự động...' : 'Bắt Đầu Cắt Tự Động' }}
+          Bắt Đầu Cắt Tự Động
+        </button>
+        <button v-else @click="cancelCurrentAnalysis" class="btn stop-analyze-btn flex-center">
+          <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
+          ⏹ Dừng Ngay ({{ processedVideosCount }}/{{ totalVideosCount }})
         </button>
 
         <div class="header-divider"></div>
@@ -1848,9 +1866,24 @@ const formatSize = (bytes: number) => {
           </div>
 
           <div class="empty-clips-panel" v-else>
-            <div class="empty-emoji">🎬</div>
-            <h3>Chưa có video đã cắt nào ở đây</h3>
-            <p>Chọn các video gốc phía trên rồi bấm nút <strong>"Bắt Đầu Cắt Tự Động"</strong> để hệ thống tự động cắt cảnh thông minh.</p>
+            <template v-if="activeVideoPath && activeAnalyzingPaths.has(activeVideoPath)">
+              <div class="empty-emoji">⏳</div>
+              <h3>Đang phân tích video này...</h3>
+              <p>Vui lòng chờ hoàn tất, các phân đoạn sẽ hiện ở đây.</p>
+            </template>
+            <template v-else-if="activeVideoPath">
+              <div class="empty-emoji">🎬</div>
+              <h3>Video này chưa được cắt</h3>
+              <p>Bấm nút <strong>"Bắt Đầu Cắt Tự Động"</strong> ở trên hoặc nút bên dưới để cắt video này.</p>
+              <button @click="startAnalysis" class="btn start-btn flex-center" style="margin-top: 12px;" :disabled="isAnalyzing">
+                🔍 Cắt video đang chọn
+              </button>
+            </template>
+            <template v-else>
+              <div class="empty-emoji">🎬</div>
+              <h3>Chưa có video đã cắt nào ở đây</h3>
+              <p>Chọn các video gốc phía trên rồi bấm nút <strong>"Bắt Đầu Cắt Tự Động"</strong> để hệ thống tự động cắt cảnh thông minh.</p>
+            </template>
           </div>
         </div>
 
@@ -2417,6 +2450,22 @@ const formatSize = (bytes: number) => {
   opacity: 0.5;
   cursor: not-allowed;
   box-shadow: none;
+}
+.stop-analyze-btn {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: #ffffff;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
+  animation: pulse-stop 1.5s ease-in-out infinite;
+  font-weight: 700;
+}
+.stop-analyze-btn:hover {
+  background: linear-gradient(135deg, #dc2626, #b91c1c);
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.6);
+  transform: translateY(-1px);
+}
+@keyframes pulse-stop {
+  0%, 100% { box-shadow: 0 0 8px rgba(239, 68, 68, 0.3); }
+  50% { box-shadow: 0 0 18px rgba(239, 68, 68, 0.6); }
 }
 .icon-btn-circle {
   background: var(--bg-card);

@@ -8,9 +8,9 @@ export function Analyze(arg1:string,arg2:project.AnalyzerConfig):Promise<Array<p
 
 export function CancelAnalysis():Promise<void>;
 
-export function DeleteProject(arg1:string):Promise<void>;
-
 export function CancelExport():Promise<void>;
+
+export function DeleteProject(arg1:string):Promise<void>;
 
 export function ExportClips(arg1:string,arg2:string,arg3:Array<project.Clip>,arg4:string,arg5:project.AnalyzerConfig,arg6:number):Promise<Array<main.ExportResult>>;
 
