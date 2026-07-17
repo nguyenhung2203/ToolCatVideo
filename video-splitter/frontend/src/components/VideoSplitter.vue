@@ -1799,7 +1799,7 @@ const formatSize = (bytes: number) => {
                   v-for="(clip, idx) in activeClips" 
                   :key="clip.id"
                   class="timeline-segment"
-                  :style="{ width: ((clip.endTime - clip.startTime) / videoInfo.Duration * 100) + '%' }"
+                  :style="{ width: ((clip.endTime - clip.startTime) / videoInfo.Duration * 100) + '%', flexShrink: 0 }"
                   @click="jumpToTime(clip.startTime)"
                   :title="`Clip #${clip.index}: ${clip.startTime}s - ${clip.endTime}s`"
                 >
