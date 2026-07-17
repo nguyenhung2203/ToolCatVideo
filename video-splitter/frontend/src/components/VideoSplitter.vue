@@ -184,6 +184,32 @@ const onVideoTimeUpdate = (e: Event) => {
 const activeVideoPath = computed(() => videoPaths.value[activeVideoIndex.value] || '')
 const activeClips = computed(() => clipsMap.value[activeVideoPath.value] || [])
 
+// Khi có nhiều video được tick, hiện TẤT CẢ clips gộp lại (thêm tên video nguồn).
+// Khi chỉ có 1 video hoặc không tick → hiện clips của video đang chọn.
+const displayClips = computed(() => {
+  const sel = selectedVideos.value
+  if (sel.size > 1) {
+    const all: any[] = []
+    for (const path of videoPaths.value) {
+      if (!sel.has(path)) continue
+      const clips = clipsMap.value[path]
+      if (!clips || clips.length === 0) continue
+      const videoName = path.split('\\').pop() || path
+      for (const c of clips) {
+        all.push({ ...c, _videoName: videoName, _videoPath: path })
+      }
+    }
+    return all
+  }
+  // Fallback: chỉ 1 video → dùng activeClips
+  const clips = clipsMap.value[activeVideoPath.value] || []
+  const videoName = activeVideoPath.value.split('\\').pop() || ''
+  return clips.map((c: any) => ({ ...c, _videoName: videoName, _videoPath: activeVideoPath.value }))
+})
+
+const isMultiVideoDisplay = computed(() => selectedVideos.value.size > 1)
+const displayClipsCount = computed(() => displayClips.value.length)
+
 // Có ít nhất một video (trong số được tick, hoặc tất cả nếu chưa tick) đã phân tích
 // xong (có phân đoạn) → mới cho hiện nút Xuất hàng loạt.
 const hasAnalyzedForBatch = computed(() => {
@@ -487,15 +513,15 @@ const toggleClipSelected = (clipId: string) => {
 }
 
 const isAllSelected = computed(() => {
-  const clips = activeClips.value
-  return clips.length > 0 && clips.every(c => selectedClips.value.has(c.id))
+  const clips = displayClips.value
+  return clips.length > 0 && clips.every((c: any) => selectedClips.value.has(c.id))
 })
 
 const toggleSelectAll = () => {
   if (isAllSelected.value) {
     selectedClips.value = new Set()
   } else {
-    selectedClips.value = new Set(activeClips.value.map(c => c.id))
+    selectedClips.value = new Set(displayClips.value.map((c: any) => c.id))
   }
 }
 
@@ -1798,25 +1824,25 @@ const formatSize = (bytes: number) => {
         <div class="section-title-bar-clips">
           <div class="title-left-clips">
             <h2>✂️ Danh sách Video Đã Cắt</h2>
-            <span class="clips-counter" v-if="activeClips.length > 0">
-              ({{ activeClips.length }} đoạn tìm thấy)
+            <span class="clips-counter" v-if="displayClipsCount > 0">
+              ({{ displayClipsCount }} đoạn tìm thấy<template v-if="isMultiVideoDisplay"> từ {{ selectedVideos.size }} video</template>)
             </span>
           </div>
 
-          <div class="clips-batch-selector-row" v-if="activeClips.length > 0">
+          <div class="clips-batch-selector-row" v-if="displayClipsCount > 0">
             <label class="select-all-label">
               <input type="checkbox" :checked="isAllSelected" @change="toggleSelectAll" class="clip-checkbox" />
               <span>Chọn tất cả clip</span>
             </label>
             <div class="selected-badge" v-if="selectedClips.size > 0">
-              Đã chọn: <strong>{{ activeSelectedCount }} / {{ activeClips.length }}</strong> clip của video này (Tổng đã chọn <strong>{{ selectedClips.size }}</strong> clip)
+              Đã chọn: <strong>{{ selectedClips.size }}</strong> clip
             </div>
           </div>
         </div>
 
         <div class="clips-view-container">
-          <div v-if="activeClips.length > 0" class="clips-grid">
-            <div v-for="(clip, idx) in activeClips" :key="clip.id"
+          <div v-if="displayClipsCount > 0" class="clips-grid">
+            <div v-for="(clip, idx) in displayClips" :key="clip.id"
               class="clip-modern-card"
               :class="{ 'clip-selected': selectedClips.has(clip.id), 'clip-done': clip.status === 'completed' }">
               
@@ -1830,6 +1856,11 @@ const formatSize = (bytes: number) => {
                   <span class="status-dot pending" v-else title="Chờ xuất"></span>
                 </div>
                 <span class="clip-duration-tag">⏱ {{ formatTime(clip.endTime - clip.startTime) }}</span>
+              </div>
+
+              <!-- Tên video nguồn — chỉ hiện khi đang xem nhiều video -->
+              <div class="clip-source-video-tag" v-if="isMultiVideoDisplay && clip._videoName" :title="clip._videoPath">
+                📹 {{ clip._videoName.length > 30 ? clip._videoName.substring(0, 30) + '...' : clip._videoName }}
               </div>
 
               <!-- Hình đại diện của clip ngắn -->
@@ -1915,7 +1946,7 @@ const formatSize = (bytes: number) => {
             <button v-else @click="exportClips" class="btn big-export-btn flex-center">
               <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
               <span class="font-bold">
-                {{ selectedClips.size > 0 ? `Xuất ${selectedClips.size} Clip Đã Chọn` : `Xuất Toàn Bộ ${activeClips.length} Clip` }}
+                {{ selectedClips.size > 0 ? `Xuất ${selectedClips.size} Clip Đã Chọn` : `Xuất Toàn Bộ ${displayClipsCount} Clip` }}
               </span>
             </button>
           </div>
@@ -3540,6 +3571,18 @@ const formatSize = (bytes: number) => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.clip-source-video-tag {
+  font-size: 11px;
+  color: var(--accent-color);
+  background: rgba(37, 99, 235, 0.1);
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
 }
 .header-left-wrap {
   display: flex;
