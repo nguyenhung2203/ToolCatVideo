@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -177,3 +178,78 @@ func ExtractFrame(ctx context.Context, inputPath string, timeSec float64, output
 	}
 	return nil
 }
+
+// FindNearestKeyframe tìm I-frame (keyframe) gần nhất trước hoặc sau timeSec.
+// Dùng ffprobe -read_intervals để quét một cửa sổ ±windowSec quanh timeSec,
+// lọc chỉ lấy key_frame=1, rồi chọn frame có PTS gần nhất.
+//
+// Hữu ích cho stream-copy: cắt tại keyframe tránh artifact (xanh lá, glitch)
+// ở đầu clip mà không cần re-encode.
+//
+// Trả về timestamp keyframe gần nhất. Nếu không tìm được, trả về timeSec gốc.
+func FindNearestKeyframe(filePath string, timeSec float64) float64 {
+	windowSec := 3.0 // quét ±3 giây
+	start := timeSec - windowSec
+	if start < 0 {
+		start = 0
+	}
+	end := timeSec + windowSec
+
+	// ffprobe -read_intervals START%END : quét đoạn [start, end]
+	// -select_streams v:0 : chỉ video stream đầu
+	// -show_frames : liệt kê frame
+	// -show_entries frame=pts_time,key_frame : chỉ lấy 2 trường
+	// -of csv=p=0 : output CSV gọn
+	interval := fmt.Sprintf("%.3f%%%.3f", start, end)
+	cmdArgs := []string{
+		"-v", "error",
+		"-read_intervals", interval,
+		"-select_streams", "v:0",
+		"-show_frames",
+		"-show_entries", "frame=pts_time,key_frame",
+		"-of", "csv=p=0",
+		filePath,
+	}
+
+	cmd := exec.Command(utils.GetBinPath("ffprobe"), cmdArgs...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return timeSec // fallback: giữ nguyên timestamp
+	}
+
+	bestTs := timeSec
+	bestDist := windowSec + 1 // bắt đầu lớn hơn window
+
+	scanner := bufio.NewScanner(&out)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		// Format: pts_time,key_frame  (VD: "12.345,1")
+		parts := strings.SplitN(line, ",", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		isKey := strings.TrimSpace(parts[1])
+		if isKey != "1" {
+			continue // bỏ qua frame không phải keyframe
+		}
+		pts, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+		if err != nil {
+			continue
+		}
+		dist := pts - timeSec
+		if dist < 0 {
+			dist = -dist
+		}
+		if dist < bestDist {
+			bestDist = dist
+			bestTs = pts
+		}
+	}
+
+	return bestTs
+}
+

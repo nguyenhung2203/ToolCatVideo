@@ -20,22 +20,74 @@ var aspectTargets = map[string][2]int{
 	"16:9": {1920, 1080},
 }
 
-// CutVideo cắt một clip từ startTime đến endTime và áp các thao tác chỉnh sửa
-// trong clip.Edit. Luôn re-encode để frame-accurate và cho phép áp filter.
-//
-// Cách cắt: dùng "-ss <start>" TRƯỚC "-i" (input seeking). ffmpeg hiện đại seek
-// chính xác tới frame (giải mã & bỏ frame thừa từ keyframe gần nhất) nên vừa nhanh
-// vừa đúng, đồng thời làm cho input bắt đầu ~0s → filter time (drawtext/afade) là
-// thời gian tương đối trong clip, khớp với TextOp/AudioOp. "-t <duration>" giới hạn
-// độ dài đầu ra. Các input phụ (watermark, nhạc nền) thêm sau, không bị -ss ảnh hưởng.
-func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPath string, preset string, crf int) error {
-	if preset == "" {
-		preset = "fast"
+// needsReencode kiểm tra xem clip có bất kỳ filter/chỉnh sửa nào cần re-encode hay không.
+// Nếu tất cả filter đều tắt (tỷ lệ, màu, tốc độ, text, watermark, nhạc nền, flip...),
+// ta có thể dùng stream-copy (-c copy) để cắt nhanh gấp 5-20 lần.
+func needsReencode(e project.EditOps) bool {
+	if e.Aspect.Enabled {
+		return true
 	}
-	if crf <= 0 || crf > 51 {
-		crf = 23
+	if e.Color.Enabled {
+		return true
 	}
+	if e.Speed > 0 && e.Speed != 1.0 {
+		return true
+	}
+	if e.HFlip {
+		return true
+	}
+	if len(e.Texts) > 0 {
+		for _, t := range e.Texts {
+			if strings.TrimSpace(t.Content) != "" {
+				return true
+			}
+		}
+	}
+	if e.Watermark.Enabled && e.Watermark.ImgPath != "" {
+		return true
+	}
+	if e.Audio.MusicPath != "" {
+		return true
+	}
+	if e.Audio.Mute {
+		return true
+	}
+	if e.Audio.Volume > 0 && e.Audio.Volume != 1.0 {
+		return true
+	}
+	if e.Audio.FadeIn > 0 || e.Audio.FadeOut > 0 {
+		return true
+	}
+	return false
+}
 
+// cutVideoStreamCopy cắt video bằng stream-copy (không re-encode).
+// Ưu điểm: nhanh gấp 5-20 lần, không mất chất lượng (generation loss).
+// Nhược điểm: chỉ chính xác tới keyframe gần nhất (có thể lệch 0-0.5s ở đầu clip).
+//
+// Kỹ thuật: Đặt -ss TRƯỚC -i (input seeking) để ffmpeg seek đến keyframe gần nhất
+// rồi bỏ packet thừa khi mux. -avoid_negative_ts make_zero đảm bảo PTS bắt đầu từ 0.
+func cutVideoStreamCopy(ctx context.Context, inputPath string, startTime, dur float64, outputPath string) error {
+	args := []string{
+		"-y",
+		"-ss", fmt.Sprintf("%.3f", startTime),
+		"-i", inputPath,
+		"-t", fmt.Sprintf("%.3f", dur),
+		"-c", "copy",
+		"-avoid_negative_ts", "make_zero",
+		"-movflags", "+faststart",
+		outputPath,
+	}
+	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ffmpeg stream-copy error: %v, output: %s", err, string(out))
+	}
+	return nil
+}
+
+// cutVideoReencode cắt video có re-encode (chậm nhưng frame-accurate và hỗ trợ filter).
+func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, outputPath string, preset string, crf int) error {
 	dur := clip.EndTime - clip.StartTime
 	if dur <= 0 {
 		dur = clip.Duration
@@ -46,7 +98,6 @@ func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPa
 	e := clip.Edit
 
 	// File text tạm cho drawtext (tránh phải escape nội dung Unicode/ký tự đặc biệt).
-	// Dọn sau khi ffmpeg chạy xong.
 	var tmpFiles []string
 	defer func() {
 		for _, f := range tmpFiles {
@@ -54,7 +105,6 @@ func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPa
 		}
 	}()
 
-	// === Dựng danh sách input ===
 	// -accurate_seek: đảm bảo seek chính xác tới frame (không chỉ keyframe) khi kết
 	// hợp input seeking. -fflags +genpts: tạo lại PTS liên tục, tránh lỗi PTS gián đoạn
 	// khi video có B-frames hoặc PTS không đều — gây lệch filter_complex + setpts.
@@ -74,7 +124,6 @@ func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPa
 		nextIdx++
 	}
 
-	// === Dựng filter graph ===
 	vOut, aOut, complexParts, textFiles, err := buildGraph(e, dur, wmIdx, musicIdx)
 	if err != nil {
 		return err
@@ -101,7 +150,7 @@ func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPa
 		"-movflags", "+faststart",
 	)
 	if musicIdx >= 0 {
-		args = append(args, "-shortest") // giữ đầu ra dài bằng video, không kéo theo nhạc thừa
+		args = append(args, "-shortest")
 	}
 	args = append(args, outputPath)
 
@@ -111,6 +160,44 @@ func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPa
 		return fmt.Errorf("ffmpeg cut error: %v, output: %s", err, string(out))
 	}
 	return nil
+}
+
+// CutVideo cắt một clip từ startTime đến endTime và áp các thao tác chỉnh sửa
+// trong clip.Edit.
+//
+// Chiến lược tối ưu tốc độ:
+//   - Nếu clip KHÔNG có bất kỳ filter nào (tỷ lệ, màu, tốc độ, text, watermark...),
+//     dùng stream-copy (-c copy) → nhanh gấp 5-20 lần, không mất chất lượng.
+//   - Nếu stream-copy thất bại (codec không tương thích, container lỗi), tự động
+//     fallback sang re-encode.
+//   - Nếu clip CÓ filter → re-encode bằng libx264 với preset/crf cấu hình.
+func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPath string, preset string, crf int) error {
+	if preset == "" {
+		preset = "fast"
+	}
+	if crf <= 0 || crf > 51 {
+		crf = 23
+	}
+
+	dur := clip.EndTime - clip.StartTime
+	if dur <= 0 {
+		dur = clip.Duration
+	}
+	if dur <= 0 {
+		return fmt.Errorf("clip %s có thời lượng không hợp lệ", clip.ID)
+	}
+
+	// Không cần filter → stream-copy (nhanh gấp nhiều lần)
+	if !needsReencode(clip.Edit) {
+		err := cutVideoStreamCopy(ctx, inputPath, clip.StartTime, dur, outputPath)
+		if err == nil {
+			return nil
+		}
+		// Stream-copy thất bại → fallback sang re-encode
+		_ = os.Remove(outputPath)
+	}
+
+	return cutVideoReencode(ctx, inputPath, clip, outputPath, preset, crf)
 }
 
 // buildGraph dựng toàn bộ filter_complex cho một clip. Trả về nhãn map video/audio,

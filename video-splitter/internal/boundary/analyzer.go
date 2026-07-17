@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"video-splitter/internal/media"
 	"video-splitter/internal/project"
 	"video-splitter/internal/utils"
 
@@ -140,7 +141,7 @@ func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, 
 		return nil, fmt.Errorf("python worker returned error: %s", result.Message)
 	}
 
-	return CalculateBoundaries(result.Candidates, cfg, totalDuration), nil
+	return CalculateBoundaries(result.Candidates, cfg, totalDuration, sourcePath), nil
 }
 
 // boundaryScore tính Boundary Score cho một candidate theo công thức có trọng số:
@@ -214,7 +215,8 @@ func tierFor(score int, cfg project.AnalyzerConfig) string {
 
 // CalculateBoundaries tính Boundary Score cho từng candidate, loại bỏ điểm dưới ngưỡng,
 // gom cụm điểm gần nhau (giữ điểm mạnh nhất), rồi dựng danh sách clip kèm confidence/tier/reason.
-func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, totalDuration float64) []project.Clip {
+// sourcePath dùng để snap boundary sang keyframe gần nhất (tối ưu cho stream-copy).
+func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, totalDuration float64, sourcePath string) []project.Clip {
 	w := cfg.Weights
 
 	// === BƯỚC 1: Tính Boundary Score, loại điểm dưới ngưỡng review (tier reject) ===
@@ -238,6 +240,18 @@ func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, tot
 	sort.Slice(scored, func(i, j int) bool {
 		return scored[i].timestamp < scored[j].timestamp
 	})
+
+	// === BƯỚC 1.5: Snap boundary sang keyframe gần nhất (nếu biết sourcePath) ===
+	// Điều này đảm bảo điểm cắt nằm tại I-frame, giúp stream-copy không bị artifact
+	// (xanh lá, glitch) ở đầu clip. Chỉ snap khi lệch < 1s để giữ ý định phân tích.
+	if sourcePath != "" {
+		for i := range scored {
+			snapped := media.FindNearestKeyframe(sourcePath, scored[i].timestamp)
+			if abs(snapped-scored[i].timestamp) < 1.0 {
+				scored[i].timestamp = snapped
+			}
+		}
+	}
 
 	// === BƯỚC 2: Gom cụm — giữ boundary điểm cao nhất trong mỗi cửa sổ MinClipDuration ===
 	var filtered []scoredBoundary
