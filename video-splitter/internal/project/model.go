@@ -196,7 +196,7 @@ func DefaultConfig() AnalyzerConfig {
 		ReviewMinScore:   30, // giảm từ 60: giữ lại nhiều candidate hơn để không sót
 		SilenceThreshold: -30,
 		SilenceDuration:  0.5,
-		ProxyFPS:         15,
+		ProxyFPS:         10,
 		Weights:          DefaultWeights(),
 		ExportPreset:     "fast",
 		ExportCRF:        23,

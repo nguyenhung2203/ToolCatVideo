@@ -6,10 +6,14 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def analyze_silence(audio_path, ffmpeg_path="ffmpeg", silence_db=-30, silence_duration=0.5):
-    """Tìm điểm im lặng — chạy trên file WAV audio đã giải nén (rất nhanh)."""
+def analyze_silence(audio_path, source_path=None, ffmpeg_path="ffmpeg", silence_db=-30, silence_duration=0.5):
+    """Tìm điểm im lặng — ưu tiên file audio WAV, fallback sang video gốc trực tiếp (chỉ decode audio)."""
+    target = audio_path if audio_path else source_path
+    if not target:
+        return []
     cmd = [
-        ffmpeg_path, '-i', audio_path,
+        ffmpeg_path, '-i', target,
+        '-vn',  # Bỏ video stream (nếu target là mp4) giúp giải mã cực nhanh
         '-af', f'silencedetect=noise={silence_db}dB:d={silence_duration}',
         '-f', 'null', '-'
     ]
@@ -172,9 +176,9 @@ def add_signal(candidates_map, timestamp, conf, signal_key, signal_val, reason_s
     candidates_map[timestamp]['signals'][signal_key] = signal_val
 
 
-def analyze_video(proxy_path, audio_path, ffmpeg_path="ffmpeg", mode="smart",
+def analyze_video(proxy_path, audio_path, source_path=None, ffmpeg_path="ffmpeg", mode="smart",
                   scene_threshold=20.0, silence_db=-30, silence_duration=0.5):
-    """Chạy các detector trên proxy video (240p) và audio WAV đã giải nén."""
+    """Chạy các detector trên proxy video (240p) và audio WAV (hoặc fallback video gốc)."""
     candidates_map = {}
     results = {}
 
@@ -182,7 +186,7 @@ def analyze_video(proxy_path, audio_path, ffmpeg_path="ffmpeg", mode="smart",
         return analyze_black(proxy_path, ffmpeg_path=ffmpeg_path)
 
     def run_silence():
-        return analyze_silence(audio_path, ffmpeg_path=ffmpeg_path,
+        return analyze_silence(audio_path, source_path=source_path, ffmpeg_path=ffmpeg_path,
                                silence_db=silence_db, silence_duration=silence_duration)
 
     def run_scenes():
@@ -192,7 +196,9 @@ def analyze_video(proxy_path, audio_path, ffmpeg_path="ffmpeg", mode="smart",
         return analyze_layout(proxy_path)
 
     def run_audio_spectral():
-        return analyze_audio_spectral(audio_path)
+        if audio_path:
+            return analyze_audio_spectral(audio_path)
+        return []
 
     # === Xác định detector cần chạy theo mode ===
     tasks = {
@@ -202,7 +208,7 @@ def analyze_video(proxy_path, audio_path, ffmpeg_path="ffmpeg", mode="smart",
     if mode in ("smart", "precise"):
         tasks['scenes'] = run_scenes
         tasks['layout'] = run_layout
-    if mode == "precise":
+    if mode == "precise" and audio_path:
         tasks['audio_spectral'] = run_audio_spectral
 
     # === Chạy song song tất cả detector ===
@@ -253,8 +259,8 @@ def analyze_video(proxy_path, audio_path, ffmpeg_path="ffmpeg", mode="smart",
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Media Analyzer Worker")
     parser.add_argument("--proxy", type=str, required=True, help="Path to proxy video")
-    parser.add_argument("--audio", type=str, required=True, help="Path to audio file")
-    parser.add_argument("--source", type=str, default="", help="(legacy, ignored)")
+    parser.add_argument("--audio", type=str, default="", help="Path to audio file (optional)")
+    parser.add_argument("--source", type=str, default="", help="Path to original source video")
     parser.add_argument("--ffmpeg", type=str, default="ffmpeg", help="Path to ffmpeg executable")
     parser.add_argument("--mode", type=str, default="smart", choices=["fast", "smart", "precise"], help="Analysis mode")
     parser.add_argument("--scene-threshold", type=float, default=20.0, help="Scene detection threshold (default: 20.0)")
@@ -267,6 +273,7 @@ if __name__ == "__main__":
         data = analyze_video(
             args.proxy,
             args.audio,
+            source_path=args.source,
             ffmpeg_path=args.ffmpeg,
             mode=args.mode,
             scene_threshold=args.scene_threshold,

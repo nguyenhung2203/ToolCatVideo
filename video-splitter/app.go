@@ -177,30 +177,39 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 		a.cancelMu.Unlock()
 	}()
 
-	// 1. Tạo proxy và trích xuất WAV audio song song (giúp tiết kiệm ~40% thời gian chuẩn bị)
-	runtime.EventsEmit(a.ctx, "analyze_log", "Bước 1/3: Đang tối ưu hóa video (tạo proxy 240p & trích xuất kênh âm thanh song song)...")
+	// 1. Tạo proxy (và trích xuất audio nếu dùng chế độ precise)
+	needAudio := cfg.Mode == project.ModePrecise
+	if needAudio {
+		runtime.EventsEmit(a.ctx, "analyze_log", "Bước 1/3: Đang tối ưu hóa video (tạo proxy 240p & trích xuất âm thanh song song)...")
+	} else {
+		runtime.EventsEmit(a.ctx, "analyze_log", "Bước 1/3: Đang tối ưu hóa video (tạo proxy 240p)...")
+	}
 	runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": 5})
 
 	var wg sync.WaitGroup
 	var errProxy, errAudio error
 
-	wg.Add(2)
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		proxyFPS := strconv.Itoa(cfg.ProxyFPS)
 		errProxy = media.GenerateProxy(ctx, sourcePath, proxyPath, proxyFPS)
 	}()
-	go func() {
-		defer wg.Done()
-		errAudio = media.ExtractAudio(ctx, sourcePath, audioPath)
-	}()
+
+	if needAudio {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errAudio = media.ExtractAudio(ctx, sourcePath, audioPath)
+		}()
+	}
 
 	wg.Wait()
 
 	if errProxy != nil {
 		return nil, fmt.Errorf("lỗi tạo proxy: %v", errProxy)
 	}
-	if errAudio != nil {
+	if needAudio && errAudio != nil {
 		return nil, fmt.Errorf("lỗi tạo audio: %v", errAudio)
 	}
 
@@ -211,10 +220,15 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 		totalDuration = info.Duration
 	}
 
-	// 2. Chạy Python worker trên proxy (240p) và audio WAV
+	// 2. Chạy Python worker trên proxy (240p) và audio WAV (nếu có)
 	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 2/3: Đang phân tích chuyển cảnh (scene=%.1f, minClip=%.0fs, maxClip=%.0fs)...", cfg.SceneThreshold, cfg.MinClipDuration, cfg.MaxClipDuration))
 	runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": 15})
-	clips, err := boundary.AnalyzeVideo(ctx, sourcePath, proxyPath, audioPath, "python", cfg, totalDuration)
+	
+	passedAudioPath := ""
+	if needAudio {
+		passedAudioPath = audioPath
+	}
+	clips, err := boundary.AnalyzeVideo(ctx, sourcePath, proxyPath, passedAudioPath, "python", cfg, totalDuration)
 	if err != nil {
 		return nil, fmt.Errorf("lỗi phân tích: %v", err)
 	}

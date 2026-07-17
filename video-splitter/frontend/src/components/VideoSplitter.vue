@@ -144,7 +144,7 @@ const analyzerConfig = reactive(new project.AnalyzerConfig({
   reviewMinScore: 30,
   silenceThreshold: -30,
   silenceDuration: 0.5,
-  proxyFPS: 15,
+  proxyFPS: 10,
   weights: {
     visualChange: 55,
     blackFrame: 35,
