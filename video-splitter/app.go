@@ -707,3 +707,34 @@ func (a *App) analyzeFixed(sourcePath string, cfg project.AnalyzerConfig) ([]pro
 	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Cắt đều hoàn tất! Đã tạo %d phân đoạn.", len(clips)))
 	return clips, nil
 }
+
+// SaveGlobalSettings lưu cấu hình cài đặt chung của người dùng vào file settings.json
+func (a *App) SaveGlobalSettings(settingsJSON string) error {
+	dir, err := os.UserConfigDir()
+	if err != nil || dir == "" {
+		dir = os.TempDir()
+	}
+	appDir := filepath.Join(dir, "video-splitter")
+	_ = os.MkdirAll(appDir, 0755)
+
+	settingsPath := filepath.Join(appDir, "settings.json")
+	return os.WriteFile(settingsPath, []byte(settingsJSON), 0644)
+}
+
+// GetGlobalSettings đọc cấu hình cài đặt chung của người dùng từ file settings.json.
+// Trả về chuỗi rỗng nếu file chưa tồn tại.
+func (a *App) GetGlobalSettings() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil || dir == "" {
+		dir = os.TempDir()
+	}
+	settingsPath := filepath.Join(dir, "video-splitter", "settings.json")
+	if _, err := os.Stat(settingsPath); os.IsNotExist(err) {
+		return "", nil
+	}
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}

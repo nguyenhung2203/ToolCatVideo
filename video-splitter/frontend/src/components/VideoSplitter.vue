@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, reactive, watch } from 'vue'
-import { GetVideoInfo, Analyze, ExportClips, SelectFiles, CancelAnalysis, GetStreamURL, GetDefaultConfig, GenerateThumbnail, SaveProject, LoadProjectBySource, ListProjects, DeleteProject, SelectImageFile, SelectAudioFile, SelectFolder, CancelExport } from '../../wailsjs/go/main/App'
+import { GetVideoInfo, Analyze, ExportClips, SelectFiles, CancelAnalysis, GetStreamURL, GetDefaultConfig, GenerateThumbnail, SaveProject, LoadProjectBySource, ListProjects, DeleteProject, SelectImageFile, SelectAudioFile, SelectFolder, CancelExport, SaveGlobalSettings, GetGlobalSettings } from '../../wailsjs/go/main/App'
 import { project, storage, main } from '../../wailsjs/go/models'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { useTheme } from '../ui-system/composables/useTheme'
@@ -81,6 +81,7 @@ const editClipIdx = ref(-1)
 // === Cấu hình dự án ===
 const showAdvancedCutSettings = ref(false)
 const analyzeJobs = ref(1)
+const exportJobs = ref(2)
 
 // Trạng thái hiển thị ở thanh đáy workspace.
 const statusText = ref('Sẵn sàng')
@@ -172,6 +173,33 @@ const resetConfig = async () => {
   addLog('Đã đặt lại cấu hình về mặc định.')
 }
 
+const isSettingsLoaded = ref(false)
+
+const saveGlobalSettings = async () => {
+  if (!isSettingsLoaded.value) return
+  try {
+    const payload = {
+      analyzerConfig: JSON.parse(JSON.stringify(analyzerConfig)),
+      globalRemix: JSON.parse(JSON.stringify(globalRemix)),
+      exportJobs: exportJobs.value,
+      analyzeJobs: analyzeJobs.value,
+      outDir: outDir.value
+    }
+    await SaveGlobalSettings(JSON.stringify(payload))
+  } catch (e) {
+    console.error('Lỗi tự động lưu cài đặt chung:', e)
+  }
+}
+
+let saveTimeout: any = null
+watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir], () => {
+  if (!isSettingsLoaded.value) return
+  if (saveTimeout) clearTimeout(saveTimeout)
+  saveTimeout = setTimeout(() => {
+    saveGlobalSettings()
+  }, 800)
+}, { deep: true })
+
 const videoPlayer = ref<HTMLVideoElement | null>(null)
 const editPlayer = ref<HTMLVideoElement | null>(null)
 
@@ -227,6 +255,26 @@ const computedVideoSrc = computed(() => {
 })
 
 onMounted(async () => {
+  // 1. Tải cấu hình cài đặt chung toàn cục (settings.json)
+  try {
+    const globalSettingsStr = await GetGlobalSettings()
+    if (globalSettingsStr) {
+      const gSettings = JSON.parse(globalSettingsStr)
+      if (gSettings.analyzerConfig) Object.assign(analyzerConfig, gSettings.analyzerConfig)
+      if (gSettings.globalRemix) Object.assign(globalRemix, gSettings.globalRemix)
+      if (gSettings.exportJobs !== undefined) exportJobs.value = gSettings.exportJobs
+      if (gSettings.analyzeJobs !== undefined) analyzeJobs.value = gSettings.analyzeJobs
+      if (gSettings.outDir !== undefined) outDir.value = gSettings.outDir
+    } else {
+      await loadDefaultConfig()
+    }
+  } catch (e) {
+    console.error('Lỗi tải cấu hình toàn cục:', e)
+    await loadDefaultConfig()
+  }
+
+  isSettingsLoaded.value = true // Đã load xong, bắt đầu tự động theo dõi và lưu cài đặt từ đây
+
   // Tải danh sách project
   const savedProjs = localStorage.getItem('namedProjectsList')
   const savedActiveId = localStorage.getItem('activeProjectId')
@@ -272,10 +320,8 @@ onMounted(async () => {
     activeProjectId.value = savedActiveId || namedProjects.value[0].id
   }
 
-  // Load dự án hoạt động đầu tiên
+  // Load dự án hoạt động đầu tiên (ghi đè cấu hình toàn cục nếu dự án đã lưu cấu hình riêng)
   await loadProject(activeProjectId.value)
-
-  await loadDefaultConfig()
   addLog("Hệ thống Splitter đã sẵn sàng.")
   try {
     // Dùng placeholder để tách prefix/suffix quanh vị trí path đã encode.
@@ -525,8 +571,6 @@ const toggleSelectAll = () => {
   }
 }
 
-// Số job xuất song song (giới hạn tiến trình ffmpeg như spec yêu cầu).
-const exportJobs = ref(2)
 const exportProgress = ref({ done: 0, total: 0 })
 
 const clipsForExport = () => {

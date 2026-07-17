@@ -30,6 +30,10 @@ export function GetDefaultConfig() {
   return window['go']['main']['App']['GetDefaultConfig']();
 }
 
+export function GetGlobalSettings() {
+  return window['go']['main']['App']['GetGlobalSettings']();
+}
+
 export function GetStreamURL(arg1) {
   return window['go']['main']['App']['GetStreamURL'](arg1);
 }
@@ -48,6 +52,10 @@ export function LoadProjectBySource(arg1) {
 
 export function MergeClips(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['MergeClips'](arg1, arg2, arg3, arg4);
+}
+
+export function SaveGlobalSettings(arg1) {
+  return window['go']['main']['App']['SaveGlobalSettings'](arg1);
 }
 
 export function SaveProject(arg1, arg2, arg3) {

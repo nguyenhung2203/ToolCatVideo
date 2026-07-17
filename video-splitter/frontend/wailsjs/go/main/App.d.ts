@@ -18,6 +18,8 @@ export function GenerateThumbnail(arg1:string,arg2:number):Promise<string>;
 
 export function GetDefaultConfig():Promise<project.AnalyzerConfig>;
 
+export function GetGlobalSettings():Promise<string>;
+
 export function GetStreamURL(arg1:string):Promise<string>;
 
 export function GetVideoInfo(arg1:string):Promise<project.VideoInfo>;
@@ -27,6 +29,8 @@ export function ListProjects():Promise<Array<storage.ProjectSummary>>;
 export function LoadProjectBySource(arg1:string):Promise<project.Project>;
 
 export function MergeClips(arg1:string,arg2:Array<project.Clip>,arg3:string,arg4:project.AnalyzerConfig):Promise<string>;
+
+export function SaveGlobalSettings(arg1:string):Promise<void>;
 
 export function SaveProject(arg1:string,arg2:Array<project.Clip>,arg3:project.AnalyzerConfig):Promise<project.Project>;
 
