@@ -19,24 +19,24 @@ export const semanticColors = {
   },
   text: {
     primary:    colors.slate[800],    // #1e293b — headings, body
-    secondary:  colors.gray[500],     // #6b7280 — descriptions
-    muted:      colors.gray[400],     // #9ca3af — placeholders, timestamps
-    disabled:   colors.gray[300],     // #d1d5db — disabled label
+    secondary:  colors.slate[600],    // #475569 — label, secondary copy
+    muted:      colors.slate[500],    // #64748b — caption, helper, timestamp
+    disabled:   colors.slate[400],    // #94a3b8 — disabled label
     inverse:    colors.white,         // white on gradients
     link:       colors.blue[600],     // #2563eb — hyperlinks
   },
   surface: {
-    base:       colors.white,
+    base:       '#f0f4f8',            // layered cool gray
     elevated:   colors.white,
-    sunken:     colors.slate[50],     // #f8fafc — section backgrounds
-    overlay:    'rgba(0,0,0,0.2)',    // modal backdrop
+    sunken:     colors.slate[200],    // #e2e8f0 — deeper page bg
+    overlay:    'rgba(15,23,42,0.3)',  // darker overlay
   },
   border: {
-    default:    colors.gray[200],     // #e5e7eb — card/input borders
-    subtle:     colors.gray[100],     // #f3f4f6 — dividers
+    default:    colors.slate[300],    // #cbd5e1 — card/input borders (darker)
+    subtle:     colors.slate[200],    // #e2e8f0 — dividers
     focus:      colors.blue.brand,    // #007bff — focus ring
-    glass:      'rgba(255,255,255,0.5)',
-    glassLight: 'rgba(255,255,255,0.3)',
+    glass:      'rgba(255,255,255,0.7)',
+    glassLight: 'rgba(255,255,255,0.4)',
   },
   success: { bg: colors.green[50],   text: colors.green[600],  solid: colors.green[500],  border: colors.green[100] },
   danger:  { bg: colors.red[50],     text: colors.red[600],    solid: colors.red[500],    border: colors.red[100] },

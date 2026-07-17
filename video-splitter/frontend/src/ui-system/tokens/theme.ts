@@ -27,32 +27,32 @@ export const lightTheme = {
 
   text: {
     primary:   '#1e293b',
-    secondary: '#6b7280',
-    muted:     '#9ca3af',
-    disabled:  '#d1d5db',
+    secondary: '#475569',
+    muted:     '#64748b',
+    disabled:  '#94a3b8',
     inverse:   '#ffffff',
     link:      '#2563eb',
   },
 
   surface: {
-    base:     '#ffffff',
+    base:     '#f0f4f8',
     elevated: '#ffffff',
-    sunken:   '#f8fafc',
-    overlay:  'rgba(0,0,0,0.2)',
+    sunken:   '#e2e8f0',
+    overlay:  'rgba(15,23,42,0.3)',
   },
 
   border: {
-    default:    '#e5e7eb',
-    subtle:     '#f3f4f6',
+    default:    '#cbd5e1',
+    subtle:     '#e2e8f0',
     focus:      '#007bff',
-    glass:      'rgba(255,255,255,0.5)',
-    glassLight: 'rgba(255,255,255,0.3)',
+    glass:      'rgba(255,255,255,0.7)',
+    glassLight: 'rgba(255,255,255,0.4)',
   },
 
   scrollbar: {
-    track:      '#f0f0f0',
-    thumb:      '#b5b5b5',
-    thumbHover: '#9a9a9a',
+    track:      '#e2e8f0',
+    thumb:      '#94a3b8',
+    thumbHover: '#64748b',
   },
 } as const
 

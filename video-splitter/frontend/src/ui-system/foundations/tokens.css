@@ -35,7 +35,7 @@
      Reference --wx-brand-* tokens so consumer override cascades.
      Override --wx-brand-primary / --wx-brand-accent to re-skin.
      ──────────────────────────────────────────────────────── */
-  --wx-gradient-bg: linear-gradient(to right, #7ecff1, #9cc9f5, #95def5);
+  --wx-gradient-bg: linear-gradient(135deg, #e0e7ff 0%, #f0f4f8 50%, #dbeafe 100%);
   --wx-gradient-header: linear-gradient(to right, var(--wx-brand-accent), var(--wx-brand-500), var(--wx-brand-primary));
   --wx-gradient-cta: linear-gradient(to right, #00d2ff, #3a7bd5, #0052D4);
   --wx-gradient-button: linear-gradient(to right, var(--wx-brand-accent), var(--wx-brand-primary));
@@ -48,63 +48,63 @@
 
   /* ── Text ───────────────────────────────────────────── */
   --wx-text-primary: #1e293b;
-  --wx-text-secondary: #6b7280;
-  --wx-text-muted: #9ca3af;
-  --wx-text-disabled: #d1d5db;
+  --wx-text-secondary: #475569;
+  --wx-text-muted: #64748b;
+  --wx-text-disabled: #94a3b8;
   --wx-text-inverse: #ffffff;
   /* Cố định trắng — dùng cho chữ trên nền gradient thương hiệu (luôn xanh, không đổi theo theme),
      khác với --wx-text-inverse vốn đảo màu theo light/dark. */
   --wx-text-on-brand: #ffffff;
   --wx-text-link: #2563eb;
 
-  /* ── Surface ────────────────────────────────────────── */
-  --wx-surface-base: #ffffff;
-  --wx-surface-elevated: #ffffff;
-  --wx-surface-sunken: #f8fafc;
-  --wx-surface-overlay: rgba(0, 0, 0, 0.2);
+  /* ── Surface — layered cool grays thay vì all-white ──── */
+  --wx-surface-base: #f0f4f8;         /* card/panel bg — xám mát, tạo nền */
+  --wx-surface-elevated: #ffffff;      /* card nổi, modal — trắng tinh */
+  --wx-surface-sunken: #e2e8f0;        /* page bg — sâu hơn base, tạo độ sâu */
+  --wx-surface-overlay: rgba(15, 23, 42, 0.3);
 
   /* ── Border ─────────────────────────────────────────── */
-  --wx-border-default: #e5e7eb;
-  --wx-border-subtle: #f3f4f6;
+  --wx-border-default: #cbd5e1;       /* đậm hơn #e5e7eb — tạo ranh giới rõ */
+  --wx-border-subtle: #e2e8f0;
   --wx-border-focus: #007bff;
-  --wx-border-glass: rgba(255, 255, 255, 0.5);
-  --wx-border-glass-light: rgba(255, 255, 255, 0.3);
+  --wx-border-glass: rgba(255, 255, 255, 0.7);
+  --wx-border-glass-light: rgba(255, 255, 255, 0.4);
 
   /* ── Glass ──────────────────────────────────────────── */
-  --wx-glass-heavy-bg: rgba(255, 255, 255, 0.6);
+  --wx-glass-heavy-bg: rgba(255, 255, 255, 0.85);
   --wx-glass-heavy-blur: 25px;
-  --wx-glass-heavy-border: rgba(255, 255, 255, 0.5);
-  --wx-glass-medium-bg: rgba(255, 255, 255, 0.4);
+  --wx-glass-heavy-border: rgba(255, 255, 255, 0.6);
+  --wx-glass-medium-bg: rgba(255, 255, 255, 0.65);
   --wx-glass-medium-blur: 12px;
-  --wx-glass-medium-border: rgba(255, 255, 255, 0.6);
-  --wx-glass-light-bg: rgba(255, 255, 255, 0.2);
+  --wx-glass-medium-border: rgba(255, 255, 255, 0.7);
+  --wx-glass-light-bg: rgba(255, 255, 255, 0.45);
   --wx-glass-light-blur: 12px;
-  --wx-glass-light-border: rgba(255, 255, 255, 0.3);
-  --wx-glass-subtle-bg: rgba(255, 255, 255, 0.1);
+  --wx-glass-light-border: rgba(255, 255, 255, 0.5);
+  --wx-glass-subtle-bg: rgba(255, 255, 255, 0.25);
   --wx-glass-subtle-blur: 8px;
-  --wx-glass-subtle-border: rgba(255, 255, 255, 0.2);
+  --wx-glass-subtle-border: rgba(255, 255, 255, 0.3);
 
   /* ── Feedback ───────────────────────────────────────── */
-  --wx-success-bg: #f0fdf4;
-  --wx-success-text: #16a34a;
-  --wx-success-solid: #22c55e;
-  --wx-success-border: #dcfce7;
+  --wx-success-bg: #ecfdf5;
+  --wx-success-text: #059669;
+  --wx-success-solid: #10b981;
+  --wx-success-border: #a7f3d0;
   --wx-danger-bg: #fef2f2;
   --wx-danger-text: #dc2626;
   --wx-danger-solid: #ef4444;
-  --wx-danger-border: #fee2e2;
+  --wx-danger-border: #fecaca;
   --wx-warning-bg: #fffbeb;
   --wx-warning-text: #d97706;
   --wx-warning-solid: #f59e0b;
-  --wx-warning-border: #fef3c7;
+  --wx-warning-border: #fde68a;
   --wx-info-bg: #eff6ff;
   --wx-info-text: #2563eb;
   --wx-info-solid: #3b82f6;
-  --wx-info-border: #dbeafe;
-  --wx-neutral-bg: #f9fafb;
-  --wx-neutral-text: #4b5563;
-  --wx-neutral-solid: #6b7280;
-  --wx-neutral-border: #e5e7eb;
+  --wx-info-border: #bfdbfe;
+  --wx-neutral-bg: #f1f5f9;
+  --wx-neutral-text: #475569;
+  --wx-neutral-solid: #64748b;
+  --wx-neutral-border: #cbd5e1;
 
   /* ── Status aliases (--wx-status-* → canonical tokens) ─ */
   --wx-status-success-text: var(--wx-success-text);
@@ -126,8 +126,8 @@
   --wx-hover-text: var(--wx-brand-400);
   --wx-active-bg: var(--wx-brand-100);
   --wx-active-text: var(--wx-brand-700);
-  --wx-disabled-bg: #f3f4f6;
-  --wx-disabled-text: #9ca3af;
+  --wx-disabled-bg: #e2e8f0;
+  --wx-disabled-text: #94a3b8;
 
   /* ── Radius ─────────────────────────────────────────── */
   --wx-radius-none: 0;
@@ -140,14 +140,14 @@
   --wx-radius-4xl: 32px;
   --wx-radius-full: 9999px;
 
-  /* ── Elevation ──────────────────────────────────────── */
+  /* ── Elevation — bóng rõ hơn trên nền sáng ─────────── */
   --wx-shadow-none: none;
-  --wx-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --wx-shadow-md: 0 4px 6px rgba(0, 0, 0, 0.05);
-  --wx-shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.04);
-  --wx-shadow-xl: 0 20px 40px -5px rgba(59, 130, 246, 0.15);
-  --wx-shadow-2xl: 0 20px 50px rgba(59, 130, 246, 0.15);
-  --wx-shadow-brand: 0 4px 15px rgba(59, 130, 246, 0.4);
+  --wx-shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.08);
+  --wx-shadow-md: 0 4px 8px rgba(15, 23, 42, 0.08);
+  --wx-shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.1);
+  --wx-shadow-xl: 0 16px 40px -5px rgba(15, 23, 42, 0.12);
+  --wx-shadow-2xl: 0 20px 50px rgba(15, 23, 42, 0.15);
+  --wx-shadow-brand: 0 4px 15px rgba(37, 99, 235, 0.25);
   --wx-shadow-focus: 0 0 0 3px rgba(0, 123, 255, 0.25);
 
   /* ── Typography ─────────────────────────────────────── */
@@ -198,9 +198,9 @@
   --wx-z-topmost: 9999;
 
   /* ── Scrollbar ──────────────────────────────────────── */
-  --wx-scrollbar-track: #f0f0f0;
-  --wx-scrollbar-thumb: #b5b5b5;
-  --wx-scrollbar-thumb-hover: #9a9a9a;
+  --wx-scrollbar-track: #e2e8f0;
+  --wx-scrollbar-thumb: #94a3b8;
+  --wx-scrollbar-thumb-hover: #64748b;
   --wx-scrollbar-width: 12px;
 
   /* ── Density (default mode) ─────────────────────────── */

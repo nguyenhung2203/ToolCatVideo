@@ -165,15 +165,23 @@ type AnalyzerConfig struct {
 }
 
 // DefaultWeights trả về trọng số tín hiệu mặc định.
-// Các giá trị này là điểm khởi đầu, hiệu chỉnh theo dữ liệu thực tế.
+// Đã hiệu chỉnh lại so với phiên bản cũ: tăng trọng số visual/silence,
+// giảm continuity penalty để không loại nhầm quá nhiều điểm cắt hợp lệ.
+//
+// Ví dụ tính điểm với trọng số mới:
+//   Visual only (không liền mạch): 40 → review
+//   Visual + Silence:              40 + 30 = 70 → auto accept ✓
+//   Visual + Black:                40 + 35 = 75 → auto accept ✓
+//   Silence + Black:               30 + 35 = 65 → auto accept ✓
+//   Visual only (liền mạch):       40 - 15 = 25 → vẫn review (trước đây bị reject!)
 func DefaultWeights() SignalWeights {
 	return SignalWeights{
-		VisualChange:  30,
+		VisualChange:  40,
 		BlackFrame:    35,
-		Silence:       20,
+		Silence:       30,
 		LayoutChange:  25,
 		AudioChange:   20,
-		ContinuityPen: 40, // phạt mạnh: nếu vẫn liền mạch thì trừ nhiều để tránh cắt nhầm chuyển cảnh
+		ContinuityPen: 15, // giảm mạnh: phiên bản cũ (40) loại nhầm quá nhiều chuyển cảnh hợp lệ
 	}
 }
 
@@ -184,8 +192,8 @@ func DefaultConfig() AnalyzerConfig {
 		SceneThreshold:   27.0,
 		MinClipDuration:  5.0,
 		MaxClipDuration:  120.0,
-		AutoAcceptScore:  85,
-		ReviewMinScore:   60,
+		AutoAcceptScore:  60, // giảm từ 85: chỉ cần 2 tín hiệu trùng là đủ tin cậy
+		ReviewMinScore:   35, // giảm từ 60: giữ lại nhiều candidate hơn để không sót
 		SilenceThreshold: -30,
 		SilenceDuration:  0.5,
 		ProxyFPS:         15,
@@ -194,3 +202,4 @@ func DefaultConfig() AnalyzerConfig {
 		ExportCRF:        23,
 	}
 }
+
