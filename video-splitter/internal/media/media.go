@@ -108,14 +108,14 @@ func GenerateProxy(ctx context.Context, inputPath string, outputPath string, fps
 	if fpsStr == "" {
 		fpsStr = "15"
 	}
-	// Giảm xuống 480p + fps=N filter: drop/duplicate frame nhưng giữ PTS gốc.
+	// Giảm xuống 240p + fps=N filter: drop/duplicate frame nhưng giữ PTS gốc.
 	cmdArgs := []string{
 		"-y", // overwrite
 		"-i", inputPath,
-		"-vf", fmt.Sprintf("scale=-2:480,fps=%s", fpsStr),
+		"-vf", fmt.Sprintf("scale=-2:240,fps=%s", fpsStr),
 		"-c:v", "libx264",
 		"-preset", "ultrafast",
-		"-crf", "28",
+		"-crf", "30",
 		"-an", // bỏ audio
 		"-fps_mode", "vfr", // giữ VFR để PTS không bị force lại
 		outputPath,

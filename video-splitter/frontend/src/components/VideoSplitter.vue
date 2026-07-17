@@ -1906,9 +1906,6 @@ const formatSize = (bytes: number) => {
               <div class="empty-emoji">🎬</div>
               <h3>Video này chưa được cắt</h3>
               <p>Bấm nút <strong>"Bắt Đầu Cắt Tự Động"</strong> ở trên hoặc nút bên dưới để cắt video này.</p>
-              <button @click="startAnalysis" class="btn start-btn flex-center" style="margin-top: 12px;" :disabled="isAnalyzing">
-                🔍 Cắt video đang chọn
-              </button>
             </template>
             <template v-else>
               <div class="empty-emoji">🎬</div>
