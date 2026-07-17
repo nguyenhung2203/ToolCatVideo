@@ -28,6 +28,7 @@ func GetVideoInfo(filePath string) (*project.VideoInfo, error) {
 	}
 	
 	cmd := exec.Command(utils.GetBinPath("ffprobe"), cmdArgs...)
+	utils.HideCmdWindow(cmd)
 	var out bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &out
@@ -122,6 +123,7 @@ func GenerateProxy(ctx context.Context, inputPath string, outputPath string, fps
 	}
 	
 	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), cmdArgs...)
+	utils.HideCmdWindow(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -146,6 +148,7 @@ func ExtractAudio(ctx context.Context, inputPath string, outputPath string) erro
 	}
 	
 	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), cmdArgs...)
+	utils.HideCmdWindow(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -170,6 +173,7 @@ func ExtractFrame(ctx context.Context, inputPath string, timeSec float64, output
 	}
 	
 	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), cmdArgs...)
+	utils.HideCmdWindow(cmd)
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -212,6 +216,7 @@ func FindNearestKeyframe(filePath string, timeSec float64) float64 {
 	}
 
 	cmd := exec.Command(utils.GetBinPath("ffprobe"), cmdArgs...)
+	utils.HideCmdWindow(cmd)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {

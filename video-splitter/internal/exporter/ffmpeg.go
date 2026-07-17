@@ -79,6 +79,7 @@ func cutVideoStreamCopy(ctx context.Context, inputPath string, startTime, dur fl
 		outputPath,
 	}
 	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), args...)
+	utils.HideCmdWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ffmpeg stream-copy error: %v, output: %s", err, string(out))
@@ -155,6 +156,7 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 	args = append(args, outputPath)
 
 	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), args...)
+	utils.HideCmdWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ffmpeg cut error: %v, output: %s", err, string(out))
@@ -448,6 +450,7 @@ func concatDemuxer(inputFiles []string, outputPath, preset string, crf int) erro
 		"-movflags", "+faststart", outputPath)
 
 	cmd := exec.Command(utils.GetBinPath("ffmpeg"), args...)
+	utils.HideCmdWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ffmpeg concat error: %v, output: %s", err, string(out))
@@ -508,6 +511,7 @@ func concatXfade(inputFiles []string, outputPath, transitionType string, td floa
 		"-movflags", "+faststart", outputPath)
 
 	cmd := exec.Command(utils.GetBinPath("ffmpeg"), args...)
+	utils.HideCmdWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ffmpeg xfade error: %v, output: %s", err, string(out))

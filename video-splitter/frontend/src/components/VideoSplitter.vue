@@ -7,6 +7,43 @@ import { useTheme } from '../ui-system/composables/useTheme'
 
 const { isDark, toggleColorScheme } = useTheme()
 
+// === Toast Notifications (Hệ thống thông báo đẹp) ===
+interface ToastMessage {
+  id: string
+  message: string
+  type: 'success' | 'error' | 'info' | 'warning'
+  duration?: number
+}
+const toasts = ref<ToastMessage[]>([])
+const showToast = (message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info', duration = 3500) => {
+  const id = 'toast_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9)
+  toasts.value.push({ id, message, type, duration })
+  setTimeout(() => {
+    toasts.value = toasts.value.filter(t => t.id !== id)
+  }, duration)
+}
+
+// === Custom Confirm Dialog (Hộp thoại xác nhận đẹp) ===
+const confirmDialogState = reactive({
+  show: false,
+  message: '',
+  resolve: null as ((val: boolean) => void) | null
+})
+const showCustomConfirm = (message: string): Promise<boolean> => {
+  confirmDialogState.message = message
+  confirmDialogState.show = true
+  return new Promise<boolean>((res) => {
+    confirmDialogState.resolve = res
+  })
+}
+const handleConfirmResolve = (val: boolean) => {
+  if (confirmDialogState.resolve) {
+    confirmDialogState.resolve(val)
+  }
+  confirmDialogState.show = false
+  confirmDialogState.resolve = null
+}
+
 const videoPaths = ref<string[]>([])
 const activeVideoIndex = ref<number>(0)
 const videoInfo = ref<project.VideoInfo | null>(null)
@@ -139,8 +176,8 @@ const showSettings = ref(false)
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
   sceneThreshold: 26.0,
-  minClipDuration: 3.0,
-  maxClipDuration: 120.0,
+  minClipDuration: 5.0,
+  maxClipDuration: 30.0,
   autoAcceptScore: 60,
   reviewMinScore: 35,
   silenceThreshold: -30,
@@ -386,11 +423,11 @@ const handleSelectFiles = async () => {
           await loadVideoInfo(videoPaths.value[0])
         }
       } else {
-        alert('Tất cả các video bạn chọn đã có sẵn trong danh sách!')
+        showToast('Tất cả các video bạn chọn đã có sẵn trong danh sách!', 'warning')
       }
     }
   } catch (err) {
-    alert('Lỗi khi mở hộp thoại: ' + err)
+    showToast('Lỗi khi mở hộp thoại: ' + err, 'error')
   }
 }
 
@@ -407,7 +444,7 @@ const loadVideoInfo = async (path: string) => {
   try {
     videoInfo.value = await GetVideoInfo(path)
   } catch (err) {
-    alert('Lỗi đọc thông tin video: ' + err)
+    showToast('Lỗi đọc thông tin video: ' + err, 'error')
     videoInfo.value = null
   }
 }
@@ -434,7 +471,7 @@ const analyzeSingle = async (path: string): Promise<boolean> => {
     if (errMsg.includes('context canceled') || errMsg.includes('canceled') || isCancelled.value) {
       console.log('Phân tích đã bị người dùng hủy.')
     } else {
-      alert('Lỗi phân tích: ' + err)
+      showToast('Lỗi phân tích: ' + err, 'error')
     }
     analyzeProgressMap.value[path] = 0
     return false
@@ -472,7 +509,7 @@ const analyzeAll = async () => {
   const targets = allTargets.filter(p => !clipsMap.value[p] || clipsMap.value[p].length === 0)
 
   if (targets.length === 0) {
-    alert(`Tất cả ${alreadyCut.length} video đã được cắt rồi! Không cần cắt lại.`)
+    showToast(`Tất cả ${alreadyCut.length} video đã được cắt rồi! Không cần cắt lại.`, 'info')
     return
   }
 
@@ -514,9 +551,9 @@ const analyzeAll = async () => {
 
   isAnalyzing.value = false
   if (isCancelled.value) {
-    alert(`Đã dừng cắt tự động! (${processedVideosCount.value}/${targets.length} video đã xử lý)${skippedMsg}`)
+    showToast(`Đã dừng cắt tự động! (${processedVideosCount.value}/${targets.length} video đã xử lý)${skippedMsg}`, 'warning')
   } else {
-    alert(`Cắt tự động hoàn tất! ${processedVideosCount.value}/${targets.length} video thành công.${skippedMsg}`)
+    showToast(`Cắt tự động hoàn tất! ${processedVideosCount.value}/${targets.length} video thành công.${skippedMsg}`, 'success')
   }
 }
 
@@ -635,7 +672,7 @@ const exportClips = async () => {
   const finalTotal = Object.values(clipsToExportMap).reduce((acc, list) => acc + list.length, 0)
 
   if (hasExportedCurrentSession.value) {
-    const confirmReExport = confirm('Bạn đã vừa xuất các clip này xong. Bạn có muốn tiếp tục xuất lại không?')
+    const confirmReExport = await showCustomConfirm('Bạn đã vừa xuất các clip này xong. Bạn có muốn tiếp tục xuất lại không?')
     if (!confirmReExport) return
   }
 
@@ -698,12 +735,12 @@ const exportClips = async () => {
     }
 
     if (failedList.length > 0) {
-      alert(`Xuất xong: ${okCount}/${finalTotal} clip OK.\nLỗi: ${failedList.map(f => `${f.video} (Clip #${f.index})`).join(', ')}`)
+      showToast(`Xuất xong: ${okCount}/${finalTotal} clip OK. Lỗi: ${failedList.map(f => `${f.video} (Clip #${f.index})`).join(', ')}`, 'warning', 5000)
     } else {
-      alert(`Xuất thành công ${okCount} clip!`)
+      showToast(`Xuất thành công ${okCount} clip!`, 'success')
     }
   } catch (err) {
-    alert('Lỗi xuất video: ' + err)
+    showToast('Lỗi xuất video: ' + err, 'error')
   } finally {
     isExporting.value = false
     isMultiExportRunning.value = false
@@ -715,7 +752,7 @@ const exportClips = async () => {
 const exportSelectedVideos = async () => {
   const videos = videosForBatch().filter(p => (clipsMap.value[p]?.length || 0) > 0)
   if (videos.length === 0) {
-    alert('Chưa có video nào (được chọn) có đoạn cắt để xuất. Hãy cắt tự động trước.')
+    showToast('Chưa có video nào (được chọn) có đoạn cắt để xuất. Hãy cắt tự động trước.', 'warning')
     return
   }
   isExporting.value = true
@@ -748,9 +785,9 @@ const exportSelectedVideos = async () => {
       okTotal += results.filter(r => r.ok).length
       clipTotal += results.length
     }
-    alert(`Xuất hàng loạt xong: ${okTotal}/${clipTotal} clip từ ${videos.length} video.`)
+    showToast(`Xuất hàng loạt xong: ${okTotal}/${clipTotal} clip từ ${videos.length} video.`, 'success')
   } catch (err) {
-    alert('Lỗi xuất hàng loạt: ' + err)
+    showToast('Lỗi xuất hàng loạt: ' + err, 'error')
   } finally {
     isExporting.value = false
   }
@@ -777,9 +814,9 @@ const loadProject = async (projId: string) => {
   } else {
     // Reset to default settings if no project config exists yet
     analyzerConfig.mode = 'smart'
-    analyzerConfig.sceneThreshold = 22.0
+    analyzerConfig.sceneThreshold = 26.0
     analyzerConfig.minClipDuration = 5.0
-    analyzerConfig.maxClipDuration = 120.0
+    analyzerConfig.maxClipDuration = 30.0
     analyzerConfig.autoAcceptScore = 60
     analyzerConfig.reviewMinScore = 35
     analyzerConfig.exportPreset = 'fast'
@@ -914,12 +951,12 @@ const openManageProjects = () => {
   showManageProjectsModal.value = true
 }
 
-const deleteNamedProject = (id: string) => {
+const deleteNamedProject = async (id: string) => {
   if (namedProjects.value.length <= 1) {
-    alert("Không thể xóa dự án duy nhất!")
+    showToast("Không thể xóa dự án duy nhất!", 'error')
     return
   }
-  if (!confirm("Bạn có chắc chắn muốn xóa dự án này? (Dữ liệu phân đoạn của các video đã phân tích vẫn được lưu ở SQLite)")) {
+  if (!await showCustomConfirm("Bạn có chắc chắn muốn xóa dự án này? (Dữ liệu phân đoạn của các video đã phân tích vẫn được lưu ở SQLite)")) {
     return
   }
   
@@ -936,9 +973,9 @@ const deleteNamedProject = (id: string) => {
   }
 }
 
-const removeVideo = (index: number) => {
+const removeVideo = async (index: number) => {
   const path = videoPaths.value[index]
-  if (!confirm(`Bạn có muốn xóa video "${path.split('\\').pop()}" khỏi dự án này không?`)) {
+  if (!await showCustomConfirm(`Bạn có muốn xóa video "${path.split('\\').pop()}" khỏi dự án này không?`)) {
     return
   }
   videoPaths.value.splice(index, 1)
@@ -959,10 +996,10 @@ const removeVideo = (index: number) => {
   addLog(`Đã xóa video khỏi danh sách: ${path.split('\\').pop()}`)
 }
 
-const removeSelectedVideos = () => {
+const removeSelectedVideos = async () => {
   const count = selectedVideos.value.size
   if (count === 0) return
-  if (!confirm(`Bạn có chắc muốn xóa tất cả ${count} video đã chọn khỏi dự án không?`)) {
+  if (!await showCustomConfirm(`Bạn có chắc muốn xóa tất cả ${count} video đã chọn khỏi dự án không?`)) {
     return
   }
   
@@ -1009,7 +1046,36 @@ const removeClip = (index: number) => {
   if (clipsMap.value[activeVideoPath.value]) {
     clipsMap.value[activeVideoPath.value].splice(index, 1)
     reindexClips()
+    showToast('Đã xóa clip.', 'info')
   }
+}
+
+const removeSelectedClips = async () => {
+  const count = selectedClips.value.size
+  if (count === 0) return
+  if (!await showCustomConfirm(`Bạn có chắc muốn xóa tất cả ${count} clip đã chọn không?`)) {
+    return
+  }
+  
+  const idsToDelete = new Set(selectedClips.value)
+  
+  for (const path in clipsMap.value) {
+    const clips = clipsMap.value[path]
+    if (!clips) continue
+    clipsMap.value[path] = clips.filter(c => !idsToDelete.has(c.id))
+  }
+  
+  for (const path in clipsMap.value) {
+    const clips = clipsMap.value[path]
+    if (!clips) continue
+    clips.forEach((c, i) => {
+      c.index = i + 1
+      c.id = `clip_${i + 1}`
+    })
+  }
+  
+  selectedClips.value = new Set()
+  showToast(`Đã xóa thành công ${count} clip đã chọn.`, 'success')
 }
 
 const updateClipDuration = (clip: project.Clip) => {
@@ -1243,7 +1309,7 @@ const applyGlobalRemixToAllActive = () => {
     c.edit.audio.mute = globalRemix.muteOriginal
   }
   addLog('Đã áp dụng cấu hình chế cháo cho tất cả clip của video hiện tại.')
-  alert('Đã áp dụng cấu hình chế cháo cho tất cả clip của video hiện tại!')
+  showToast('Đã áp dụng cấu hình chế cháo cho tất cả clip của video hiện tại!', 'success')
 }
 
 const editingClip = computed(() => {
@@ -1436,11 +1502,11 @@ const applyEditToSelectedVideos = () => {
     videoCount++
   }
   if (videoCount === 0) {
-    alert('Chưa có video nào (đã tick) được phân tích để áp chỉnh sửa.')
+    showToast('Chưa có video nào (đã tick) được phân tích để áp chỉnh sửa.', 'warning')
     return
   }
   addLog(`Đã áp chỉnh sửa cho ${clipCount} clip của ${videoCount} video.`)
-  alert(`Đã áp bộ chỉnh sửa cho ${clipCount} clip thuộc ${videoCount} video.`)
+  showToast(`Đã áp bộ chỉnh sửa cho ${clipCount} clip thuộc ${videoCount} video.`, 'success')
 }
 
 const resetEdit = () => {
@@ -1549,12 +1615,11 @@ const formatSize = (bytes: number) => {
             <h2>🎥 Danh sách Video Gốc</h2>
             <span class="video-counter">({{ videoPaths.length }} video)</span>
           </div>
-          <div class="title-right-actions flex-center" style="gap: 12px;" v-if="videoPaths.length > 0">
+          <div class="title-right-actions" v-if="videoPaths.length > 0">
             <button 
               v-if="selectedVideos.size > 0" 
               @click.stop="removeSelectedVideos" 
-              class="btn btn-danger-compact" 
-              style="padding: 4px 8px; font-size: 11px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #f87171; border-radius: 4px; cursor: pointer; transition: all 0.2s; font-weight: bold;"
+              class="btn-danger-compact" 
             >
               🗑️ Xóa {{ selectedVideos.size }} video đã chọn
             </button>
@@ -1961,7 +2026,7 @@ const formatSize = (bytes: number) => {
                 </div>
               </div>
 
-              <div class="clip-inputs-row">
+              <div class="clip-time-inputs-row">
                 <div class="input-block">
                   <span class="input-lbl">Bắt đầu</span>
                   <input type="number" step="1" v-model.number="clip.startTime" @input="updateClipDuration(clip)" @change="refreshClipThumbs(clip)" />
@@ -1971,11 +2036,18 @@ const formatSize = (bytes: number) => {
                   <span class="input-lbl">Kết thúc</span>
                   <input type="number" step="1" v-model.number="clip.endTime" @input="updateClipDuration(clip)" @change="refreshClipThumbs(clip)" />
                 </div>
-                <div class="input-actions-block">
-                  <button v-if="clip.status === 'completed'" @click="playExportedClip(clip)" class="mini-act-btn btn-watch" title="Phát video đã xuất">📺</button>
-                  <button @click="openEdit(idx)" class="mini-act-btn btn-edit" title="Chỉnh sửa (Chèn chữ, watermark...)">✏️ Sửa</button>
-                  <button @click="removeClip(idx)" class="mini-act-btn btn-delete" title="Xóa clip">✕</button>
-                </div>
+              </div>
+
+              <div class="clip-card-actions-row">
+                <button v-if="clip.status === 'completed'" @click="playExportedClip(clip)" class="mini-act-btn btn-watch" title="Phát video đã xuất">
+                  ▶ Phát
+                </button>
+                <button @click="openEdit(idx)" class="mini-act-btn btn-edit" title="Chỉnh sửa (Chèn chữ, watermark...)">
+                  ✏️ Sửa
+                </button>
+                <button @click="removeClip(idx)" class="mini-act-btn btn-delete" title="Xóa clip">
+                  🗑️ Xóa
+                </button>
               </div>
 
               <!-- Chips các hiệu ứng đã áp trên clip này -->
@@ -2026,6 +2098,9 @@ const formatSize = (bytes: number) => {
               </div>
             </div>
 
+            <button v-if="!isExporting" @click="removeSelectedClips" class="btn delete-selected-btn-bar flex-center" title="Xóa các clip đã chọn">
+              🗑️ Xóa {{ selectedClips.size }} Clip
+            </button>
             <button v-if="isExporting" @click="stopExport" class="btn big-export-btn stop-export-btn flex-center">
               <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><rect x="6" y="6" width="12" height="12" fill="currentColor"/></svg>
               <span class="font-bold">Dừng Xuất</span>
@@ -2046,6 +2121,45 @@ const formatSize = (bytes: number) => {
       <div class="status-indicator-dot" :class="{ active: isAnalyzing || isExporting }"></div>
       <span class="status-msg-text">{{ statusText }}</span>
     </footer>
+
+    <!-- ===== TOAST NOTIFICATIONS ===== -->
+    <Teleport to="body">
+      <div class="toast-container">
+        <TransitionGroup name="toast-slide">
+          <div v-for="t in toasts" :key="t.id" class="toast-item" :class="t.type">
+            <div class="toast-icon-wrap">
+              <span v-if="t.type === 'success'" class="toast-icon">✔️</span>
+              <span v-else-if="t.type === 'error'" class="toast-icon">❌</span>
+              <span v-else-if="t.type === 'warning'" class="toast-icon">⚠️</span>
+              <span v-else class="toast-icon">ℹ️</span>
+            </div>
+            <div class="toast-content">{{ t.message }}</div>
+            <button class="toast-close-btn" @click="toasts = toasts.filter(item => item.id !== t.id)">✕</button>
+          </div>
+        </TransitionGroup>
+      </div>
+    </Teleport>
+
+    <!-- ===== CUSTOM CONFIRM DIALOG ===== -->
+    <Teleport to="body">
+      <div class="modal-overlay" v-if="confirmDialogState.show" @click.self="handleConfirmResolve(false)" style="z-index: 99999;">
+        <div class="settings-modal recent-modal confirm-dialog-modal" style="width: 420px; max-width: 90%;">
+          <div class="modal-header" style="padding: 16px 20px; border-bottom: 1px solid var(--l-border);">
+            <h2 style="font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; color: var(--wx-danger-solid, #ef4444);">
+              ⚠️ Xác nhận
+            </h2>
+            <button class="modal-close" @click="handleConfirmResolve(false)">✕</button>
+          </div>
+          <div class="modal-body" style="padding: 20px; font-size: 13.5px; line-height: 1.5; font-weight: 600;">
+            {{ confirmDialogState.message }}
+          </div>
+          <div class="modal-footer-buttons" style="display: flex; gap: 10px; justify-content: flex-end; padding: 12px 20px; border-top: 1px solid var(--l-border); background: var(--l-bg-sunken); border-bottom-left-radius: 16px; border-bottom-right-radius: 16px;">
+            <button @click="handleConfirmResolve(false)" class="btn cancel-btn" style="background-color: var(--l-bg-soft); color: var(--l-text); border: 1px solid var(--l-border); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700;">Hủy</button>
+            <button @click="handleConfirmResolve(true)" class="btn confirm-btn" style="background-color: #ef4444; color: #fff; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; box-shadow: 0 4px 10px rgba(239, 68, 68, 0.2);">Đồng ý</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- ===== RECENT PROJECTS MODAL ===== -->
     <Teleport to="body">
@@ -2631,6 +2745,32 @@ const formatSize = (bytes: number) => {
   justify-content: space-between;
   align-items: center;
 }
+.title-right-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.btn-danger-compact {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #f87171;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  box-sizing: border-box;
+}
+.btn-danger-compact:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fff;
+}
 .title-left {
   display: flex;
   align-items: center;
@@ -2681,29 +2821,31 @@ const formatSize = (bytes: number) => {
   border-radius: 4px;
 }
 .video-card-item {
-  min-width: 250px;
-  max-width: 250px;
-  background-color: rgba(255, 255, 255, 0.03);
+  min-width: 280px;
+  max-width: 280px;
+  background-color: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
-  padding: 6px 10px;
+  border-radius: 10px;
+  padding: 8px 12px;
   position: relative;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
-  height: 36px;
+  height: 48px;
   display: flex;
   align-items: center;
   box-sizing: border-box;
 }
 .video-card-item:hover {
-  background-color: rgba(255, 255, 255, 0.08);
-  border-color: #475569;
+  background-color: rgba(255, 255, 255, 0.06);
+  border-color: rgba(99, 102, 241, 0.4);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 .video-card-item.active {
   border-color: var(--accent-color);
-  background-color: rgba(99, 102, 241, 0.12);
-  box-shadow: 0 0 10px rgba(99, 102, 241, 0.2);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(99, 102, 241, 0.05));
+  box-shadow: 0 0 15px rgba(99, 102, 241, 0.25);
 }
 .video-card-item.video-picked {
   background-color: rgba(99, 102, 241, 0.05);
@@ -2711,7 +2853,7 @@ const formatSize = (bytes: number) => {
 .video-card-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
 }
 .video-select-wrap {
@@ -2736,7 +2878,7 @@ const formatSize = (bytes: number) => {
   color: var(--accent-color);
 }
 .video-card-name {
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
@@ -2746,7 +2888,7 @@ const formatSize = (bytes: number) => {
 }
 .status-badge-compact {
   font-size: 10px;
-  padding: 1px 4px;
+  padding: 1px 5px;
   border-radius: 4px;
   font-weight: bold;
   flex-shrink: 0;
@@ -2760,20 +2902,24 @@ const formatSize = (bytes: number) => {
   color: var(--text-muted);
 }
 .btn-remove-video {
-  background: transparent;
-  border: none;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 10px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
   cursor: pointer;
-  padding: 2px;
-  transition: color 0.2s;
+  transition: all 0.2s;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 .btn-remove-video:hover {
-  color: var(--danger-color);
+  background-color: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #f87171;
 }
 .video-card-progress {
   position: absolute;
@@ -3734,10 +3880,19 @@ const formatSize = (bytes: number) => {
 .thumb-box-single:hover .play-overlay {
   opacity: 1;
 }
-.clip-inputs-row {
+.clip-time-inputs-row {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 6px;
+  width: 100%;
+}
+.clip-card-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+  width: 100%;
 }
 .input-block {
   flex: 1;
@@ -3754,9 +3909,9 @@ const formatSize = (bytes: number) => {
   background-color: var(--wx-surface-sunken);
   border: 1px solid var(--border-color);
   color: var(--text-main);
-  padding: 4px 6px;
-  border-radius: 4px;
-  font-size: 11.5px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 12px;
   font-family: monospace;
   width: 100%;
   min-width: 0;
@@ -3819,45 +3974,192 @@ const formatSize = (bytes: number) => {
   font-style: italic;
 }
 
-.input-actions-block {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  height: 24px;
-}
 .mini-act-btn {
-  background-color: rgba(255, 255, 255, 0.05);
+  background-color: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border-color);
   color: var(--text-main);
-  padding: 4px 6px;
-  border-radius: 4px;
-  font-size: 11px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  gap: 4px;
   white-space: nowrap;
-  height: 100%;
+  height: 28px;
   box-sizing: border-box;
-  transition: all 0.2s;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  flex: 1;
 }
 .mini-act-btn:hover {
-  background-color: var(--accent-color);
-  color: #fff;
+  background-color: rgba(99, 102, 241, 0.15);
   border-color: var(--accent-color);
+  color: #fff;
 }
 .mini-act-btn.btn-watch {
   background-color: rgba(16, 185, 129, 0.1);
   color: #34d399;
-  border-color: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.25);
 }
 .mini-act-btn.btn-watch:hover {
   background-color: rgba(16, 185, 129, 0.2);
+  color: #fff;
+  border-color: #34d399;
+}
+.mini-act-btn.btn-edit {
+  background-color: rgba(99, 102, 241, 0.1);
+  color: #a5b4fc;
+  border-color: rgba(99, 102, 241, 0.25);
+}
+.mini-act-btn.btn-edit:hover {
+  background-color: var(--accent-color);
+  border-color: var(--accent-color);
+  color: #fff;
+}
+.mini-act-btn.btn-delete {
+  background-color: rgba(239, 68, 68, 0.1);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.25);
 }
 .mini-act-btn.btn-delete:hover {
   background-color: var(--danger-color);
   border-color: var(--danger-color);
   color: #fff;
+}
+
+/* Toast Notifications Styling */
+.toast-container {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+  max-width: 400px;
+  width: calc(100% - 48px);
+}
+.toast-item {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--wx-glass-heavy-bg, rgba(15, 23, 42, 0.95));
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);
+  color: var(--text-main);
+  animation: toastIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transition: all 0.3s ease;
+}
+.toast-item.success {
+  border-left: 4px solid var(--success-color);
+}
+.toast-item.error {
+  border-left: 4px solid var(--danger-color);
+}
+.toast-item.warning {
+  border-left: 4px solid var(--warning-color, #fbbf24);
+}
+.toast-item.info {
+  border-left: 4px solid var(--accent-color);
+}
+.toast-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.toast-content {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  flex: 1;
+}
+.toast-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s;
+}
+.toast-close-btn:hover {
+  color: var(--text-main);
+}
+
+/* Toast Transitions */
+.toast-slide-enter-from {
+  transform: translateX(120%) scale(0.9);
+  opacity: 0;
+}
+.toast-slide-leave-to {
+  transform: translateX(120%);
+  opacity: 0;
+}
+
+@keyframes toastIn {
+  from {
+    transform: translateX(120%) scale(0.9);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
+}
+
+.btn-delete-selected-clips {
+  padding: 4px 8px; 
+  font-size: 11px; 
+  background: rgba(239, 68, 68, 0.15); 
+  border: 1px solid rgba(239, 68, 68, 0.4); 
+  color: #f87171; 
+  border-radius: 4px; 
+  cursor: pointer; 
+  transition: all 0.2s; 
+  font-weight: bold; 
+  margin-right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.btn-delete-selected-clips:hover {
+  background: rgba(239, 68, 68, 0.3);
+  color: #fff;
+  border-color: rgba(239, 68, 68, 0.6);
+}
+
+.delete-selected-btn-bar {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(220, 38, 38, 0.3));
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #f87171;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.15);
+}
+.delete-selected-btn-bar:hover {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: #fff;
+  border-color: #ef4444;
+  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3);
 }
 
 .empty-clips-panel {

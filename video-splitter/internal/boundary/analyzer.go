@@ -91,12 +91,14 @@ func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, 
 
 	// CommandContext để có thể hủy; Cancel kill cả cây tiến trình (worker + ffmpeg con)
 	cmd := exec.CommandContext(ctx, exePath, cmdArgs...)
+	utils.HideCmdWindow(cmd)
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil
 		}
-		// Trên Windows, taskkill /T kill cả tiến trình con (ffmpeg do python spawn)
-		return exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
+		killCmd := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid))
+		utils.HideCmdWindow(killCmd)
+		return killCmd.Run()
 	}
 
 	stdout, err := cmd.StdoutPipe()
