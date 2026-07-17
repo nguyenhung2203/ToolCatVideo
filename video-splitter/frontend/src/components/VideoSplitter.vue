@@ -1406,7 +1406,9 @@ const formatSize = (bytes: number) => {
 
             <!-- Tiến trình quét -->
             <div class="video-card-progress" v-if="activeAnalyzingPaths.has(path)">
-              <div class="progress-bar" :style="{ width: (analyzeProgressMap[path] || 0) + '%' }"></div>
+              <div class="progress-bar-track">
+                <div class="progress-bar-fill" :style="{ width: (analyzeProgressMap[path] || 0) + '%' }"></div>
+              </div>
               <span class="progress-text">{{ analyzeProgressMap[path] || 0 }}%</span>
             </div>
           </div>
@@ -2554,25 +2556,37 @@ const formatSize = (bytes: number) => {
 .video-card-progress {
   position: absolute;
   inset: 0;
-  background: rgba(15, 23, 42, 0.95);
+  background: var(--wx-surface-sunken);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 10px;
   border-radius: 8px;
-  gap: 6px;
+  gap: 10px;
+  z-index: 10;
+  box-sizing: border-box;
 }
-.video-card-progress .progress-bar {
-  height: 4px;
-  background: var(--accent-color);
-  border-radius: 2px;
+.video-card-progress .progress-bar-track {
+  height: 6px;
+  background: rgba(128, 128, 128, 0.2);
+  border-radius: 3px;
   flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+.video-card-progress .progress-bar-fill {
+  height: 100%;
+  background: var(--accent-color);
+  border-radius: 3px;
+  transition: width 0.2s ease;
 }
 .progress-text {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--accent-color);
   font-weight: bold;
   flex-shrink: 0;
+  min-width: 32px;
+  text-align: right;
 }
 
 /* SECTION MIDDLE: SIDE BY SIDE CONFIG & PREVIEW */
