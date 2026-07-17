@@ -13,6 +13,7 @@ const videoInfo = ref<project.VideoInfo | null>(null)
 const clipsMap = ref<Record<string, project.Clip[]>>({})
 const isAnalyzing = ref(false)
 const isExporting = ref(false)
+const isMultiExportRunning = ref(false)
 const outDir = ref('D:\\Output')
 
 const activeAnalyzingPaths = ref<Set<string>>(new Set())
@@ -272,7 +273,9 @@ onMounted(async () => {
     addLog("[Xuất Bản] " + msg)
   })
   EventsOn('export_progress', (p: { done: number, total: number }) => {
-    exportProgress.value = { done: p.done, total: p.total }
+    if (!isMultiExportRunning.value) {
+      exportProgress.value = { done: p.done, total: p.total }
+    }
   })
 })
 
@@ -519,48 +522,99 @@ const stopExport = async () => {
   }
 }
 
-const exportClips = async () => {
-  if (!activeVideoPath.value || activeClips.value.length === 0) return
-  const clipsToExport = clipsForExport()
-  if (clipsToExport.length === 0) {
-    alert('Vui lòng chọn ít nhất 1 clip để xuất!')
-    return
+const getSelectedClipsGroupedByVideo = () => {
+  const groups: Record<string, project.Clip[]> = {}
+  for (const path of videoPaths.value) {
+    const clips = clipsMap.value[path] || []
+    const selected = clips.filter(c => selectedClips.value.has(c.id))
+    if (selected.length > 0) {
+      groups[path] = selected
+    }
   }
+  return groups
+}
+
+const activeSelectedCount = computed(() => {
+  return activeClips.value.filter(c => selectedClips.value.has(c.id)).length
+})
+
+const exportClips = async () => {
+  const clipsToExportMap = getSelectedClipsGroupedByVideo()
+  const totalClipsToExport = Object.values(clipsToExportMap).reduce((acc, list) => acc + list.length, 0)
+  
+  if (totalClipsToExport === 0) {
+    if (!activeVideoPath.value || activeClips.value.length === 0) return
+    clipsToExportMap[activeVideoPath.value] = activeClips.value
+  }
+
+  const groupedKeys = Object.keys(clipsToExportMap)
+  const finalTotal = Object.values(clipsToExportMap).reduce((acc, list) => acc + list.length, 0)
 
   if (hasExportedCurrentSession.value) {
     const confirmReExport = confirm('Bạn đã vừa xuất các clip này xong. Bạn có muốn tiếp tục xuất lại không?')
     if (!confirmReExport) return
   }
 
-  // Luôn áp cấu hình chế cháo trước khi xuất
-  if (globalRemix.autoApply) {
-    clipsToExport.forEach(c => applyGlobalRemixToClip(c))
-  }
-
   isExporting.value = true
-  exportProgress.value = { done: 0, total: clipsToExport.length }
+  isMultiExportRunning.value = true
+  exportProgress.value = { done: 0, total: finalTotal }
+  
   try {
     const proj = namedProjects.value.find(p => p.id === activeProjectId.value)
     const projName = proj ? proj.name : 'Project'
-    const results = await ExportClips(projName, activeVideoPath.value, clipsToExport, outDir.value, analyzerConfig, exportJobs.value)
-    
-    const stopped = results.some(r => r.error === 'Tiến trình xuất bị dừng' || r.error === 'Tiến trình bị dừng')
-    if (stopped) {
-      addLog('Tiến trình xuất video đã bị dừng.')
-      return
+
+    let globalDone = 0
+    let okCount = 0
+    let failedList: { index: number, video: string }[] = []
+
+    for (const videoPath of groupedKeys) {
+      const list = clipsToExportMap[videoPath]
+      
+      // Luôn áp cấu hình chế cháo trước khi xuất
+      if (globalRemix.autoApply) {
+        list.forEach(c => applyGlobalRemixToClip(c))
+      }
+
+      let lastDoneForThisVideo = 0
+      const unlisten = EventsOn('export_progress', (data: any) => {
+        const isBelong = list.some(c => c.id === data.clipId)
+        if (isBelong) {
+          const delta = data.done - lastDoneForThisVideo
+          if (delta > 0) {
+            globalDone += delta
+            lastDoneForThisVideo = data.done
+            exportProgress.value = { done: globalDone, total: finalTotal }
+          }
+        }
+      })
+
+      const results = await ExportClips(projName, videoPath, list, outDir.value, analyzerConfig, exportJobs.value)
+      unlisten()
+
+      const stopped = results.some(r => r.error === 'Tiến trình xuất bị dừng' || r.error === 'Tiến trình bị dừng')
+      if (stopped) {
+        addLog('Tiến trình xuất video đã bị dừng.')
+        return
+      }
+
+      const okIds = new Set(results.filter(r => r.ok).map(r => r.clipId))
+      const allClipsOfThisVideo = clipsMap.value[videoPath] || []
+      allClipsOfThisVideo.forEach(c => {
+        if (okIds.has(c.id)) c.status = 'completed'
+      })
+
+      okCount += results.filter(r => r.ok).length
+      results.filter(r => !r.ok).forEach(f => {
+        failedList.push({ index: f.index, video: videoPath.split('\\').pop() || 'Video' })
+      })
     }
 
-    const okIds = new Set(results.filter(r => r.ok).map(r => r.clipId))
-    clipsToExport.forEach(c => { if (okIds.has(c.id)) c.status = 'completed' })
-    const okCount = results.filter(r => r.ok).length
-    const failed = results.filter(r => !r.ok && r.error !== 'Tiến trình xuất bị dừng' && r.error !== 'Tiến trình bị dừng')
-    
     if (okCount > 0) {
       hasExportedCurrentSession.value = true
     }
 
-    if (failed.length > 0) {
-      alert(`Xuất xong: ${okCount}/${results.length} clip OK.\nLỗi: ${failed.map(f => `#${f.index}`).join(', ')}`)
+    if (failedList.length > 0) {
+      alert(`Xuất xong: ${okCount}/${finalTotal} clip OK.\nLỗi: ${failedList.map(f => `${f.video} (Clip #${f.index})`).join(', ')}`)
     } else {
       alert(`Xuất thành công ${okCount} clip!`)
     }
@@ -568,6 +622,7 @@ const exportClips = async () => {
     alert('Lỗi xuất video: ' + err)
   } finally {
     isExporting.value = false
+    isMultiExportRunning.value = false
   }
 }
 
@@ -1736,7 +1791,7 @@ const formatSize = (bytes: number) => {
               <span>Chọn tất cả clip</span>
             </label>
             <div class="selected-badge" v-if="selectedClips.size > 0">
-              Đã chọn: <strong>{{ selectedClips.size }} / {{ activeClips.length }}</strong> clip
+              Đã chọn: <strong>{{ activeSelectedCount }} / {{ activeClips.length }}</strong> clip của video này (Tổng đã chọn <strong>{{ selectedClips.size }}</strong> clip)
             </div>
           </div>
         </div>
