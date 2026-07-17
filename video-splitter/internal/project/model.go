@@ -176,12 +176,12 @@ type AnalyzerConfig struct {
 //   Visual only (liền mạch):       40 - 15 = 25 → vẫn review (trước đây bị reject!)
 func DefaultWeights() SignalWeights {
 	return SignalWeights{
-		VisualChange:  55,
+		VisualChange:  45,
 		BlackFrame:    35,
 		Silence:       30,
 		LayoutChange:  25,
 		AudioChange:   20,
-		ContinuityPen: 5,
+		ContinuityPen: 10,
 	}
 }
 
@@ -189,11 +189,11 @@ func DefaultWeights() SignalWeights {
 func DefaultConfig() AnalyzerConfig {
 	return AnalyzerConfig{
 		Mode:             ModeSmart,
-		SceneThreshold:   15.0,
+		SceneThreshold:   22.0,
 		MinClipDuration:  5.0,
 		MaxClipDuration:  120.0,
-		AutoAcceptScore:  50, // visual-only scene change (55 - 5 = 50) sẽ được auto-accept
-		ReviewMinScore:   30, // giảm từ 60: giữ lại nhiều candidate hơn để không sót
+		AutoAcceptScore:  60, // visual-only scene change (45 - 10 = 35) sẽ được xếp vào review candidate, không bị auto-accept tràn lan
+		ReviewMinScore:   35,
 		SilenceThreshold: -30,
 		SilenceDuration:  0.5,
 		ProxyFPS:         10,

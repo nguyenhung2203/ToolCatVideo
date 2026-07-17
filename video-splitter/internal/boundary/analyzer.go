@@ -256,6 +256,19 @@ func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, tot
 		}
 	}
 
+	// Lọc bỏ ranh giới quá gần đầu hoặc cuối video sau khi đã snap
+	var validScored []scoredBoundary
+	for _, b := range scored {
+		if b.timestamp < cfg.MinClipDuration {
+			continue
+		}
+		if totalDuration > 0 && totalDuration-b.timestamp < cfg.MinClipDuration {
+			continue
+		}
+		validScored = append(validScored, b)
+	}
+	scored = validScored
+
 	// === BƯỚC 2: Gom cụm — giữ boundary điểm cao nhất trong mỗi cửa sổ MinClipDuration ===
 	var filtered []scoredBoundary
 	for _, b := range scored {

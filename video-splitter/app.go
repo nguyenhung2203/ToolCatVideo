@@ -239,26 +239,62 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 		clips[len(clips)-1].Duration = info.Duration - clips[len(clips)-1].StartTime
 	}
 
-	// 3. Tạo thumbnails cho từng clip.
-	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 3/3: Đang trích xuất %d ảnh xem trước...", len(clips)))
+	// 3. Tạo thumbnails cho từng clip song song (hạn chế 8 luồng ffmpeg đồng thời để tránh làm nghẽn CPU)
+	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 3/3: Đang trích xuất %d ảnh xem trước (song song)...", len(clips)))
 	thumbDir := filepath.Join(workDir, "thumbnails")
 	_ = os.MkdirAll(thumbDir, 0755)
 
-	for i := 0; i < len(clips); i++ {
-		thumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumb_%s_%d.jpg", clips[i].ID, i))
-		_ = media.ExtractFrame(ctx, sourcePath, clips[i].StartTime, thumbPath)
-		clips[i].Thumbnail = thumbPath
-
-		if clips[i].EndTime > clips[i].StartTime {
-			endThumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumbend_%s_%d.jpg", clips[i].ID, i))
-			endAt := clips[i].EndTime - 0.1
-			if endAt < clips[i].StartTime {
-				endAt = clips[i].StartTime
-			}
-			_ = media.ExtractFrame(ctx, sourcePath, endAt, endThumbPath)
-			clips[i].ThumbEnd = endThumbPath
-		}
+	type thumbJob struct {
+		index int
+		start bool
 	}
+
+	numJobs := len(clips) * 2
+	jobsChan := make(chan thumbJob, numJobs)
+	for i := 0; i < len(clips); i++ {
+		jobsChan <- thumbJob{index: i, start: true}
+		jobsChan <- thumbJob{index: i, start: false}
+	}
+	close(jobsChan)
+
+	numWorkers := 8
+	if numWorkers > numJobs {
+		numWorkers = numJobs
+	}
+
+	var wgThumbs sync.WaitGroup
+	var mu sync.Mutex
+	wgThumbs.Add(numWorkers)
+
+	for w := 0; w < numWorkers; w++ {
+		go func() {
+			defer wgThumbs.Done()
+			for job := range jobsChan {
+				i := job.index
+				if job.start {
+					thumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumb_%s_%d.jpg", clips[i].ID, i))
+					_ = media.ExtractFrame(ctx, sourcePath, clips[i].StartTime, thumbPath)
+					mu.Lock()
+					clips[i].Thumbnail = thumbPath
+					mu.Unlock()
+				} else {
+					if clips[i].EndTime > clips[i].StartTime {
+						endThumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumbend_%s_%d.jpg", clips[i].ID, i))
+						endAt := clips[i].EndTime - 0.1
+						if endAt < clips[i].StartTime {
+							endAt = clips[i].StartTime
+						}
+						_ = media.ExtractFrame(ctx, sourcePath, endAt, endThumbPath)
+						mu.Lock()
+						clips[i].ThumbEnd = endThumbPath
+						mu.Unlock()
+					}
+				}
+			}
+		}()
+	}
+
+	wgThumbs.Wait()
 
 	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Phân tích hoàn tất! Đã tìm thấy %d phân đoạn.", len(clips)))
 	return clips, nil
