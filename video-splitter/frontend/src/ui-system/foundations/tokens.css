@@ -1,0 +1,356 @@
+/**
+ * ═══════════════════════════════════════════════════════════════
+ *  WX UI SYSTEM — CSS Custom Properties (tokens.css)
+ *  Complete set of design tokens as CSS variables.
+ *  Import ONCE at app root via main.ts.
+ *
+ *  Usage:
+ *    import '@/ui-system/foundations/tokens.css'
+ *    .card { background: var(--wx-surface-base); }
+ * ═══════════════════════════════════════════════════════════════
+ */
+
+/* ================================================================
+   ROOT — Default (light) theme
+   ================================================================ */
+:root {
+  /* ── Brand ──────────────────────────────────────────── */
+  --wx-brand-primary: #2563eb;
+  --wx-brand-accent: #06b6d4;
+  --wx-brand-focus: #007bff;
+
+  /* Brand color scale (Tailwind blue) */
+  --wx-brand-50:  #eff6ff;
+  --wx-brand-100: #dbeafe;
+  --wx-brand-200: #bfdbfe;
+  --wx-brand-300: #93c5fd;
+  --wx-brand-400: #60a5fa;
+  --wx-brand-500: #3b82f6;
+  --wx-brand-600: #2563eb;
+  --wx-brand-700: #1d4ed8;
+  --wx-brand-800: #1e40af;
+  --wx-brand-900: #1e3a8a;
+
+  /* ── Gradients ──────────────────────────────────────────
+     Reference --wx-brand-* tokens so consumer override cascades.
+     Override --wx-brand-primary / --wx-brand-accent to re-skin.
+     ──────────────────────────────────────────────────────── */
+  --wx-gradient-bg: linear-gradient(to right, #7ecff1, #9cc9f5, #95def5);
+  --wx-gradient-header: linear-gradient(to right, var(--wx-brand-accent), var(--wx-brand-500), var(--wx-brand-primary));
+  --wx-gradient-cta: linear-gradient(to right, #00d2ff, #3a7bd5, #0052D4);
+  --wx-gradient-button: linear-gradient(to right, var(--wx-brand-accent), var(--wx-brand-primary));
+  --wx-gradient-accent: linear-gradient(to right, var(--wx-brand-accent), var(--wx-brand-focus));
+  --wx-gradient-text: linear-gradient(to right, var(--wx-brand-accent), var(--wx-brand-primary));
+  --wx-gradient-divider: linear-gradient(to right, transparent, var(--wx-border-default), transparent);
+  --wx-gradient-success: linear-gradient(to right, #10b981, #059669);
+  --wx-gradient-danger: linear-gradient(to right, #f43f5e, #dc2626);
+  --wx-gradient-warning: linear-gradient(to right, #fb923c, #f59e0b);
+
+  /* ── Text ───────────────────────────────────────────── */
+  --wx-text-primary: #1e293b;
+  --wx-text-secondary: #6b7280;
+  --wx-text-muted: #9ca3af;
+  --wx-text-disabled: #d1d5db;
+  --wx-text-inverse: #ffffff;
+  /* Cố định trắng — dùng cho chữ trên nền gradient thương hiệu (luôn xanh, không đổi theo theme),
+     khác với --wx-text-inverse vốn đảo màu theo light/dark. */
+  --wx-text-on-brand: #ffffff;
+  --wx-text-link: #2563eb;
+
+  /* ── Surface ────────────────────────────────────────── */
+  --wx-surface-base: #ffffff;
+  --wx-surface-elevated: #ffffff;
+  --wx-surface-sunken: #f8fafc;
+  --wx-surface-overlay: rgba(0, 0, 0, 0.2);
+
+  /* ── Border ─────────────────────────────────────────── */
+  --wx-border-default: #e5e7eb;
+  --wx-border-subtle: #f3f4f6;
+  --wx-border-focus: #007bff;
+  --wx-border-glass: rgba(255, 255, 255, 0.5);
+  --wx-border-glass-light: rgba(255, 255, 255, 0.3);
+
+  /* ── Glass ──────────────────────────────────────────── */
+  --wx-glass-heavy-bg: rgba(255, 255, 255, 0.6);
+  --wx-glass-heavy-blur: 25px;
+  --wx-glass-heavy-border: rgba(255, 255, 255, 0.5);
+  --wx-glass-medium-bg: rgba(255, 255, 255, 0.4);
+  --wx-glass-medium-blur: 12px;
+  --wx-glass-medium-border: rgba(255, 255, 255, 0.6);
+  --wx-glass-light-bg: rgba(255, 255, 255, 0.2);
+  --wx-glass-light-blur: 12px;
+  --wx-glass-light-border: rgba(255, 255, 255, 0.3);
+  --wx-glass-subtle-bg: rgba(255, 255, 255, 0.1);
+  --wx-glass-subtle-blur: 8px;
+  --wx-glass-subtle-border: rgba(255, 255, 255, 0.2);
+
+  /* ── Feedback ───────────────────────────────────────── */
+  --wx-success-bg: #f0fdf4;
+  --wx-success-text: #16a34a;
+  --wx-success-solid: #22c55e;
+  --wx-success-border: #dcfce7;
+  --wx-danger-bg: #fef2f2;
+  --wx-danger-text: #dc2626;
+  --wx-danger-solid: #ef4444;
+  --wx-danger-border: #fee2e2;
+  --wx-warning-bg: #fffbeb;
+  --wx-warning-text: #d97706;
+  --wx-warning-solid: #f59e0b;
+  --wx-warning-border: #fef3c7;
+  --wx-info-bg: #eff6ff;
+  --wx-info-text: #2563eb;
+  --wx-info-solid: #3b82f6;
+  --wx-info-border: #dbeafe;
+  --wx-neutral-bg: #f9fafb;
+  --wx-neutral-text: #4b5563;
+  --wx-neutral-solid: #6b7280;
+  --wx-neutral-border: #e5e7eb;
+
+  /* ── Status aliases (--wx-status-* → canonical tokens) ─ */
+  --wx-status-success-text: var(--wx-success-text);
+  --wx-status-success-border: var(--wx-success-solid);
+  --wx-status-danger-text: var(--wx-danger-text);
+  --wx-status-danger-border: var(--wx-danger-solid);
+  --wx-status-warning-text: var(--wx-warning-text);
+  --wx-status-warning-border: var(--wx-warning-solid);
+  --wx-status-info-text: var(--wx-info-text);
+  --wx-status-info-border: var(--wx-info-solid);
+
+  /* ── Interactive States ──────────────────────────────────
+     Reference --wx-brand-* nên cascade khi consumer override brand.
+     (disabled giữ neutral — không nên nhuộm theo brand.)
+     ──────────────────────────────────────────────────────── */
+  --wx-selected-bg: var(--wx-brand-50);
+  --wx-selected-text: var(--wx-brand-focus);
+  --wx-hover-bg: var(--wx-brand-50);
+  --wx-hover-text: var(--wx-brand-400);
+  --wx-active-bg: var(--wx-brand-100);
+  --wx-active-text: var(--wx-brand-700);
+  --wx-disabled-bg: #f3f4f6;
+  --wx-disabled-text: #9ca3af;
+
+  /* ── Radius ─────────────────────────────────────────── */
+  --wx-radius-none: 0;
+  --wx-radius-sm: 4px;
+  --wx-radius-md: 8px;
+  --wx-radius-lg: 12px;
+  --wx-radius-xl: 16px;
+  --wx-radius-2xl: 24px;
+  --wx-radius-3xl: 30px;
+  --wx-radius-4xl: 32px;
+  --wx-radius-full: 9999px;
+
+  /* ── Elevation ──────────────────────────────────────── */
+  --wx-shadow-none: none;
+  --wx-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --wx-shadow-md: 0 4px 6px rgba(0, 0, 0, 0.05);
+  --wx-shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.04);
+  --wx-shadow-xl: 0 20px 40px -5px rgba(59, 130, 246, 0.15);
+  --wx-shadow-2xl: 0 20px 50px rgba(59, 130, 246, 0.15);
+  --wx-shadow-brand: 0 4px 15px rgba(59, 130, 246, 0.4);
+  --wx-shadow-focus: 0 0 0 3px rgba(0, 123, 255, 0.25);
+
+  /* ── Typography ─────────────────────────────────────── */
+  --wx-font-primary: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --wx-font-display: "Nunito", sans-serif;
+  --wx-font-mono: ui-monospace, SFMono-Regular, monospace;
+
+  /* ── Motion ─────────────────────────────────────────── */
+  --wx-duration-fast: 150ms;
+  --wx-duration-normal: 300ms;
+  --wx-duration-slow: 500ms;
+  --wx-duration-decorative: 700ms;
+  --wx-easing-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --wx-easing-out: ease-out;
+  --wx-easing-bounce: cubic-bezier(0.16, 1, 0.3, 1);
+  --wx-easing-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* short-form aliases — --wx-d-* / --wx-ease-* dùng trong components */
+  --wx-d-micro: 80ms;
+  --wx-d-fast: var(--wx-duration-fast);
+  --wx-d-normal: var(--wx-duration-normal);
+  --wx-d-slow: var(--wx-duration-slow);
+  --wx-d-decorative: var(--wx-duration-decorative);
+  --wx-ease-standard: var(--wx-easing-default);
+  --wx-ease-out: var(--wx-easing-out);
+  --wx-ease-bounce: var(--wx-easing-bounce);
+  --wx-ease-spring: var(--wx-easing-spring);
+
+  /* Scroll-reveal (v-reveal) — override ở app tiêu thụ thư viện để đổi tốc độ/độ mượt,
+     không cần sửa source. Xem thêm configureReveal() trong 'directives/v-reveal' cho
+     threshold/rootMargin của IntersectionObserver. */
+  --wx-reveal-duration: 1.1s;
+  --wx-reveal-distance: 50px;
+  --wx-reveal-easing: cubic-bezier(0, 0, 0.2, 1);
+
+  /* ── Z-Index ────────────────────────────────────────── */
+  --wx-z-behind: -1;
+  --wx-z-base: 0;
+  --wx-z-raised: 10;
+  --wx-z-dropdown: 50;
+  --wx-z-sticky: 100;
+  --wx-z-header: 200;
+  --wx-z-overlay: 500;
+  --wx-z-modal: 1000;
+  --wx-z-popover: 1100;
+  --wx-z-toast: 1200;
+  --wx-z-tooltip: 1300;
+  --wx-z-topmost: 9999;
+
+  /* ── Scrollbar ──────────────────────────────────────── */
+  --wx-scrollbar-track: #f0f0f0;
+  --wx-scrollbar-thumb: #b5b5b5;
+  --wx-scrollbar-thumb-hover: #9a9a9a;
+  --wx-scrollbar-width: 12px;
+
+  /* ── Density (default mode) ─────────────────────────── */
+  --wx-density-header-height: 56px;
+  --wx-density-row-height: 40px;
+  --wx-density-input-height: 36px;
+  --wx-density-cell-px: 12px;
+  --wx-density-cell-py: 8px;
+  --wx-density-font-size: 14px;
+  --wx-density-icon-size: 16px;
+  --wx-density-avatar-size: 32px;
+  --wx-density-gap: 8px;
+  --wx-density-container-pad: 16px;
+
+  /* ════════════════════════════════════════════════════════
+     PHASE 0 — WemakeUI master spec additions
+     - 4pt spacing scale  (--wx-space-*)
+     - typography scale   (--wx-fs-*, --wx-lh-*, --wx-fw-*, --wx-tracking-*)
+     - motion scale       (--wx-d-*, --wx-ease-*)
+     - semantic alias     (--wx-content-*, --wx-bg-*)
+     ════════════════════════════════════════════════════════ */
+
+  /* ── Spacing — 4pt grid ─────────────────────────────── */
+  --wx-space-0: 0;
+  --wx-space-1: 4px;
+  --wx-space-2: 8px;
+  --wx-space-3: 12px;
+  --wx-space-4: 16px;
+  --wx-space-5: 24px;
+  --wx-space-6: 32px;
+  --wx-space-7: 40px;
+  --wx-space-8: 48px;
+  --wx-space-9: 64px;
+  --wx-space-10: 80px;
+  --wx-space-11: 96px;
+  --wx-space-12: 128px;
+
+  /* ── Typography — numeric scale ──────────────────────── */
+  --wx-fs-12: 12px;
+  --wx-fs-13: 13px;
+  --wx-fs-14: 14px;
+  --wx-fs-15: 15px;
+  --wx-fs-16: 16px;
+  --wx-fs-18: 18px;
+  --wx-fs-20: 20px;
+  --wx-fs-24: 24px;
+  --wx-fs-28: 28px;
+  --wx-fs-32: 32px;
+  --wx-fs-40: 40px;
+  --wx-fs-48: 48px;
+  --wx-fs-64: 64px;
+
+  --wx-lh-tight: 1.2;
+  --wx-lh-snug: 1.35;
+  --wx-lh-normal: 1.5;
+  --wx-lh-relaxed: 1.7;
+
+  --wx-fw-regular: 400;
+  --wx-fw-medium: 500;
+  --wx-fw-semibold: 600;
+  --wx-fw-bold: 700;
+
+  --wx-tracking-tight: -0.01em;
+  --wx-tracking-normal: 0;
+  --wx-tracking-wide: 0.02em;
+
+  /* ── Motion — duration & easing ──────────────────────── */
+  --wx-d-instant: 0ms;
+  --wx-d-micro: 100ms;
+  --wx-d-fast: 150ms;
+  --wx-d-normal: 250ms;
+  --wx-d-slow: 400ms;
+  --wx-d-decorative: 700ms;
+
+  --wx-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --wx-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+  --wx-ease-accelerate: cubic-bezier(0.4, 0, 1, 1);
+  --wx-ease-bounce: cubic-bezier(0.16, 1, 0.3, 1);
+  --wx-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ── Motion — stagger & lift ─────────────────────────── */
+  --wx-stagger-xs: 30ms;
+  --wx-stagger-sm: 50ms;
+  --wx-stagger-md: 80ms;
+  --wx-shadow-lift: 0 8px 24px -4px rgba(0,0,0,0.12), 0 4px 8px -2px rgba(0,0,0,0.08);
+
+  /* ── Semantic alias — content (text) ─────────────────── */
+  --wx-content-primary: var(--wx-text-primary);
+  --wx-content-secondary: var(--wx-text-secondary);
+  --wx-content-muted: var(--wx-text-muted);
+  --wx-content-disabled: var(--wx-text-disabled);
+  --wx-content-inverse: var(--wx-text-inverse);
+  --wx-content-link: var(--wx-text-link);
+
+  /* ── Semantic alias — background ─────────────────────── */
+  --wx-bg-base: var(--wx-surface-base);
+  --wx-bg-raised: var(--wx-surface-elevated);
+  --wx-bg-sunken: var(--wx-surface-sunken);
+  --wx-bg-overlay: var(--wx-surface-overlay);
+}
+
+/* ────────────────────────────────────────────────────────
+   prefers-reduced-motion → tắt tất cả duration phase 0
+   ──────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --wx-d-micro: 0ms;
+    --wx-d-fast: 0ms;
+    --wx-d-normal: 0ms;
+    --wx-d-slow: 0ms;
+    --wx-d-decorative: 0ms;
+    --wx-duration-fast: 0ms;
+    --wx-duration-normal: 0ms;
+    --wx-duration-slow: 0ms;
+    --wx-duration-decorative: 0ms;
+  }
+}
+
+/* ================================================================
+   DENSITY: Compact (extension popup)
+   Apply via: <html class="wx-compact"> or data-wx-density="compact"
+   ================================================================ */
+.wx-compact,
+[data-wx-density="compact"] {
+  --wx-density-header-height: 48px;
+  --wx-density-row-height: 32px;
+  --wx-density-input-height: 28px;
+  --wx-density-cell-px: 8px;
+  --wx-density-cell-py: 4px;
+  --wx-density-font-size: 11px;
+  --wx-density-icon-size: 14px;
+  --wx-density-avatar-size: 24px;
+  --wx-density-gap: 4px;
+  --wx-density-container-pad: 12px;
+}
+
+/* ================================================================
+   DENSITY: Comfortable (relaxed desktop)
+   Apply via: <html class="wx-comfortable"> or data-wx-density="comfortable"
+   ================================================================ */
+.wx-comfortable,
+[data-wx-density="comfortable"] {
+  --wx-density-header-height: 64px;
+  --wx-density-row-height: 48px;
+  --wx-density-input-height: 44px;
+  --wx-density-cell-px: 16px;
+  --wx-density-cell-py: 12px;
+  --wx-density-font-size: 15px;
+  --wx-density-icon-size: 20px;
+  --wx-density-avatar-size: 40px;
+  --wx-density-gap: 12px;
+  --wx-density-container-pad: 24px;
+}

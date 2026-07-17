@@ -1,0 +1,84 @@
+/*
+ * Pastel action-color utilities — pair with BaseButton size="icon" variant="ghost".
+ *
+ *   <BaseButton size="icon" variant="ghost" class="act-approve"
+ *               :icon="ACTION_ICONS.approve" title="Duyệt" />
+ *
+ * Each class paints text + a soft pastel surface tinted with the matching
+ * semantic token via color-mix(). Works in light + dark mode because the
+ * mix base is `--wx-surface-elevated`, which already swaps per theme.
+ *
+ * Ported from WemakeHRM `apps/web/src/styles/table-actions.css`.
+ */
+
+/* ── Hover/focus — suppress the default ghost shadow, lean on brightness ── */
+[class*="act-"].wx-btn:hover,
+[class*="act-"].wx-btn:focus,
+[class*="act-"].wx-btn:focus-visible {
+  filter: brightness(0.93) !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+[class*="act-"].wx-btn:active {
+  filter: brightness(0.87) !important;
+  box-shadow: none !important;
+}
+
+/* ── Semantic action colors ─────────────────────────────────────── */
+.act-edit {
+  color: var(--wx-brand-primary) !important;
+  background: color-mix(in srgb, var(--wx-brand-primary) 10%, var(--wx-surface-elevated)) !important;
+  border-color: color-mix(in srgb, var(--wx-brand-primary) 25%, transparent) !important;
+}
+
+.act-key {
+  color: var(--wx-warning-solid) !important;
+  background: color-mix(in srgb, var(--wx-warning-solid) 12%, var(--wx-surface-elevated)) !important;
+  border-color: color-mix(in srgb, var(--wx-warning-solid) 25%, transparent) !important;
+}
+
+.act-approve,
+.act-activate {
+  color: var(--wx-success-solid) !important;
+  background: color-mix(in srgb, var(--wx-success-solid) 10%, var(--wx-surface-elevated)) !important;
+  border-color: color-mix(in srgb, var(--wx-success-solid) 25%, transparent) !important;
+}
+
+.act-reject,
+.act-delete,
+.act-remove,
+.act-deactivate {
+  color: var(--wx-danger-solid) !important;
+  background: color-mix(in srgb, var(--wx-danger-solid) 10%, var(--wx-surface-elevated)) !important;
+  border-color: color-mix(in srgb, var(--wx-danger-solid) 25%, transparent) !important;
+}
+
+.act-detail,
+.act-view {
+  color: var(--wx-brand-primary) !important;
+  background: color-mix(in srgb, var(--wx-brand-primary) 8%, var(--wx-surface-elevated)) !important;
+  border-color: color-mix(in srgb, var(--wx-brand-primary) 20%, transparent) !important;
+}
+
+.act-cancel {
+  color: var(--wx-text-muted) !important;
+  background: color-mix(in srgb, var(--wx-text-muted) 10%, var(--wx-surface-elevated)) !important;
+  border-color: color-mix(in srgb, var(--wx-text-muted) 20%, transparent) !important;
+}
+
+.act-restore,
+.act-move,
+.act-download,
+.act-upload,
+.act-refresh {
+  color: var(--wx-info-solid) !important;
+  background: color-mix(in srgb, var(--wx-info-solid) 10%, var(--wx-surface-elevated)) !important;
+  border-color: color-mix(in srgb, var(--wx-info-solid) 25%, transparent) !important;
+}
+
+.act-star,
+.act-gift {
+  color: var(--wx-warning-solid) !important;
+  background: color-mix(in srgb, var(--wx-warning-solid) 10%, var(--wx-surface-elevated)) !important;
+  border-color: color-mix(in srgb, var(--wx-warning-solid) 22%, transparent) !important;
+}

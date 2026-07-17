@@ -1,0 +1,116 @@
+/**
+ * ═══════════════════════════════════════════════════════════════
+ *  WX UI SYSTEM — Interactive State Foundations
+ *  Focus rings, hover/selected/active/disabled state classes,
+ *  and input baselines.
+ * ═══════════════════════════════════════════════════════════════
+ */
+
+/* ── Focus Ring ───────────────────────────────────────── */
+.wx-focus-ring:focus-visible {
+  outline: 2px solid var(--wx-border-focus);
+  outline-offset: 2px;
+  box-shadow: var(--wx-shadow-focus);
+}
+
+/* Inner focus ring (for glass inputs) */
+.wx-focus-ring-inner:focus-visible {
+  outline: none;
+  border-color: var(--wx-border-focus);
+  box-shadow: var(--wx-shadow-focus);
+}
+
+/* ── Hover States ─────────────────────────────────────── */
+.wx-hoverable {
+  transition: all var(--wx-duration-fast) var(--wx-easing-default);
+  cursor: pointer;
+}
+
+.wx-hoverable:hover {
+  background: var(--wx-hover-bg);
+  color: var(--wx-hover-text);
+}
+
+/* Card hover: lift + glow */
+.wx-hover-lift {
+  transition: all var(--wx-duration-normal) var(--wx-easing-out);
+}
+
+.wx-hover-lift:hover {
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: var(--wx-shadow-xl);
+}
+
+/* ── Selected State ───────────────────────────────────── */
+.wx-selected {
+  background: var(--wx-selected-bg);
+  color: var(--wx-selected-text);
+}
+
+/* ── Active State ─────────────────────────────────────── */
+.wx-active-press {
+  transition: transform var(--wx-duration-fast) var(--wx-easing-default);
+}
+
+.wx-active-press:active {
+  transform: scale(0.98);
+}
+
+/* ── Disabled State ───────────────────────────────────── */
+.wx-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
+/* ── Input Baseline ───────────────────────────────────── */
+.wx-input-base {
+  font-family: var(--wx-font-primary);
+  font-size: var(--wx-density-font-size);
+  height: var(--wx-density-input-height);
+  padding: 0 var(--wx-density-cell-px);
+  border-radius: var(--wx-radius-lg);
+  border: 1px solid var(--wx-border-default);
+  background: var(--wx-surface-base);
+  color: var(--wx-text-primary);
+  transition: all var(--wx-duration-fast) var(--wx-easing-default);
+}
+
+.wx-input-base::placeholder {
+  color: var(--wx-text-muted);
+}
+
+.wx-input-base:focus {
+  outline: none;
+  border-color: var(--wx-border-focus);
+  box-shadow: var(--wx-shadow-focus);
+}
+
+.wx-input-base:disabled {
+  background: var(--wx-disabled-bg);
+  color: var(--wx-disabled-text);
+  cursor: not-allowed;
+}
+
+/* ── Glass Input Variant (Login page style) ───────────── */
+.wx-input-glass {
+  font-family: var(--wx-font-primary);
+  font-size: var(--wx-density-font-size);
+  height: var(--wx-density-input-height);
+  padding: 0 var(--wx-density-cell-px);
+  border-radius: var(--wx-radius-lg);
+  border: 1px solid var(--wx-glass-light-border);
+  background: var(--wx-glass-light-bg);
+  backdrop-filter: blur(var(--wx-glass-light-blur));
+  -webkit-backdrop-filter: blur(var(--wx-glass-light-blur));
+  color: var(--wx-text-primary);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.3);
+  transition: all var(--wx-duration-normal) var(--wx-easing-default);
+}
+
+.wx-input-glass:focus {
+  outline: none;
+  background: var(--wx-glass-medium-bg);
+  border-color: var(--wx-glass-medium-border);
+  box-shadow: var(--wx-shadow-lg);
+}

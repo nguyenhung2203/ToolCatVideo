@@ -1,0 +1,76 @@
+/**
+ * ═══════════════════════════════════════════════════════════════
+ *  WX UI SYSTEM — Responsive Utilities
+ *  Responsive helper classes for show/hide and layout.
+ * ═══════════════════════════════════════════════════════════════
+ */
+
+/* ── Visibility ──────────────────────────────────────── */
+@media (max-width: 767px) {
+  .wx-hide-mobile { display: none !important; }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .wx-hide-tablet { display: none !important; }
+}
+
+@media (min-width: 1024px) {
+  .wx-hide-desktop { display: none !important; }
+}
+
+@media (min-width: 768px) {
+  .wx-show-mobile-only { display: none !important; }
+}
+
+@media (max-width: 1023px) {
+  .wx-show-desktop-only { display: none !important; }
+}
+
+/* ── Responsive Container ────────────────────────────── */
+.wx-container {
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+@media (min-width: 640px) { .wx-container { max-width: 640px; } }
+@media (min-width: 768px) { .wx-container { max-width: 768px; } }
+@media (min-width: 1024px) { .wx-container { max-width: 1024px; padding-left: 24px; padding-right: 24px; } }
+@media (min-width: 1280px) { .wx-container { max-width: 1280px; } }
+@media (min-width: 1536px) { .wx-container { max-width: 1536px; } }
+
+/* ── Responsive Grid ─────────────────────────────────── */
+.wx-grid { display: grid; gap: var(--wx-density-gap); }
+.wx-grid-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+.wx-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.wx-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.wx-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+@media (max-width: 767px) {
+  .wx-grid-2, .wx-grid-3, .wx-grid-4 { grid-template-columns: 1fr; }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .wx-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wx-grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ── Responsive Typography ───────────────────────────── */
+@media (max-width: 767px) {
+  .wx-heading-1 { font-size: 18px !important; }
+  .wx-heading-2 { font-size: 16px !important; }
+  .wx-heading-3 { font-size: 14px !important; }
+}
+
+/* ── Responsive Spacing ──────────────────────────────── */
+@media (max-width: 767px) {
+  .wx-page-pad { padding-left: 12px !important; padding-right: 12px !important; }
+}
+@media (min-width: 768px) {
+  .wx-page-pad { padding-left: 24px !important; padding-right: 24px !important; }
+}
+@media (min-width: 1280px) {
+  .wx-page-pad { padding-left: 32px !important; padding-right: 32px !important; }
+}

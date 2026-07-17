@@ -1,0 +1,108 @@
+/**
+ * ═══════════════════════════════════════════════════════════════
+ *  WX UI SYSTEM — Layout Foundations
+ *  Extension-safe spacing rules, scrollbar, and density hooks.
+ * ═══════════════════════════════════════════════════════════════
+ */
+
+/* ── CSS Reset ────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+}
+
+/* ── Body Baseline ────────────────────────────────────── */
+body {
+  min-height: 100vh;
+  font-family: var(--wx-font-primary);
+  font-size: var(--wx-density-font-size);
+  line-height: 1.6;
+  color: var(--wx-text-primary);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+img, picture, video, canvas, svg {
+  display: block;
+  max-width: 100%;
+}
+
+input, button, textarea, select {
+  font: inherit;
+}
+
+/* ── Extension Container (800×600 popup) ──────────────── */
+.wx-extension-container {
+  width: 800px;
+  height: 600px;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--wx-surface-base);
+  overflow: hidden;
+}
+
+.wx-extension-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background-color: var(--wx-surface-base);
+}
+
+/* ── Scrollbar Styling ────────────────────────────────── */
+::-webkit-scrollbar {
+  width: var(--wx-scrollbar-width);
+  height: var(--wx-scrollbar-width);
+}
+
+::-webkit-scrollbar-track {
+  background: var(--wx-scrollbar-track);
+  border-radius: var(--wx-radius-lg);
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--wx-scrollbar-thumb);
+  border-radius: var(--wx-radius-lg);
+  border: 2px solid var(--wx-scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--wx-scrollbar-thumb-hover);
+}
+
+/* Compact scrollbar variant */
+.wx-scrollbar-compact::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.wx-scrollbar-compact::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.wx-scrollbar-compact::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: var(--wx-radius-full);
+  border: none;
+}
+
+.wx-scrollbar-compact::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.5);
+}
+
+/* ── Reduced Motion ───────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

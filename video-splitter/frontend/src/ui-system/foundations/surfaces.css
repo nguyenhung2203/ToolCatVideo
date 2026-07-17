@@ -1,0 +1,78 @@
+/**
+ * ═══════════════════════════════════════════════════════════════
+ *  WX UI SYSTEM — Surface Foundations
+ *  Reusable surface classes: glass, cards, toolbars, overlays.
+ *
+ *  Usage:
+ *    <div class="wx-glass-card"> ... </div>
+ *    <div class="wx-glass-toolbar"> ... </div>
+ *    <div class="wx-page-bg"> ... </div>
+ * ═══════════════════════════════════════════════════════════════
+ */
+
+/* ── Page Background ──────────────────────────────────── */
+.wx-page-bg {
+  background: var(--wx-gradient-bg);
+  min-height: 100vh;
+}
+
+/* ── Glass Card (Login, Dashboard Cards) ──────────────── */
+.wx-glass-card {
+  background: var(--wx-glass-heavy-bg);
+  backdrop-filter: blur(var(--wx-glass-heavy-blur));
+  -webkit-backdrop-filter: blur(var(--wx-glass-heavy-blur));
+  border: 1px solid var(--wx-glass-heavy-border);
+  border-radius: var(--wx-radius-2xl);
+  box-shadow: var(--wx-shadow-lg);
+  transition: all var(--wx-duration-normal) var(--wx-easing-default);
+}
+
+.wx-glass-card:hover {
+  box-shadow: var(--wx-shadow-xl);
+}
+
+/* ── Glass Card — Light variant ───────────────────────── */
+.wx-glass-card-light {
+  background: var(--wx-glass-light-bg);
+  backdrop-filter: blur(var(--wx-glass-light-blur));
+  -webkit-backdrop-filter: blur(var(--wx-glass-light-blur));
+  border: 1px solid var(--wx-glass-light-border);
+  border-radius: var(--wx-radius-xl);
+  box-shadow: var(--wx-shadow-sm);
+}
+
+/* ── Glass Toolbar (Dashboard floating toolbar) ───────── */
+.wx-glass-toolbar {
+  background: var(--wx-glass-medium-bg);
+  backdrop-filter: blur(var(--wx-glass-medium-blur));
+  -webkit-backdrop-filter: blur(var(--wx-glass-medium-blur));
+  border: 1px solid var(--wx-glass-medium-border);
+  border-radius: var(--wx-radius-xl);
+  box-shadow: var(--wx-shadow-lg);
+  padding: var(--wx-density-cell-py) var(--wx-density-cell-px);
+}
+
+/* ── Elevated Surface (popovers, dropdowns) ───────────── */
+.wx-surface-elevated {
+  background: var(--wx-surface-elevated);
+  border: 1px solid var(--wx-border-default);
+  border-radius: var(--wx-radius-xl);
+  box-shadow: var(--wx-shadow-2xl);
+}
+
+/* ── Sunken Surface (sidebar, setting panels) ─────────── */
+.wx-surface-sunken {
+  background: var(--wx-surface-sunken);
+  border: 1px solid var(--wx-border-subtle);
+  border-radius: var(--wx-radius-lg);
+}
+
+/* ── Overlay Backdrop ─────────────────────────────────── */
+.wx-overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--wx-surface-overlay);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: var(--wx-z-overlay);
+}

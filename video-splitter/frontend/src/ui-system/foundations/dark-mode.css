@@ -1,0 +1,113 @@
+/**
+ * ═══════════════════════════════════════════════════════════════
+ *  WX UI SYSTEM — Dark Mode Foundation
+ *  Apply via: <html class="wx-dark"> or data-wx-theme="dark"
+ *  
+ *  All token overrides for the dark theme.
+ * ═══════════════════════════════════════════════════════════════
+ */
+
+.wx-dark,
+[data-wx-theme="dark"] {
+  /* ── Brand ──────────────────────────────────────────── */
+  --wx-brand-primary: #60a5fa;
+  --wx-brand-accent: #22d3ee;
+  --wx-brand-focus: #3b82f6;
+
+  /* ── Gradients ──────────────────────────────────────── */
+  --wx-gradient-bg: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+  --wx-gradient-header: linear-gradient(to right, #0891b2, #2563eb, #1d4ed8);
+
+  /* ── Text — brightened 1 bậc cho dark mode (đạt WCAG AA) ── */
+  --wx-text-primary: #f8fafc;      /* slate-50  — gần trắng, body text */
+  --wx-text-secondary: #cbd5e1;    /* slate-300 — label, secondary copy */
+  --wx-text-muted: #94a3b8;        /* slate-400 — caption, helper, timestamp */
+  --wx-text-disabled: #64748b;     /* slate-500 — disabled chỉ, đủ phân biệt */
+  --wx-text-inverse: #0f172a;
+  --wx-text-link: #93c5fd;         /* blue-300, sáng hơn để nổi trên dark */
+
+  /* ── Surface — dim sâu hơn cho table/card ───────────── */
+  --wx-surface-base: #111827;       /* card/table bg — gần sunken nhưng vẫn distinguish */
+  --wx-surface-elevated: #1e2a44;   /* raised elements (modal, popover) */
+  --wx-surface-sunken: #080c17;     /* page bg — deepest */
+  --wx-surface-overlay: rgba(0, 0, 0, 0.7);
+
+  /* ── Border — match surface tối mới ───────────────────── */
+  --wx-border-default: #243049;     /* row divider, card border */
+  --wx-border-subtle: #18223a;      /* tinh tế hơn — giữa surface và default */
+  --wx-border-focus: #60a5fa;
+  --wx-border-glass: rgba(255, 255, 255, 0.1);
+  --wx-border-glass-light: rgba(255, 255, 255, 0.05);
+
+  /* ── Glass ──────────────────────────────────────────── */
+  --wx-glass-heavy-bg: rgba(30, 41, 59, 0.8);
+  --wx-glass-heavy-border: rgba(255, 255, 255, 0.1);
+  --wx-glass-medium-bg: rgba(30, 41, 59, 0.6);
+  --wx-glass-medium-border: rgba(255, 255, 255, 0.08);
+  --wx-glass-light-bg: rgba(30, 41, 59, 0.4);
+  --wx-glass-light-border: rgba(255, 255, 255, 0.06);
+  --wx-glass-subtle-bg: rgba(30, 41, 59, 0.3);
+  --wx-glass-subtle-border: rgba(255, 255, 255, 0.04);
+
+  /* ── Feedback — bg & text brightened cho dark contrast ── */
+  --wx-success-bg: rgba(16, 185, 129, 0.22);
+  --wx-success-text: #6ee7b7;     /* emerald-300 */
+  --wx-success-border: rgba(16, 185, 129, 0.45);
+  --wx-danger-bg: rgba(239, 68, 68, 0.22);
+  --wx-danger-text: #fca5a5;      /* red-300 */
+  --wx-danger-border: rgba(239, 68, 68, 0.45);
+  --wx-warning-bg: rgba(245, 158, 11, 0.22);
+  --wx-warning-text: #fcd34d;     /* amber-300 */
+  --wx-warning-border: rgba(245, 158, 11, 0.45);
+  --wx-info-bg: rgba(59, 130, 246, 0.22);
+  --wx-info-text: #93c5fd;        /* blue-300 */
+  --wx-info-border: rgba(59, 130, 246, 0.45);
+  --wx-neutral-bg: rgba(148, 163, 184, 0.18);
+  --wx-neutral-text: #cbd5e1;     /* slate-300 */
+  --wx-neutral-border: rgba(148, 163, 184, 0.35);
+
+  /* ── Interactive States — sáng hơn cho dark visibility ── */
+  --wx-selected-bg: rgba(59, 130, 246, 0.25);
+  --wx-selected-text: #93c5fd;
+  --wx-hover-bg: rgba(255, 255, 255, 0.08);
+  --wx-hover-text: #bfdbfe;
+  --wx-active-bg: rgba(59, 130, 246, 0.35);
+  --wx-active-text: #dbeafe;
+  --wx-disabled-bg: rgba(51, 65, 85, 0.5);
+  --wx-disabled-text: #64748b;
+
+  /* ── Elevation ──────────────────────────────────────── */
+  --wx-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --wx-shadow-md: 0 4px 8px rgba(0, 0, 0, 0.3);
+  --wx-shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.4);
+  --wx-shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.5);
+  --wx-shadow-2xl: 0 20px 50px rgba(0, 0, 0, 0.5);
+  --wx-shadow-brand: 0 4px 15px rgba(59, 130, 246, 0.3);
+
+  /* ── Scrollbar ──────────────────────────────────────── */
+  --wx-scrollbar-track: #1e293b;
+  --wx-scrollbar-thumb: #475569;
+  --wx-scrollbar-thumb-hover: #64748b;
+
+  /* ── Semantic alias dark (re-bind to dark text/surface) ── */
+  --wx-content-primary: var(--wx-text-primary);
+  --wx-content-secondary: var(--wx-text-secondary);
+  --wx-content-muted: var(--wx-text-muted);
+  --wx-content-disabled: var(--wx-text-disabled);
+  --wx-content-inverse: var(--wx-text-inverse);
+  --wx-content-link: var(--wx-text-link);
+
+  --wx-bg-base: var(--wx-surface-base);
+  --wx-bg-raised: var(--wx-surface-elevated);
+  --wx-bg-sunken: var(--wx-surface-sunken);
+  --wx-bg-overlay: var(--wx-surface-overlay);
+
+  /* ── Body override ──────────────────────────────────── */
+  color-scheme: dark;
+}
+
+/* ── Dark mode body override ─────────────────────────── */
+.wx-dark {
+  background-color: var(--wx-surface-sunken);
+  color: var(--wx-text-primary);
+}

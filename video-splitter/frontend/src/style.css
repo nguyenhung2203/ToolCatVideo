@@ -1,0 +1,436 @@
+/* Nunito Font Face configuration */
+@font-face {
+    font-family: "Nunito";
+    font-style: normal;
+    font-weight: 400;
+    src: local(""),
+    url("assets/fonts/nunito-v16-latin-regular.woff2") format("woff2");
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════
+ *  WemakeUI — Global Styles (WX UI System Integration)
+ *
+ *  WX foundations (tokens.css, dark-mode.css, etc.) are imported
+ *  via the foundations entrypoint at ui-system/foundations/index.ts.
+ *
+ *  This file provides:
+ *    1. Short-name aliases (--brand-primary → --wx-brand-primary)
+ *    2. Utility classes (.card, .btn, .badge, .stat-card, .grid-N)
+ *    3. Cross-platform utilities (web / mobile / desktop drag region)
+ *    4. Custom animations
+ * ═══════════════════════════════════════════════════════════════
+ */
+
+/* ─── Short-Name Aliases ────────────────────────────────────────
+   Map ergonomic short names → WX tokens so component styles can
+   stay readable (--brand-primary instead of --wx-brand-primary).
+   ─────────────────────────────────────────────────────────────── */
+:root {
+  /* Brand */
+  --brand-primary: var(--wx-brand-primary);
+  --brand-primary-dark: var(--wx-active-text);
+  --brand-primary-light: var(--wx-brand-accent);
+  --accent-color: var(--wx-brand-primary);
+  --accent-hover: var(--wx-brand-accent);
+  --accent-gradient: var(--wx-gradient-button);
+
+  /* Semantic */
+  --success-color: var(--wx-success-solid);
+  --warning-color: #ff8000;
+  --error-color: var(--wx-danger-solid);
+  --error-bg-subtle: var(--wx-danger-bg);
+  --info-color: var(--wx-info-solid);
+
+  /* Action Buttons */
+  --btn-add-color: #ff8000;
+  --btn-stop-color: var(--wx-danger-text);
+  --btn-start-color: var(--wx-brand-primary);
+
+  /* Surfaces → WX */
+  --bg-primary: var(--wx-surface-base);
+  --bg-secondary: var(--wx-surface-elevated);
+  --bg-tertiary: var(--wx-surface-sunken);
+  --sidebar-bg: var(--wx-surface-base);
+  --content-bg: var(--wx-surface-sunken);
+  --topbar-bg: var(--wx-surface-base);
+  --card-bg: var(--wx-surface-base);
+  --card-bg-hover: var(--wx-hover-bg);
+
+  /* Text → WX */
+  --text-primary: var(--wx-text-primary);
+  --text-secondary: var(--wx-text-secondary);
+  --text-tertiary: var(--wx-text-muted);
+
+  /* Border / Interactive → WX */
+  --border-color: var(--wx-border-default);
+  --hover-bg: var(--wx-hover-bg);
+  --active-bg: var(--wx-active-bg);
+
+  /* Shadows → WX */
+  --shadow-sm: var(--wx-shadow-sm);
+  --shadow-md: var(--wx-shadow-md);
+  --shadow-lg: var(--wx-shadow-lg);
+  --shadow-glow: var(--wx-shadow-brand);
+
+  /* Radii → WX */
+  --radius-sm: var(--wx-radius-sm);
+  --radius-md: var(--wx-radius-md);
+  --radius-lg: var(--wx-radius-lg);
+  --radius-xl: var(--wx-radius-xl);
+
+  /* Spacing (WX doesn't have these, keep custom) */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+
+  /* Data-Dense Dashboard tokens */
+  --grid-gap-compact: var(--wx-density-gap);
+  --card-padding-compact: var(--wx-density-container-pad);
+  --font-size-small: 12px;
+  --table-row-height: var(--wx-density-row-height);
+  --sidebar-width: 240px;
+  --header-height: var(--wx-density-header-height);
+
+  /* Font → WX (Override with Nunito display font for video splitter app) */
+  --font-family: "Nunito", var(--wx-font-primary);
+  --font-family-mono: var(--wx-font-mono);
+}
+
+/* ─── Dark Mode Aliases ──────────────────────────────────────── */
+.wx-dark,
+[data-wx-theme="dark"] {
+  --brand-primary-light: var(--wx-brand-accent);
+  --sidebar-bg: var(--wx-surface-base);
+  --content-bg: var(--wx-surface-sunken);
+  --topbar-bg: var(--wx-surface-base);
+  --card-bg-hover: var(--wx-hover-bg);
+  --error-bg-subtle: var(--wx-danger-bg);
+}
+
+/* ─── Reset & Base ────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-family);
+  background: var(--wx-surface-sunken);
+  color: var(--wx-text-primary);
+  line-height: 1.6;
+  transition: background-color var(--wx-duration-normal) var(--wx-easing-default),
+              color var(--wx-duration-normal) var(--wx-easing-default);
+}
+
+#app {
+  min-height: 100vh;
+}
+
+/* ─── Scrollbar (WX tokens) ──────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--wx-scrollbar-thumb);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--wx-scrollbar-thumb-hover);
+}
+
+/* ─── Utility Classes ─────────────────────────────────────────── */
+.card {
+  background: var(--wx-surface-base);
+  border: 1px solid var(--wx-border-default);
+  border-radius: var(--wx-radius-md);
+  padding: var(--wx-density-container-pad);
+  transition: all var(--wx-duration-normal) var(--wx-easing-default);
+}
+
+.card:hover {
+  background: var(--wx-hover-bg);
+  box-shadow: var(--wx-shadow-md);
+}
+
+.card-glow:hover {
+  box-shadow: var(--wx-shadow-brand);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border: none;
+  border-radius: var(--wx-radius-md);
+  font-family: var(--font-family);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--wx-duration-fast) var(--wx-easing-default);
+  text-decoration: none;
+}
+
+.btn-primary {
+  background: var(--wx-gradient-button);
+  color: var(--wx-text-inverse);
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+  box-shadow: var(--wx-shadow-brand);
+}
+
+.btn-secondary {
+  background: var(--wx-hover-bg);
+  color: var(--wx-text-primary);
+  border: 1px solid var(--wx-border-default);
+}
+
+.btn-secondary:hover {
+  background: var(--wx-active-bg);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: var(--wx-radius-full);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge-success {
+  background: var(--wx-success-bg);
+  color: var(--wx-success-text);
+}
+
+.badge-warning {
+  background: var(--wx-warning-bg);
+  color: var(--wx-warning-text);
+}
+
+.badge-error {
+  background: var(--wx-danger-bg);
+  color: var(--wx-danger-text);
+}
+
+.badge-info {
+  background: var(--wx-info-bg);
+  color: var(--wx-info-text);
+}
+
+/* ─── Stat Card ───────────────────────────────────────────────── */
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stat-value {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--wx-brand-primary);
+}
+
+.stat-label {
+  font-size: 13px;
+  color: var(--wx-text-secondary);
+  font-weight: 500;
+}
+
+/* ─── Grid Layouts ────────────────────────────────────────────── */
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--wx-density-gap);
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--wx-density-gap);
+}
+
+.grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--wx-density-gap);
+}
+
+@media (max-width: 900px) {
+  .grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 600px) {
+  .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
+}
+
+/* ─── Section Headers ─────────────────────────────────────────── */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-lg);
+}
+
+.section-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--wx-text-primary);
+}
+
+.section-subtitle {
+  font-size: 13px;
+  color: var(--wx-text-muted);
+  margin-top: 4px;
+}
+
+/* ─── Table ───────────────────────────────────────────────────── */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th {
+  text-align: left;
+  padding: 12px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--wx-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--wx-border-default);
+}
+
+.data-table td {
+  padding: 14px 16px;
+  font-size: 14px;
+  color: var(--wx-text-secondary);
+  border-bottom: 1px solid var(--wx-border-default);
+}
+
+.data-table tr:hover td {
+  background: var(--wx-hover-bg);
+}
+
+/* ─── Animations ──────────────────────────────────────────────── */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.animate-in {
+  animation: fadeInUp 0.4s var(--wx-easing-default) both;
+}
+
+.animate-delay-1 { animation-delay: 0.05s; }
+.animate-delay-2 { animation-delay: 0.1s; }
+.animate-delay-3 { animation-delay: 0.15s; }
+.animate-delay-4 { animation-delay: 0.2s; }
+
+/* ─── Platform Utilities ──────────────────────────────────────── */
+.no-select {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Desktop window drag region (Wails/Tauri/Electron). Web/Mobile no-op. */
+.app-drag {
+  -webkit-app-region: drag;
+}
+
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* ─── Reusable Form Controls ─────────────────────────────────── */
+.form-input {
+  padding: 6px 10px;
+  border: 1px solid var(--wx-border-default);
+  border-radius: var(--wx-radius-sm);
+  background: var(--wx-surface-sunken);
+  color: var(--wx-text-secondary);
+  font-family: var(--font-family);
+  font-size: 12px;
+  width: 200px;
+  transition: border-color var(--wx-duration-fast) var(--wx-easing-default);
+}
+.form-input:focus { outline: none; border-color: var(--wx-brand-focus); box-shadow: var(--wx-shadow-focus); }
+.form-input--sm { width: 80px; text-align: center; }
+
+.form-textarea {
+  width: 100%; padding: 8px 10px;
+  border: 1px solid var(--wx-border-default); border-radius: var(--wx-radius-sm);
+  background: var(--wx-surface-base); color: var(--wx-text-secondary);
+  font-family: var(--wx-font-mono); font-size: 12px; resize: vertical;
+  transition: border-color var(--wx-duration-fast) var(--wx-easing-default);
+}
+.form-textarea:focus { outline: none; border-color: var(--wx-brand-focus); box-shadow: var(--wx-shadow-focus); }
+
+/* ─── Number Input (hide native spin buttons) ────────────────── */
+.form-input[type="number"] { -moz-appearance: textfield; }
+.form-input[type="number"]::-webkit-outer-spin-button,
+.form-input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+/* ─── Toggle Switch ──────────────────────────────────────────── */
+.toggle { position: relative; display: inline-block; width: 36px; height: 20px; flex-shrink: 0; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider { position: absolute; cursor: pointer; inset: 0; background: var(--wx-border-default); border-radius: 20px; transition: var(--wx-duration-fast); }
+.toggle-slider::before { content: ''; position: absolute; height: 16px; width: 16px; left: 2px; bottom: 2px; background: var(--wx-surface-base); border-radius: 50%; transition: var(--wx-duration-fast); }
+.toggle input:checked + .toggle-slider { background: var(--wx-brand-primary); }
+.toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
+
+/* ─── Radio & Checkbox Labels ────────────────────────────────── */
+.radio-label {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 13px; color: var(--wx-text-secondary);
+  cursor: pointer; margin-right: 12px;
+}
+.radio-label input[type="radio"] { accent-color: var(--wx-brand-primary); cursor: pointer; }
+
+.chk-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--wx-text-secondary); cursor: pointer;
+}
+.chk-label input[type="checkbox"] { accent-color: var(--wx-brand-primary); cursor: pointer; }

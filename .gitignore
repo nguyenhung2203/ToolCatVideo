@@ -1,0 +1,29 @@
+# Binaries and build output
+video-splitter/build/bin/
+video-splitter/bin/
+video-splitter/frontend/dist/
+video-splitter/python_worker/dist/
+video-splitter/python_worker/build/
+*.exe
+*.dll
+
+# Dependencies
+node_modules/
+video-splitter/frontend/node_modules/
+
+# Local databases and caches
+*.db
+*.sqlite
+video-splitter/video-splitter.db
+video-splitter/data/
+
+# Output directories
+videodacat/
+
+# IDEs and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.claude/
+.gemini/

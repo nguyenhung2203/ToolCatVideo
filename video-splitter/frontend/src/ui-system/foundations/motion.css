@@ -1,0 +1,169 @@
+/**
+ * ═══════════════════════════════════════════════════════════════
+ *  WemakeUI — Motion utilities (phase 0)
+ *
+ *  Generic transition classes & helpers built on --wx-d-* / --wx-ease-*.
+ *  prefers-reduced-motion already collapses durations to 0ms in tokens.css.
+ * ═══════════════════════════════════════════════════════════════
+ */
+
+/* ── Transition utilities ─────────────────────────────── */
+.wx-transition,
+[data-wx-transition] {
+  transition-property: color, background-color, border-color, box-shadow,
+    transform, opacity, filter;
+  transition-duration: var(--wx-d-fast);
+  transition-timing-function: var(--wx-ease-standard);
+}
+
+.wx-transition--micro    { transition-duration: var(--wx-d-micro); }
+.wx-transition--fast     { transition-duration: var(--wx-d-fast); }
+.wx-transition--normal   { transition-duration: var(--wx-d-normal); }
+.wx-transition--slow     { transition-duration: var(--wx-d-slow); }
+.wx-transition--decorate { transition-duration: var(--wx-d-decorative); }
+
+.wx-ease--standard   { transition-timing-function: var(--wx-ease-standard); }
+.wx-ease--decelerate { transition-timing-function: var(--wx-ease-decelerate); }
+.wx-ease--accelerate { transition-timing-function: var(--wx-ease-accelerate); }
+.wx-ease--bounce     { transition-timing-function: var(--wx-ease-bounce); }
+.wx-ease--spring     { transition-timing-function: var(--wx-ease-spring); }
+
+/* ── Vue <Transition> helpers ─────────────────────────── */
+
+/* fade */
+.wx-fade-enter-active,
+.wx-fade-leave-active {
+  transition: opacity var(--wx-d-fast) var(--wx-ease-standard);
+}
+.wx-fade-enter-from,
+.wx-fade-leave-to { opacity: 0; }
+
+/* scale-fade — modal */
+.wx-scale-fade-enter-active {
+  transition: opacity var(--wx-d-normal) var(--wx-ease-decelerate),
+              transform var(--wx-d-normal) var(--wx-ease-decelerate);
+}
+.wx-scale-fade-leave-active {
+  transition: opacity var(--wx-d-fast) var(--wx-ease-accelerate),
+              transform var(--wx-d-fast) var(--wx-ease-accelerate);
+}
+.wx-scale-fade-enter-from,
+.wx-scale-fade-leave-to {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+/* slide-up — bulk action bar, bottom sheet */
+.wx-slide-up-enter-active,
+.wx-slide-up-leave-active {
+  transition: opacity var(--wx-d-normal) var(--wx-ease-standard),
+              transform var(--wx-d-normal) var(--wx-ease-standard);
+}
+.wx-slide-up-enter-from,
+.wx-slide-up-leave-to {
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+/* slide-down — banner, dropdown */
+.wx-slide-down-enter-active,
+.wx-slide-down-leave-active {
+  transition: opacity var(--wx-d-fast) var(--wx-ease-standard),
+              transform var(--wx-d-fast) var(--wx-ease-standard);
+}
+.wx-slide-down-enter-from,
+.wx-slide-down-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+/* slide-right — drawer right */
+.wx-slide-right-enter-active,
+.wx-slide-right-leave-active {
+  transition: transform var(--wx-d-normal) var(--wx-ease-standard);
+}
+.wx-slide-right-enter-from,
+.wx-slide-right-leave-to {
+  transform: translateX(100%);
+}
+
+/* shimmer — skeleton */
+@keyframes wx-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.wx-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--wx-surface-sunken) 0%,
+    var(--wx-surface-elevated) 50%,
+    var(--wx-surface-sunken) 100%
+  );
+  background-size: 200% 100%;
+  animation: wx-shimmer 1.4s linear infinite;
+}
+
+/* pulse — optimistic state */
+@keyframes wx-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.4); }
+  50%      { box-shadow: 0 0 0 6px rgba(0, 123, 255, 0); }
+}
+.wx-pulse { animation: wx-pulse 1.4s var(--wx-ease-standard) infinite; }
+
+/* ── Scroll Reveal ────────────────────────────────────── */
+@keyframes wx-reveal-up {
+  from { opacity: 0; transform: translateY(50px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+@keyframes wx-reveal-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes wx-live-ping {
+  0%        { transform: scale(1); opacity: 0.9; }
+  75%, 100% { transform: scale(2.2); opacity: 0; }
+}
+
+.wx-reveal {
+  opacity: 0 !important;
+  transform: translateY(var(--wx-reveal-distance, 50px)) !important;
+  /* decelerate (thay vì ease-out-expo) — opacity/translate tăng đều suốt cả quãng
+     thay vì "pop" xong trong 200-300ms đầu, để mắt kịp thấy chuyển động dần dần.
+     Tốc độ/khoảng cách chỉnh qua --wx-reveal-* (tokens.css) — app tiêu thụ thư viện
+     override 3 biến này ở :root thay vì sửa file này. */
+  transition: opacity var(--wx-reveal-duration, 1.1s) var(--wx-reveal-easing, cubic-bezier(0, 0, 0.2, 1)),
+              transform var(--wx-reveal-duration, 1.1s) var(--wx-reveal-easing, cubic-bezier(0, 0, 0.2, 1)) !important;
+  transition-delay: var(--stagger-delay, 0ms) !important;
+}
+.wx-reveal.is-revealed {
+  opacity: 1 !important;
+  transform: translateY(0) !important;
+}
+.wx-reveal--fade {
+  transform: none !important;
+}
+.wx-reveal--fade.is-revealed {
+  transform: none !important;
+}
+/* prefers-reduced-motion: v-reveal tự thêm --fade + --reduced-motion (xem v-reveal.ts) —
+   bỏ chuyển động trượt, chỉ giữ fade nhanh/nhẹ để nội dung không "bụp" hiện trơ trọi. */
+.wx-reveal--reduced-motion {
+  transition: opacity 0.35s linear !important;
+}
+
+/* ── Live ping dot ────────────────────────────────────── */
+.wx-live-ping {
+  position: relative;
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.wx-live-ping::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  animation: wx-live-ping 1.2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}

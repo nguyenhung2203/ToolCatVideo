@@ -1,0 +1,37 @@
+/**
+ * ═══════════════════════════════════════════════════════════════
+ *  WemakeUI — Focus baseline (phase 0)
+ *
+ *  Rule:
+ *   - 2px outline, color --wx-border-focus, offset 2px.
+ *   - Only via :focus-visible — mouse click does not show ring.
+ *   - Never `outline: none` without a replacement ring.
+ * ═══════════════════════════════════════════════════════════════
+ */
+
+:where(button, a, input, select, textarea, [role="button"], [role="link"],
+       [tabindex]):focus {
+  outline: none;
+}
+
+:where(button, a, input, select, textarea, [role="button"], [role="link"],
+       [tabindex]):focus-visible {
+  outline: 2px solid var(--wx-border-focus);
+  outline-offset: 2px;
+  border-radius: var(--wx-radius-md);
+  transition: outline-offset var(--wx-d-micro) var(--wx-ease-standard);
+}
+
+/* Soft ring variant — used inside cards / list rows where outline-offset
+   would clip. Prefer this on data-grid cells, list items, etc. */
+.wx-focus-soft:focus-visible {
+  outline: none;
+  box-shadow: var(--wx-shadow-focus);
+}
+
+/* Force-show ring (debug or accessibility audit) */
+[data-wx-focus-debug="true"] :focus,
+[data-wx-focus-debug="true"] :focus-visible {
+  outline: 2px dashed var(--wx-status-danger-text, #dc2626) !important;
+  outline-offset: 2px !important;
+}
