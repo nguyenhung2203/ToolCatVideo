@@ -343,7 +343,8 @@
   display: flex;
   gap: var(--wx-space-3);
   overflow-x: auto;
-  padding-bottom: var(--wx-space-1);
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 
 .video-horizontal-grid::-webkit-scrollbar {
