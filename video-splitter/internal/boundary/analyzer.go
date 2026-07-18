@@ -2,10 +2,13 @@ package boundary
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -77,21 +80,42 @@ func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, 
 		"--silence-duration", fmt.Sprintf("%.2f", cfg.SilenceDuration),
 	}
 
-	// Ưu tiên worker.exe đã đóng gói (PyInstaller) — user không cần cài Python.
-	// Fallback: chạy script bằng python (khi dev).
+	// Quyết định exe để chạy Python worker:
 	var exePath string
 	var cmdArgs []string
-	if workerExe := utils.GetWorkerExe(); workerExe != "" {
+
+	// Kiểm tra xem script python dev có tồn tại không
+	scriptPath := utils.GetWorkerScript()
+	scriptExists := false
+	if _, err := os.Stat(scriptPath); err == nil {
+		scriptExists = true
+	}
+
+	// Thử chạy bằng Python script trước nếu tồn tại script (để dev/test tiện lợi)
+	useScript := false
+	if scriptExists {
+		checkCmd := exec.Command(pythonExe, "--version")
+		utils.HideCmdWindow(checkCmd)
+		if err := checkCmd.Run(); err == nil {
+			useScript = true
+		}
+	}
+
+	if useScript {
+		exePath = pythonExe
+		cmdArgs = append([]string{scriptPath}, analyzeArgs...)
+	} else if workerExe := utils.GetWorkerExe(); workerExe != "" {
 		exePath = workerExe
 		cmdArgs = analyzeArgs
 	} else {
 		exePath = pythonExe
-		cmdArgs = append([]string{utils.GetWorkerScript()}, analyzeArgs...)
+		cmdArgs = append([]string{scriptPath}, analyzeArgs...)
 	}
 
 	// CommandContext để có thể hủy; Cancel kill cả cây tiến trình (worker + ffmpeg con)
 	cmd := exec.CommandContext(ctx, exePath, cmdArgs...)
 	utils.HideCmdWindow(cmd)
+	cmd.Env = append(os.Environ(), "PYTHONUTF8=1", "PYTHONIOENCODING=utf-8")
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil
@@ -100,6 +124,10 @@ func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, 
 		utils.HideCmdWindow(killCmd)
 		return killCmd.Run()
 	}
+
+	// Hứng luồng stderr để hiển thị thông tin lỗi chi tiết khi sập
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -112,34 +140,69 @@ func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, 
 
 	var jsonOutput strings.Builder
 	scanner := bufio.NewScanner(stdout)
+	// Tăng kích thước buffer của scanner lên tối đa 10MB để tránh bị sập/ deadlock khi nhận chuỗi JSON kết quả rất dài từ video lớn
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "PROGRESS:") {
 			parts := strings.Split(line, ":")
 			if len(parts) == 2 {
 				prog, _ := strconv.Atoi(parts[1])
-				// Map progress từ python (0-100) vào khoảng còn lại (15-95)
-				realProg := 15 + (prog * 80 / 100)
+				// Map progress từ python (0-100) vào khoảng (15-90) để dành đoạn cuối cho Bước 3
+				realProg := 15 + (prog * 75 / 100)
 				runtime.EventsEmit(ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": realProg})
 			}
+		} else if strings.HasPrefix(line, "DETECTOR_DONE:") {
+			// Python báo đã hoàn thành một thuật toán phân tích, hiện log chi tiết
+			detectorInfo := strings.TrimPrefix(line, "DETECTOR_DONE:")
+			detParts := strings.SplitN(detectorInfo, "|", 2)
+			if len(detParts) == 2 {
+				runtime.EventsEmit(ctx, "analyze_log", fmt.Sprintf("  ✓ %s: tìm thấy %s điểm", detParts[0], detParts[1]))
+			}
+		} else if strings.HasPrefix(line, "STATUS_LOG:") {
+			// Python gửi log trạng thái chi tiết thời gian thực khi đang quét
+			statusMsg := strings.TrimPrefix(line, "STATUS_LOG:")
+			runtime.EventsEmit(ctx, "analyze_log", statusMsg)
 		} else {
 			// Thu thập json output
 			jsonOutput.WriteString(line)
 		}
 	}
 
-	if err := cmd.Wait(); err != nil {
+	// Đọc Wait trước nhưng chỉ xử lý sau khi kiểm tra nội dung JSON
+	waitErr := cmd.Wait()
+
+	var result AnalyzerResult
+	unmarshalErr := json.Unmarshal([]byte(jsonOutput.String()), &result)
+
+	// Ghi debug log để theo dõi kết quả thô từ Python worker
+	_ = os.WriteFile(filepath.Join(os.TempDir(), "video-splitter-debug-json.log"), []byte(jsonOutput.String()), 0644)
+	_ = os.WriteFile(filepath.Join(os.TempDir(), "video-splitter-debug-stderr.log"), stderrBuf.Bytes(), 0644)
+
+	// Nếu Python có thông điệp lỗi tự cấu trúc thành công, ưu tiên hiển thị lỗi này
+	if unmarshalErr == nil && result.Status == "error" && result.Message != "" {
+		return nil, fmt.Errorf("lỗi từ python worker: %s", result.Message)
+	}
+
+	// Nếu Python sập hệ thống (exit code != 0), đính kèm stderr chi tiết
+	if waitErr != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("python worker kết thúc có lỗi: %v", err)
+		stderrDetail := strings.TrimSpace(stderrBuf.String())
+		if stderrDetail != "" {
+			return nil, fmt.Errorf("python worker kết thúc có lỗi: %v\nChi tiết lỗi (Traceback):\n%s", waitErr, stderrDetail)
+		}
+		return nil, fmt.Errorf("python worker kết thúc có lỗi: %v", waitErr)
 	}
 
-	runtime.EventsEmit(ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": 95})
-
-	var result AnalyzerResult
-	if err := json.Unmarshal([]byte(jsonOutput.String()), &result); err != nil {
-		return nil, fmt.Errorf("lỗi parse json từ python: %v, output: %s", err, jsonOutput.String())
+	// Lỗi giải mã JSON (nếu Python in ra chuỗi rác hoặc sập đột ngột mà không in JSON)
+	if unmarshalErr != nil {
+		stderrDetail := strings.TrimSpace(stderrBuf.String())
+		if stderrDetail != "" {
+			return nil, fmt.Errorf("lỗi parse json từ python: %v, output: %s\nChi tiết stderr:\n%s", unmarshalErr, jsonOutput.String(), stderrDetail)
+		}
+		return nil, fmt.Errorf("lỗi parse json từ python: %v, output: %s", unmarshalErr, jsonOutput.String())
 	}
 
 	if result.Status != "success" {
@@ -247,13 +310,34 @@ func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, tot
 	})
 
 	// === BƯỚC 1.5: Snap boundary sang keyframe gần nhất (nếu biết sourcePath) ===
-	// Điều này đảm bảo điểm cắt nằm tại I-frame, giúp stream-copy không bị artifact
-	// (xanh lá, glitch) ở đầu clip. Chỉ snap khi lệch < 1s để giữ ý định phân tích.
-	if sourcePath != "" {
-		for i := range scored {
-			snapped := media.FindNearestKeyframe(sourcePath, scored[i].timestamp)
-			if abs(snapped-scored[i].timestamp) < 1.0 {
-				scored[i].timestamp = snapped
+	// Mục đích: đảm bảo điểm cắt nằm tại I-frame để stream-copy không bị artifact.
+	// Quy tắc snap theo mode:
+	//   - fast:    snap tối đa 2.0s (độ chính xác thấp hơn, ưu tiên tốc độ xuất)
+	//   - smart:   snap tối đa 1.0s
+	//   - precise: KHÔNG snap — AI đã phát hiện chính xác đến mili-giây, giữ nguyên
+	snapLimit := 1.0
+	switch cfg.Mode {
+	case project.ModeFast:
+		snapLimit = 2.0
+	case project.ModePrecise:
+		snapLimit = 0.0 // tắt snap hoàn toàn cho precise
+	}
+
+	if sourcePath != "" && snapLimit > 0 {
+		if kf, err := media.LoadAllKeyframes(sourcePath); err == nil && len(kf) > 0 {
+			for i := range scored {
+				snapped := media.FindNearestKeyframeCached(kf, scored[i].timestamp)
+				if abs(snapped-scored[i].timestamp) < snapLimit {
+					scored[i].timestamp = snapped
+				}
+			}
+		} else {
+			// Fallback nếu LoadAllKeyframes bị lỗi: dùng FindNearestKeyframe từng cái như cũ
+			for i := range scored {
+				snapped := media.FindNearestKeyframe(sourcePath, scored[i].timestamp)
+				if abs(snapped-scored[i].timestamp) < snapLimit {
+					scored[i].timestamp = snapped
+				}
 			}
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"video-splitter/internal/media"
 	"video-splitter/internal/project"
 	"video-splitter/internal/utils"
@@ -46,7 +47,7 @@ func needsReencode(e project.EditOps) bool {
 	if e.Watermark.Enabled && e.Watermark.ImgPath != "" {
 		return true
 	}
-	if e.Audio.MusicPath != "" {
+	if e.Audio.MusicPath != "" || len(e.Audio.MusicTracks) > 0 {
 		return true
 	}
 	if e.Audio.Mute {
@@ -88,7 +89,7 @@ func cutVideoStreamCopy(ctx context.Context, inputPath string, startTime, dur fl
 }
 
 // cutVideoReencode cắt video có re-encode (chậm nhưng frame-accurate và hỗ trợ filter).
-func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, outputPath string, preset string, crf int) error {
+func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, outputPath string, preset string, crf int, threads int, hwAccel string) error {
 	dur := clip.EndTime - clip.StartTime
 	if dur <= 0 {
 		dur = clip.Duration
@@ -106,23 +107,34 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 		}
 	}()
 
-	// -accurate_seek: đảm bảo seek chính xác tới frame (không chỉ keyframe) khi kết
-	// hợp input seeking. -fflags +genpts: tạo lại PTS liên tục, tránh lỗi PTS gián đoạn
-	// khi video có B-frames hoặc PTS không đều — gây lệch filter_complex + setpts.
-	args := []string{"-y", "-accurate_seek", "-fflags", "+genpts", "-ss", fmt.Sprintf("%.3f", clip.StartTime), "-i", inputPath}
-	nextIdx := 1
+	// Xử lý nhạc nền (đơn hoặc ghép nhiều bài)
+	musicPathToUse := e.Audio.MusicPath
+	if len(e.Audio.MusicTracks) > 0 {
+		if len(e.Audio.MusicTracks) == 1 {
+			musicPathToUse = e.Audio.MusicTracks[0]
+		} else {
+			mergedMusic, err := mergeMusicTracks(ctx, e.Audio.MusicTracks)
+			if err != nil {
+				return err
+			}
+			if mergedMusic != "" {
+				musicPathToUse = mergedMusic
+				tmpFiles = append(tmpFiles, mergedMusic) // tự động xóa khi chạy xong
+			}
+		}
+	}
 
 	wmIdx := -1
 	if e.Watermark.Enabled && e.Watermark.ImgPath != "" {
-		args = append(args, "-i", e.Watermark.ImgPath)
-		wmIdx = nextIdx
-		nextIdx++
+		wmIdx = 1
 	}
 	musicIdx := -1
-	if e.Audio.MusicPath != "" {
-		args = append(args, "-i", e.Audio.MusicPath)
-		musicIdx = nextIdx
-		nextIdx++
+	if musicPathToUse != "" {
+		if wmIdx >= 0 {
+			musicIdx = 2
+		} else {
+			musicIdx = 1
+		}
 	}
 
 	vOut, aOut, complexParts, textFiles, err := buildGraph(e, dur, wmIdx, musicIdx)
@@ -131,35 +143,77 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 	}
 	tmpFiles = append(tmpFiles, textFiles...)
 
-	if len(complexParts) > 0 {
-		args = append(args, "-filter_complex", strings.Join(complexParts, ";"))
-		args = append(args, "-map", vOut)
-		if aOut != "" {
-			args = append(args, "-map", aOut)
+	// Chỉ sử dụng Hardware Decoding (giải mã phần cứng) cho Nvidia CUDA.
+	// Đối với Intel QSV và AMD, việc giải mã bằng CPU kết hợp với filter (chạy trên CPU)
+	// rồi chuyển sang GPU mã hóa (encode) sẽ nhanh hơn nhiều, tránh thắt nút cổ chai do copy bộ nhớ GPU <-> CPU.
+	var hwDecodeArgs []string
+	if hwAccel == "nvidia" {
+		hwDecodeArgs = []string{"-hwaccel", "cuda", "-hwaccel_output_format", "nv12"}
+	}
+
+	buildArgs := func(vcodec string, extraArgs []string, hwDecArgs []string) []string {
+		args := []string{"-y", "-accurate_seek", "-fflags", "+genpts"}
+		args = append(args, hwDecArgs...)
+		args = append(args, "-ss", fmt.Sprintf("%.3f", clip.StartTime), "-i", inputPath)
+		if e.Watermark.Enabled && e.Watermark.ImgPath != "" {
+			args = append(args, "-i", e.Watermark.ImgPath)
 		}
+		if musicPathToUse != "" {
+			if e.Audio.MusicLoop {
+				args = append(args, "-stream_loop", "-1") // Lặp vô hạn nhạc nền
+			}
+			args = append(args, "-i", musicPathToUse)
+		}
+		if len(complexParts) > 0 {
+			args = append(args, "-filter_complex", strings.Join(complexParts, ";"))
+			args = append(args, "-map", vOut)
+			if aOut != "" {
+				args = append(args, "-map", aOut)
+			}
+		}
+		args = append(args,
+			"-t", fmt.Sprintf("%.3f", dur),
+			"-c:v", vcodec,
+		)
+		args = append(args, extraArgs...)
+		args = append(args,
+			"-pix_fmt", "yuv420p",
+			"-c:a", "aac",
+			"-b:a", "128k",
+			"-avoid_negative_ts", "make_zero",
+			"-movflags", "+faststart",
+		)
+		if threads > 0 {
+			args = append(args, "-threads", strconv.Itoa(threads))
+		}
+		if musicIdx >= 0 {
+			args = append(args, "-shortest")
+		}
+		args = append(args, outputPath)
+		return args
 	}
 
-	args = append(args,
-		"-t", fmt.Sprintf("%.3f", dur),
-		"-c:v", "libx264",
-		"-preset", preset,
-		"-crf", strconv.Itoa(crf),
-		"-pix_fmt", "yuv420p",
-		"-c:a", "aac",
-		"-b:a", "128k",
-		"-avoid_negative_ts", "make_zero",
-		"-movflags", "+faststart",
-	)
-	if musicIdx >= 0 {
-		args = append(args, "-shortest")
-	}
-	args = append(args, outputPath)
+	encoder, encoderArgs := getEncoderParams(hwAccel, preset, crf)
 
-	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), args...)
+	// Try GPU encoder first (if not CPU)
+	if encoder != "libx264" {
+		cmdArgs := buildArgs(encoder, encoderArgs, hwDecodeArgs)
+		cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), cmdArgs...)
+		utils.HideCmdWindow(cmd)
+		if _, err := cmd.CombinedOutput(); err == nil {
+			return nil
+		}
+		// If fails, clean up partial output and fall back to CPU
+		_ = os.Remove(outputPath)
+	}
+
+	// CPU fallback
+	cmdArgs := buildArgs("libx264", []string{"-preset", preset, "-crf", strconv.Itoa(crf)}, nil)
+	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), cmdArgs...)
 	utils.HideCmdWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("ffmpeg cut error: %v, output: %s", err, string(out))
+		return fmt.Errorf("ffmpeg cut error (CPU fallback): %v, output: %s", err, string(out))
 	}
 	return nil
 }
@@ -173,7 +227,7 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 //   - Nếu stream-copy thất bại (codec không tương thích, container lỗi), tự động
 //     fallback sang re-encode.
 //   - Nếu clip CÓ filter → re-encode bằng libx264 với preset/crf cấu hình.
-func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPath string, preset string, crf int) error {
+func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPath string, preset string, crf int, threads int, hwAccel string) error {
 	if preset == "" {
 		preset = "fast"
 	}
@@ -199,8 +253,54 @@ func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPa
 		_ = os.Remove(outputPath)
 	}
 
-	return cutVideoReencode(ctx, inputPath, clip, outputPath, preset, crf)
+	return cutVideoReencode(ctx, inputPath, clip, outputPath, preset, crf, threads, hwAccel)
 }
+
+func getEncoderParams(hwAccel string, preset string, crf int) (encoder string, encoderArgs []string) {
+	switch hwAccel {
+	case "nvidia":
+		encoder = "h264_nvenc"
+		nvPreset := "p3"
+		switch preset {
+		case "ultrafast", "superfast", "veryfast", "faster", "fast":
+			nvPreset = "p1" // Tốc độ tối đa cho Nvidia NVENC
+		case "medium":
+			nvPreset = "p3"
+		case "slow", "slower":
+			nvPreset = "p5"
+		case "veryslow":
+			nvPreset = "p7"
+		}
+		encoderArgs = []string{"-preset", nvPreset}
+	case "intel":
+		encoder = "h264_qsv"
+		qsvPreset := "fast"
+		if preset == "ultrafast" || preset == "superfast" || preset == "veryfast" || preset == "faster" || preset == "fast" {
+			qsvPreset = "veryfast" // Tốc độ tối đa cho Intel QSV
+		} else if preset == "slow" || preset == "slower" || preset == "veryslow" {
+			qsvPreset = "slow"
+		}
+		encoderArgs = []string{"-preset", qsvPreset}
+	case "amd":
+		encoder = "h264_amf"
+		amfQuality := "speed"
+		if preset == "slow" || preset == "slower" || preset == "veryslow" {
+			amfQuality = "quality"
+		}
+		encoderArgs = []string{"-quality", amfQuality}
+	default:
+		encoder = "libx264"
+		cpuPreset := preset
+		if preset == "fast" {
+			cpuPreset = "superfast" // CPU fallback: tự động đổi sang superfast để nhanh hơn
+		} else if preset == "faster" {
+			cpuPreset = "ultrafast"
+		}
+		encoderArgs = []string{"-preset", cpuPreset, "-crf", strconv.Itoa(crf)}
+	}
+	return
+}
+
 
 // buildGraph dựng toàn bộ filter_complex cho một clip. Trả về nhãn map video/audio,
 // các đoạn filter (nối bằng ';'), và danh sách file text tạm đã tạo cho drawtext.
@@ -402,7 +502,7 @@ func drawText(t project.TextOp, fontPath, txtFile string) string {
 // transitionType == "" hoặc transitionDur <= 0 → nối cứng (concat, nhanh).
 // Ngược lại → dùng xfade (video) + acrossfade (audio) tại mọi mối nối, thời lượng
 // transition đồng nhất. Các input được chuẩn hóa về cùng khung/fps của clip đầu.
-func ConcatClips(inputFiles []string, outputPath, transitionType string, transitionDur float64, preset string, crf int) error {
+func ConcatClips(inputFiles []string, outputPath, transitionType string, transitionDur float64, preset string, crf int, hwAccel string) error {
 	if len(inputFiles) == 0 {
 		return fmt.Errorf("không có clip để ghép")
 	}
@@ -418,19 +518,15 @@ func ConcatClips(inputFiles []string, outputPath, transitionType string, transit
 
 	useTransition := transitionType != "" && transitionDur > 0
 	if !useTransition {
-		return concatDemuxer(inputFiles, outputPath, preset, crf)
+		return concatDemuxer(inputFiles, outputPath, preset, crf, hwAccel)
 	}
-	return concatXfade(inputFiles, outputPath, transitionType, transitionDur, preset, crf)
+	return concatXfade(inputFiles, outputPath, transitionType, transitionDur, preset, crf, hwAccel)
 }
 
 // concatDemuxer nối cứng bằng concat filter (re-encode, an toàn với input cùng codec).
-func concatDemuxer(inputFiles []string, outputPath, preset string, crf int) error {
+func concatDemuxer(inputFiles []string, outputPath, preset string, crf int, hwAccel string) error {
 	// Chuẩn hóa về khung/fps của clip đầu để concat filter không lỗi lệch kích thước.
 	w, h, fps := probeFrame(inputFiles[0])
-	args := []string{"-y"}
-	for _, f := range inputFiles {
-		args = append(args, "-i", f)
-	}
 	var parts []string
 	var concatIn strings.Builder
 	for i := range inputFiles {
@@ -442,35 +538,53 @@ func concatDemuxer(inputFiles []string, outputPath, preset string, crf int) erro
 	filter := strings.Join(parts, ";") + ";" +
 		concatIn.String() + fmt.Sprintf("concat=n=%d:v=1:a=1[vout][aout]", len(inputFiles))
 
-	args = append(args,
-		"-filter_complex", filter,
-		"-map", "[vout]", "-map", "[aout]",
-		"-c:v", "libx264", "-preset", preset, "-crf", strconv.Itoa(crf),
-		"-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
-		"-movflags", "+faststart", outputPath)
+	buildArgs := func(vcodec string, extraArgs []string) []string {
+		cmdArgs := []string{"-y"}
+		for _, f := range inputFiles {
+			cmdArgs = append(cmdArgs, "-i", f)
+		}
+		cmdArgs = append(cmdArgs,
+			"-filter_complex", filter,
+			"-map", "[vout]", "-map", "[aout]",
+			"-c:v", vcodec,
+		)
+		cmdArgs = append(cmdArgs, extraArgs...)
+		cmdArgs = append(cmdArgs,
+			"-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+			"-movflags", "+faststart", outputPath)
+		return cmdArgs
+	}
 
-	cmd := exec.Command(utils.GetBinPath("ffmpeg"), args...)
+	encoder, encoderArgs := getEncoderParams(hwAccel, preset, crf)
+	if encoder != "libx264" {
+		cmdArgs := buildArgs(encoder, encoderArgs)
+		cmd := exec.Command(utils.GetBinPath("ffmpeg"), cmdArgs...)
+		utils.HideCmdWindow(cmd)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+		_ = os.Remove(outputPath)
+	}
+
+	// Fallback to CPU
+	cmdArgs := buildArgs("libx264", []string{"-preset", preset, "-crf", strconv.Itoa(crf)})
+	cmd := exec.Command(utils.GetBinPath("ffmpeg"), cmdArgs...)
 	utils.HideCmdWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("ffmpeg concat error: %v, output: %s", err, string(out))
+		return fmt.Errorf("ffmpeg concat error (CPU fallback): %v, output: %s", err, string(out))
 	}
 	return nil
 }
 
 // concatXfade nối các clip với hiệu ứng chuyển cảnh xfade/acrossfade đồng nhất.
-func concatXfade(inputFiles []string, outputPath, transitionType string, td float64, preset string, crf int) error {
+func concatXfade(inputFiles []string, outputPath, transitionType string, td float64, preset string, crf int, hwAccel string) error {
 	w, h, fps := probeFrame(inputFiles[0])
 	durs := make([]float64, len(inputFiles))
 	for i, f := range inputFiles {
 		if info, e := media.GetVideoInfo(f); e == nil && info != nil {
 			durs[i] = info.Duration
 		}
-	}
-
-	args := []string{"-y"}
-	for _, f := range inputFiles {
-		args = append(args, "-i", f)
 	}
 
 	var parts []string
@@ -503,18 +617,42 @@ func concatXfade(inputFiles []string, outputPath, transitionType string, td floa
 	}
 
 	filter := strings.Join(parts, ";")
-	args = append(args,
-		"-filter_complex", filter,
-		"-map", prevV, "-map", prevA,
-		"-c:v", "libx264", "-preset", preset, "-crf", strconv.Itoa(crf),
-		"-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
-		"-movflags", "+faststart", outputPath)
 
-	cmd := exec.Command(utils.GetBinPath("ffmpeg"), args...)
+	buildArgs := func(vcodec string, extraArgs []string) []string {
+		cmdArgs := []string{"-y"}
+		for _, f := range inputFiles {
+			cmdArgs = append(cmdArgs, "-i", f)
+		}
+		cmdArgs = append(cmdArgs,
+			"-filter_complex", filter,
+			"-map", prevV, "-map", prevA,
+			"-c:v", vcodec,
+		)
+		cmdArgs = append(cmdArgs, extraArgs...)
+		cmdArgs = append(cmdArgs,
+			"-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+			"-movflags", "+faststart", outputPath)
+		return cmdArgs
+	}
+
+	encoder, encoderArgs := getEncoderParams(hwAccel, preset, crf)
+	if encoder != "libx264" {
+		cmdArgs := buildArgs(encoder, encoderArgs)
+		cmd := exec.Command(utils.GetBinPath("ffmpeg"), cmdArgs...)
+		utils.HideCmdWindow(cmd)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+		_ = os.Remove(outputPath)
+	}
+
+	// Fallback to CPU
+	cmdArgs := buildArgs("libx264", []string{"-preset", preset, "-crf", strconv.Itoa(crf)})
+	cmd := exec.Command(utils.GetBinPath("ffmpeg"), cmdArgs...)
 	utils.HideCmdWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("ffmpeg xfade error: %v, output: %s", err, string(out))
+		return fmt.Errorf("ffmpeg xfade error (CPU fallback): %v, output: %s", err, string(out))
 	}
 	return nil
 }
@@ -644,4 +782,42 @@ func atempoChain(speed float64) []float64 {
 // trimFloat format float gọn (bỏ số 0 thừa) để lệnh ffmpeg sạch.
 func trimFloat(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// mergeMusicTracks ghép nối tiếp nhiều bài nhạc nền thành một file MP3 duy nhất.
+func mergeMusicTracks(ctx context.Context, tracks []string) (string, error) {
+	if len(tracks) == 0 {
+		return "", nil
+	}
+	if len(tracks) == 1 {
+		return tracks[0], nil
+	}
+
+	// Đảm bảo thư mục bin chứa ffmpeg hoạt động
+	ffmpegPath := utils.GetBinPath("ffmpeg")
+
+	// Tạo file nhạc ghép tạm
+	tempDir := os.TempDir()
+	mergedPath := filepath.Join(tempDir, fmt.Sprintf("merged_bg_music_%d.mp3", time.Now().UnixNano()))
+
+	args := []string{"-y"}
+	for _, t := range tracks {
+		args = append(args, "-i", t)
+	}
+
+	// Xây dựng filter_complex concat
+	var filterInputs []string
+	for i := range tracks {
+		filterInputs = append(filterInputs, fmt.Sprintf("[%d:a]", i))
+	}
+	concatFilter := strings.Join(filterInputs, "") + fmt.Sprintf("concat=n=%d:v=0:a=1[outa]", len(tracks))
+	args = append(args, "-filter_complex", concatFilter, "-map", "[outa]", "-c:a", "libmp3lame", "-b:a", "192k", mergedPath)
+
+	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
+	utils.HideCmdWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("lỗi ghép nhạc nền: %v, output: %s", err, string(out))
+	}
+	return mergedPath, nil
 }

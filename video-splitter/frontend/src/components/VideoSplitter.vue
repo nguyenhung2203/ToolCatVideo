@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive, watch } from 'vue'
-import { GetVideoInfo, Analyze, ExportClips, SelectFiles, CancelAnalysis, GetStreamURL, GetDefaultConfig, GenerateThumbnail, SaveProject, LoadProjectBySource, ListProjects, DeleteProject, SelectImageFile, SelectAudioFile, SelectFolder, CancelExport, SaveGlobalSettings, GetGlobalSettings } from '../../wailsjs/go/main/App'
+import { ref, computed, onMounted, reactive, watch, onUnmounted } from 'vue'
+import { GetVideoInfo, Analyze, ExportClips, SelectFiles, CancelAnalysis, GetStreamURL, GetDefaultConfig, GenerateThumbnail, SaveProject, LoadProjectBySource, ListProjects, DeleteProject, SelectImageFile, SelectAudioFile, SelectFolder, CancelExport, SaveGlobalSettings, GetGlobalSettings, ExtractClipFrames, GenerateAIThumbnail } from '../../wailsjs/go/main/App'
 import { project, storage, main } from '../../wailsjs/go/models'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { useTheme } from '../ui-system/composables/useTheme'
+import { useDownloader } from './composables/useDownloader'
+import { useImageDownloader, IMAGE_SOURCES } from './composables/useImageDownloader'
 
 const { isDark, toggleColorScheme } = useTheme()
 
@@ -51,10 +53,19 @@ const clipsMap = ref<Record<string, project.Clip[]>>({})
 const isAnalyzing = ref(false)
 const isExporting = ref(false)
 const isMultiExportRunning = ref(false)
+const globalSettingsOutDir = ref('D:\\Output')
 const outDir = ref('D:\\Output')
+const outImageDir = ref('D:\\Output')
+const autoCreateSubfolders = ref(true)
+const exportWithThumbnails = ref(true)
+const exportStatusText = ref('Đang chuẩn bị...')
+const videoDoneCount = ref(0)
+const thumbDoneCount = ref(0)
 
 const activeAnalyzingPaths = ref<Set<string>>(new Set())
 const analyzeProgressMap = ref<Record<string, number>>({})
+const analyzeStartTimes = ref<Record<string, number>>({})
+const exportStartTime = ref<number | null>(null)
 
 const isPlayingExported = ref(false)
 const activeVideoSrc = ref('')
@@ -97,6 +108,8 @@ interface NamedProject {
     musicPath: string
     musicVolume: number
     muteOriginal: boolean
+    musicLoop?: boolean
+    musicTracks?: string[]
   }
   outDir: string
   exportJobs: number
@@ -114,6 +127,85 @@ const newProjectName = ref('')
 // === Edit clip (GĐ5): panel chỉnh tỉ lệ/màu/tốc độ ===
 const showEdit = ref(false)
 const editClipIdx = ref(-1)
+
+const geminiAPIKey = ref('')
+
+// === AI Thumbnail Generator state and functions ===
+const aiThumbState = reactive({
+  isExtractingFrames: false,
+  extractedFrames: [] as string[],
+  selectedFrames: new Set<string>(),
+  userPrompt: '',
+  aspectRatio: '9:16',
+  isGenerating: false,
+  generatedImage: '',
+  statusText: ''
+})
+
+const getClipFrames = async () => {
+  if (!editingClip.value) return
+  aiThumbState.isExtractingFrames = true
+  aiThumbState.statusText = 'Đang trích xuất ảnh mẫu...'
+  try {
+    const videoPath = activeVideoPath.value
+    const startTime = editingClip.value.startTime
+    const endTime = editingClip.value.endTime
+    const frames = await ExtractClipFrames(videoPath, startTime, endTime)
+    aiThumbState.extractedFrames = frames
+    aiThumbState.selectedFrames = new Set(frames)
+    aiThumbState.statusText = 'Đã trích xuất xong 3 ảnh mẫu.'
+  } catch (err) {
+    showToast('Lỗi trích xuất ảnh mẫu: ' + err, 'error')
+    aiThumbState.statusText = 'Lỗi trích xuất ảnh mẫu.'
+  } finally {
+    aiThumbState.isExtractingFrames = false
+  }
+}
+
+const generateAIThumbnailImg = async () => {
+  if (!editingClip.value) return
+  if (!geminiAPIKey.value) {
+    showToast('Vui lòng cấu hình Gemini API Key trong phần Cài đặt chung.', 'warning')
+    return
+  }
+  if (!aiThumbState.userPrompt.trim()) {
+    showToast('Vui lòng nhập mô tả chủ đề cho thumbnail.', 'warning')
+    return
+  }
+
+  aiThumbState.isGenerating = true
+  aiThumbState.statusText = 'Đang gửi cho Gemini tối ưu hóa prompt...'
+  try {
+    const selectedFramesList = Array.from(aiThumbState.selectedFrames)
+    const videoPath = activeVideoPath.value
+    const clipIdx = editingClip.value.index
+    const aspect = aiThumbState.aspectRatio
+
+    aiThumbState.statusText = 'Đang sinh ảnh bằng Imagen 4 (Google AI)...'
+    const editJSON = JSON.stringify(editingClip.value?.edit || {})
+    const resultImgPath = await GenerateAIThumbnail(
+      geminiAPIKey.value,
+      aiThumbState.userPrompt,
+      selectedFramesList,
+      videoPath,
+      clipIdx,
+      aspect,
+      editJSON
+    )
+
+    aiThumbState.generatedImage = resultImgPath
+    // Áp dụng luôn làm thumbnail của clip
+    editingClip.value.thumbnail = resultImgPath
+    saveActiveProjectState()
+    showToast('Tạo ảnh bìa AI thành công và đã áp dụng!', 'success')
+    aiThumbState.statusText = 'Đã tạo ảnh bìa AI thành công!'
+  } catch (err) {
+    showToast('Lỗi tạo ảnh bìa AI: ' + err, 'error')
+    aiThumbState.statusText = 'Lỗi tạo ảnh bìa AI.'
+  } finally {
+    aiThumbState.isGenerating = false
+  }
+}
 
 // === Cấu hình dự án ===
 const showAdvancedCutSettings = ref(false)
@@ -144,9 +236,11 @@ const globalRemix = reactive({
   colorBrightness: 0,
   colorContrast: 0,
   colorSaturation: 1.0,
-  musicPath: '',        // Nhạc nền
+  musicPath: '',        // Nhạc nền (bài nhạc đầu hoặc đơn)
   musicVolume: 0.3,
-  muteOriginal: false   // Tắt tiếng gốc
+  muteOriginal: false,  // Tắt tiếng gốc
+  musicLoop: false,     // Tự động lặp lại nhạc nền nếu ngắn hơn video
+  musicTracks: [] as string[] // Danh sách nhiều bài nhạc nền để ghép nối tiếp
 })
 
 // Chọn nhạc nền cho cấu hình chỉnh sửa
@@ -154,8 +248,13 @@ const pickGlobalMusic = async () => {
   try {
     const p = await SelectAudioFile()
     if (p) {
-      globalRemix.musicPath = p
-      addLog('Đã chọn nhạc nền: ' + p.split('\\').pop())
+      if (!globalRemix.musicTracks) {
+        globalRemix.musicTracks = []
+      }
+      globalRemix.musicTracks.push(p)
+      // Cập nhật musicPath để tương thích với các logic cũ chỉ dùng 1 file
+      globalRemix.musicPath = globalRemix.musicTracks[0]
+      addLog('Đã thêm nhạc nền: ' + p.split('\\').pop())
     }
   } catch (e) {
     addLog('Lỗi chọn nhạc nền: ' + String(e))
@@ -163,26 +262,81 @@ const pickGlobalMusic = async () => {
 }
 
 const clearGlobalMusic = () => {
+  globalRemix.musicTracks = []
   globalRemix.musicPath = ''
-  addLog('Đã bỏ nhạc nền.')
+  addLog('Đã bỏ tất cả nhạc nền.')
+}
+
+const removeMusicTrack = (idx: number) => {
+  if (globalRemix.musicTracks) {
+    globalRemix.musicTracks.splice(idx, 1)
+    if (globalRemix.musicTracks.length === 0) {
+      globalRemix.musicPath = ''
+    } else {
+      globalRemix.musicPath = globalRemix.musicTracks[0]
+    }
+    addLog('Đã xóa 1 đoạn nhạc nền.')
+  }
+}
+
+const moveMusicTrack = (idx: number, direction: number) => {
+  if (!globalRemix.musicTracks) return
+  const targetIdx = idx + direction
+  if (targetIdx < 0 || targetIdx >= globalRemix.musicTracks.length) return
+  const temp = globalRemix.musicTracks[idx]
+  globalRemix.musicTracks[idx] = globalRemix.musicTracks[targetIdx]
+  globalRemix.musicTracks[targetIdx] = temp
+  globalRemix.musicPath = globalRemix.musicTracks[0]
 }
 
 const globalMusicName = computed(() => {
-  return globalRemix.musicPath ? globalRemix.musicPath.split('\\').pop() : ''
+  if (!globalRemix.musicTracks || globalRemix.musicTracks.length === 0) {
+    return ''
+  }
+  if (globalRemix.musicTracks.length === 1) {
+    return globalRemix.musicTracks[0].split('\\').pop() || ''
+  }
+  return `${globalRemix.musicTracks.length} bài hát đã chọn`
 })
 
 // === Cấu hình (Settings) ===
 const showSettings = ref(false)
+
+// === Download Online Video (composable) ===
+const {
+  showDownloadPanel, downloadUrl, downloadMode, isProbing, isDownloading, probeResult,
+  downloadDir, cookieBrowser, dlSelectedIds, dlSortBy, dlKeyword, dlMinViews,
+  dlProgressMap, filteredDlEntries, dlSelectedCount, formatViewCount, formatDlDate,
+  dlLinkType, dlMaxCount, dlFetchOrder, searchSource, detectedLinkType, effectiveLinkType, isProfileOrPlaylist,
+  dlToggleAll, dlToggle, openDownloadPanel, probeUrl, startDownload, cancelDl,
+  pickDownloadDir, addDownloadedToProject, initDownloadEvents, copyToClipboard,
+} = useDownloader(showToast, videoPaths)
+
+// === Download Images (composable) ===
+const {
+  showImagePanel, imageQuery, imageSource, imageApiKey, imageMaxCount,
+  isSearching: isImageSearching, isDownloading: isImageDownloading,
+  searchResult: imageSearchResult, imageDir, selectedImageIds,
+  progressMap: imageProgressMap, searchLog: imageSearchLog,
+  downloadDoneCount, downloadTotalCount, downloadProgress: imageDownloadProgress,
+  selectedCount: imageSelectedCount, allEntries: imageAllEntries,
+  sourceNeedsKey, selectedSource: imageSelectedSource, hasEnvKey: imageHasEnvKey,
+  toggleSelectAll: imageToggleAll, toggleImage, openImagePanel,
+  searchImages, startImageDownload, cancelImageDl, pickImageDir, initImageEvents,
+} = useImageDownloader(showToast)
+
+const globalSettingsConfig = ref<any>(null)
+
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
   sceneThreshold: 26.0,
   minClipDuration: 5.0,
-  maxClipDuration: 30.0,
+  maxClipDuration: 60.0,
   autoAcceptScore: 60,
   reviewMinScore: 35,
   silenceThreshold: -30,
   silenceDuration: 0.5,
-  proxyFPS: 10,
+  proxyFPS: 4,
   weights: {
     visualChange: 45,
     blackFrame: 35,
@@ -192,7 +346,9 @@ const analyzerConfig = reactive(new project.AnalyzerConfig({
     continuityPen: 10
   },
   exportPreset: 'fast',
-  exportCRF: 23
+  exportCRF: 23,
+  prompt: '',
+  hardwareAccel: 'none'
 }))
 
 const loadDefaultConfig = async () => {
@@ -210,6 +366,28 @@ const resetConfig = async () => {
   addLog('Đã đặt lại cấu hình về mặc định.')
 }
 
+const onMinDurationChange = () => {
+  let val = Number(analyzerConfig.minClipDuration)
+  if (isNaN(val) || val < 1) val = 1
+  if (val > 60) val = 60
+  analyzerConfig.minClipDuration = val
+
+  if (analyzerConfig.minClipDuration > analyzerConfig.maxClipDuration) {
+    analyzerConfig.maxClipDuration = analyzerConfig.minClipDuration
+  }
+}
+
+const onMaxDurationChange = () => {
+  let val = Number(analyzerConfig.maxClipDuration)
+  if (isNaN(val) || val < 10) val = 10
+  if (val > 600) val = 600
+  analyzerConfig.maxClipDuration = val
+
+  if (analyzerConfig.maxClipDuration < analyzerConfig.minClipDuration) {
+    analyzerConfig.minClipDuration = analyzerConfig.maxClipDuration
+  }
+}
+
 const isSettingsLoaded = ref(false)
 
 const saveGlobalSettings = async () => {
@@ -220,16 +398,21 @@ const saveGlobalSettings = async () => {
       globalRemix: JSON.parse(JSON.stringify(globalRemix)),
       exportJobs: exportJobs.value,
       analyzeJobs: analyzeJobs.value,
-      outDir: outDir.value
+      outDir: outDir.value,
+      outImageDir: outImageDir.value,
+      autoCreateSubfolders: autoCreateSubfolders.value,
+      exportWithThumbnails: exportWithThumbnails.value,
+      geminiAPIKey: geminiAPIKey.value
     }
     await SaveGlobalSettings(JSON.stringify(payload))
+    globalSettingsConfig.value = JSON.parse(JSON.stringify(analyzerConfig))
   } catch (e) {
     console.error('Lỗi tự động lưu cài đặt chung:', e)
   }
 }
 
 let saveTimeout: any = null
-watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir], () => {
+watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, autoCreateSubfolders, exportWithThumbnails, geminiAPIKey], () => {
   if (!isSettingsLoaded.value) return
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(() => {
@@ -291,17 +474,150 @@ const computedVideoSrc = computed(() => {
   return activeVideoSrc.value
 })
 
+// === QUẢN LÝ PROMPT THUMBNAIL MẪU (PRESETS) ===
+interface PromptPreset {
+  id: string
+  name: string
+  content: string
+}
+
+const promptPresets = ref<PromptPreset[]>([
+  { id: 'default_auto', name: '✨ Tối ưu tự động', content: 'A premium, eye-catching, and highly engaging thumbnail with a professional modern look, vibrant colors, clean lighting, and clear focal point.' },
+  { id: '1', name: '🎬 Kịch tính / Điện ảnh', content: 'Dramatic cinematic scene, high suspense, emotional facial expression, extreme close-up, vivid colors, neon lighting accents, dark background, YouTube Shorts thumbnail style.' },
+  { id: '2', name: '🎨 Hoạt họa / Anime', content: 'Vibrant anime visual style, cute character, colorful background, soft lighting, 4k digital art illustration, highly detailed, eye-catching style.' },
+  { id: '3', name: '📸 Vlog / Đời thường', content: 'Modern casual lifestyle vlog style, bright natural lighting, happy emotion, clean background, high clarity, realistic mobile-first photography.' },
+  { id: '4', name: '🔥 Xu hướng / Viral', content: 'High contrast trending vertical thumbnail, ultra-clear visual detail, bold composition, dynamic lighting, optimized for mobile screens, premium aesthetics.' }
+])
+
+const selectedPromptPresetId = ref('')
+const newPresetName = ref('')
+const showAddPresetForm = ref(false)
+
+const loadPromptPresets = () => {
+  const data = localStorage.getItem('prompt_presets_list')
+  if (data) {
+    try {
+      let loaded = JSON.parse(data) as PromptPreset[]
+      // Loại bỏ các mẫu cũ nhạy cảm nếu có
+      loaded = loaded.filter(p => !p.name.includes('Gái') && !p.content.includes('Hot girl') && !p.content.includes('sexy') && !p.name.includes('Hot Girl'))
+      
+      // Nếu sau khi filter bị thiếu các mẫu mặc định hoặc trống, hãy nạp lại các mẫu mới sạch sẽ
+      const defaultPresetsList = [
+        { id: 'default_auto', name: '✨ Tối ưu tự động', content: 'A premium, eye-catching, and highly engaging thumbnail with a professional modern look, vibrant colors, clean lighting, and clear focal point.' },
+        { id: '1', name: '🎬 Kịch tính / Điện ảnh', content: 'Dramatic cinematic scene, high suspense, emotional facial expression, extreme close-up, vivid colors, neon lighting accents, dark background, YouTube Shorts thumbnail style.' },
+        { id: '2', name: '🎨 Hoạt họa / Anime', content: 'Vibrant anime visual style, cute character, colorful background, soft lighting, 4k digital art illustration, highly detailed, eye-catching style.' },
+        { id: '3', name: '📸 Vlog / Đời thường', content: 'Modern casual lifestyle vlog style, bright natural lighting, happy emotion, clean background, high clarity, realistic mobile-first photography.' },
+        { id: '4', name: '🔥 Xu hướng / Viral', content: 'High contrast trending vertical thumbnail, ultra-clear visual detail, bold composition, dynamic lighting, optimized for mobile screens, premium aesthetics.' }
+      ]
+      
+      // Bổ sung các mẫu mặc định còn thiếu
+      for (const def of defaultPresetsList) {
+        if (!loaded.some(l => l.id === def.id)) {
+          loaded.push(def)
+        } else {
+          // Cập nhật nội dung sạch mới cho các ID mặc định
+          const idx = loaded.findIndex(l => l.id === def.id)
+          if (idx !== -1) {
+            loaded[idx] = def
+          }
+        }
+      }
+      
+      // Đảm bảo sắp xếp đúng thứ tự default lên trước
+      loaded.sort((a, b) => {
+        const order: Record<string, number> = { 'default_auto': 0, '1': 1, '2': 2, '3': 3, '4': 4 }
+        const oa = order[a.id] !== undefined ? order[a.id] : 99
+        const ob = order[b.id] !== undefined ? order[b.id] : 99
+        return oa - ob
+      })
+
+      promptPresets.value = loaded
+      savePromptPresets()
+    } catch (e) {
+      console.error(e)
+    }
+  }
+}
+
+const savePromptPresets = () => {
+  localStorage.setItem('prompt_presets_list', JSON.stringify(promptPresets.value))
+}
+
+const selectPresetTag = (preset: PromptPreset) => {
+  if (selectedPromptPresetId.value === preset.id) {
+    selectedPromptPresetId.value = ''
+  } else {
+    selectedPromptPresetId.value = preset.id
+    analyzerConfig.prompt = preset.content
+  }
+}
+
+const deletePresetById = (id: string) => {
+  promptPresets.value = promptPresets.value.filter(p => p.id !== id)
+  savePromptPresets()
+  if (selectedPromptPresetId.value === id) {
+    selectedPromptPresetId.value = ''
+  }
+  showToast('Đã xóa mẫu prompt.', 'info')
+}
+
+const addNewPreset = () => {
+  if (!newPresetName.value.trim()) {
+    showToast('Vui lòng nhập tên mẫu prompt!', 'warning')
+    return
+  }
+  if (!analyzerConfig.prompt.trim()) {
+    showToast('Vui lòng nhập nội dung prompt trước khi lưu thành mẫu!', 'warning')
+    return
+  }
+  const id = Date.now().toString()
+  promptPresets.value.push({
+    id,
+    name: newPresetName.value.trim(),
+    content: analyzerConfig.prompt.trim()
+  })
+  savePromptPresets()
+  selectedPromptPresetId.value = id
+  newPresetName.value = ''
+  showAddPresetForm.value = false
+  showToast('Đã lưu mẫu prompt mới!', 'success')
+}
+
+
 onMounted(async () => {
+  loadPromptPresets()
   // 1. Tải cấu hình cài đặt chung toàn cục (settings.json)
   try {
     const globalSettingsStr = await GetGlobalSettings()
     if (globalSettingsStr) {
       const gSettings = JSON.parse(globalSettingsStr)
-      if (gSettings.analyzerConfig) Object.assign(analyzerConfig, gSettings.analyzerConfig)
-      if (gSettings.globalRemix) Object.assign(globalRemix, gSettings.globalRemix)
+      if (gSettings.analyzerConfig) {
+        Object.assign(analyzerConfig, gSettings.analyzerConfig)
+        globalSettingsConfig.value = JSON.parse(JSON.stringify(gSettings.analyzerConfig))
+      }
+      if (gSettings.globalRemix) {
+        Object.assign(globalRemix, gSettings.globalRemix)
+        if (globalRemix.musicLoop === undefined) globalRemix.musicLoop = false
+        if (!globalRemix.musicTracks) globalRemix.musicTracks = []
+      }
       if (gSettings.exportJobs !== undefined) exportJobs.value = gSettings.exportJobs
       if (gSettings.analyzeJobs !== undefined) analyzeJobs.value = gSettings.analyzeJobs
-      if (gSettings.outDir !== undefined) outDir.value = gSettings.outDir
+      if (gSettings.outDir !== undefined) {
+        outDir.value = gSettings.outDir
+        globalSettingsOutDir.value = gSettings.outDir
+      }
+      if (gSettings.outImageDir !== undefined) {
+        outImageDir.value = gSettings.outImageDir
+      }
+      if (gSettings.autoCreateSubfolders !== undefined) {
+        autoCreateSubfolders.value = gSettings.autoCreateSubfolders
+      }
+      if (gSettings.exportWithThumbnails !== undefined) {
+        exportWithThumbnails.value = gSettings.exportWithThumbnails
+      }
+      if (gSettings.geminiAPIKey !== undefined) {
+        geminiAPIKey.value = gSettings.geminiAPIKey
+      }
     } else {
       await loadDefaultConfig()
     }
@@ -345,9 +661,11 @@ onMounted(async () => {
         colorSaturation: 1.0,
         musicPath: '',
         musicVolume: 0.3,
-        muteOriginal: false
+        muteOriginal: false,
+        musicLoop: false,
+        musicTracks: []
       },
-      outDir: 'D:\\Output',
+      outDir: globalSettingsOutDir.value,
       exportJobs: 2,
       analyzeJobs: 1,
       createdAt: Date.now()
@@ -380,25 +698,312 @@ onMounted(async () => {
   })
   EventsOn('export_log', (msg: string) => {
     addLog("[Xuất Bản] " + msg)
+    if (msg.includes("Đang xử lý Video:") || (msg.includes("Clip #") && (msg.includes("đang") || msg.includes("Đang") || msg.includes("Hoàn thành") || msg.includes("Ghép")))) {
+      exportStatusText.value = msg
+    }
+    
+    // Đổ cảnh báo/lỗi ra Toast trực quan
+    if (msg.includes("Lỗi sinh ảnh AI") || msg.includes("Lỗi sinh ảnh") || msg.includes("Lỗi trích xuất") || msg.includes("Cảnh báo - Chưa cấu hình API Key")) {
+      showToast(msg, 'error', 6000)
+    } else if (msg.includes("Cảnh báo")) {
+      showToast(msg, 'warning', 5000)
+    }
+    
+    // Đếm số lượng video và thumbnail đã hoàn thành từ logs
+    if (msg.includes("Đang vẽ ảnh bìa AI")) {
+      videoDoneCount.value = Math.min(exportProgress.value.total, videoDoneCount.value + 1)
+    }
+    if (msg.includes("Hoàn thành!")) {
+      if (videoDoneCount.value < exportProgress.value.total) {
+        videoDoneCount.value = Math.min(exportProgress.value.total, videoDoneCount.value + 1)
+      }
+      thumbDoneCount.value = Math.min(exportProgress.value.total, thumbDoneCount.value + 1)
+    }
   })
-  EventsOn('export_progress', (p: { done: number, total: number }) => {
+  EventsOn('export_progress', (p: { done: number, total: number, clipId?: string, ok?: boolean, outPath?: string }) => {
     if (!isMultiExportRunning.value) {
       exportProgress.value = { done: p.done, total: p.total }
     }
+    // Cập nhật status clip ngay khi clip đó xuất xong — hiện ✅ + nút Phát tức thì
+    if (p.clipId && p.ok) {
+      for (const path of Object.keys(clipsMap.value)) {
+        const clip = (clipsMap.value[path] || []).find((c: any) => c.id === p.clipId)
+        if (clip) {
+          clip.status = 'completed'
+          // Lưu đường dẫn file video đã cắt để nút "Phát" hoạt động ngay
+          if (p.outPath) {
+            clip.exportedPath = p.outPath
+          }
+          break
+        }
+      }
+    }
   })
+
+  // Đếm ngược thời gian hoàn tất & Cập nhật tiến độ mượt mà (interpolation)
+  timerInterval = setInterval(() => {
+    const now = Date.now()
+    
+    // Cập nhật currentTimeRef mỗi 1 giây
+    if (Math.abs(now - currentTimeRef.value) >= 1000) {
+      currentTimeRef.value = now
+    }
+
+    // Xử lý tiến độ "nhích nhích" mượt mà cho tất cả video đang chạy
+    for (const path of activeAnalyzingPaths.value) {
+      const target = analyzeProgressMap.value[path] || 0
+      let current = displayProgressMap.value[path] || 0
+      
+      if (current < target) {
+        // Trượt mượt về phía đích thực tế do BE báo cáo (không tự ý chế tiến độ giả)
+        const step = (target - current) * 0.12
+        current += step > 0.08 ? step : 0.08
+        if (current >= target) current = target
+      }
+      
+      displayProgressMap.value[path] = current
+    }
+  }, 100)
 })
+
+onUnmounted(() => {
+  if (timerInterval) clearInterval(timerInterval)
+})
+
+const currentTimeRef = ref(Date.now())
+const displayProgressMap = ref<Record<string, number>>({})
+let timerInterval: any = null
+
+const analyzeETAMap = ref<Record<string, { remaining: number, lastUpdate: number, lastProgress: number, hasRealDuration?: boolean }>>({})
+const exportETARecord = ref<{ remaining: number, lastUpdate: number, lastProgress: number } | null>(null)
+const videoDurationMap = ref<Record<string, number>>({})
+const videoInfoMap = ref<Record<string, project.VideoInfo>>({})
+
+const getAnalyzeETA = (path: string): string => {
+  const now = currentTimeRef.value // dynamic dependency
+  const startTime = analyzeStartTimes.value[path]
+  const progress = displayProgressMap.value[path] || 0
+
+  if (!startTime) {
+    return 'Đang chuẩn bị...'
+  }
+  if (progress >= 98) {
+    return 'Đang hoàn tất...'
+  }
+
+  const duration = videoDurationMap.value[path] || (path === activeVideoPath.value && videoInfo.value?.Duration) || 0
+  const info = videoInfoMap.value[path] || (path === activeVideoPath.value && videoInfo.value)
+
+  // Calculate default initial estimate based on duration, mode, and realistic startup overheads across all 3 phases
+  let initialRemaining = 45 // fallback default
+  if (duration > 0) {
+    const mode = analyzerConfig.mode
+    if (mode === 'fast' || mode === 'fixed') {
+      // Fast mode: KHÔNG tạo proxy, chạy thẳng PySceneDetect trên video gốc
+      // Nhanh hơn nhưng ít chính xác hơn — thời gian ≈ duration / 60 (PySceneDetect CPU)
+      initialRemaining = 5 + duration / 60.0
+    } else if (mode === 'precise') {
+      initialRemaining = 15 + duration / 10.0 // precise: proxy + WAV + Librosa
+    } else {
+      initialRemaining = 10 + duration / 18.0 // smart: proxy 320×180 + multi-detector
+    }
+    if (initialRemaining < 3) initialRemaining = 3
+
+    // Apply complexity factor based on resolution and FPS
+    if (info && info.Width && info.Height && info.FPS) {
+      const pixelRate = info.Width * info.Height * info.FPS
+      const standardRate = 1920 * 1080 * 30 // standard 1080p 30fps
+      let complexity = pixelRate / standardRate
+      if (complexity < 0.25) complexity = 0.25
+      if (complexity > 4.0) complexity = 4.0 // Cap at 4.0x since scaling is not strictly linear for GPU decoding
+      initialRemaining = initialRemaining * complexity
+    }
+  }
+
+  // Scale initial estimate based on parallel analyze threads (gentle sub-linear scaling since cores share resources)
+  const jobCount = analyzeJobs.value || 1
+  const concurrencyMultiplier = 1.0 + (jobCount - 1) * 0.25
+  initialRemaining = initialRemaining * concurrencyMultiplier
+
+  let eta = analyzeETAMap.value[path]
+  const nowMs = Date.now()
+
+  // Estimate Phase 3 (Thumbnail extraction) overhead: min 3 seconds, average duration / 75 seconds.
+  const phase3Overhead = duration > 0 ? Math.max(3, duration / 75) : 5
+
+  // Calculate raw estimate based on progress (only use linear projection after 15% to avoid initial noise)
+  let rawRemaining = initialRemaining
+  if (progress >= 15 && progress < 92) {
+    const elapsed = (nowMs - startTime) / 1000
+    // Phase 1 + 2 maps to 0% - 90% progress range. Scale progress accordingly.
+    const phase12ProgressRatio = Math.min(0.99, progress / 90)
+    const totalEstimatedPhase12 = elapsed / phase12ProgressRatio
+    const remainingPhase12 = Math.max(0, totalEstimatedPhase12 - elapsed)
+    
+    rawRemaining = remainingPhase12 + phase3Overhead
+  } else if (progress >= 92 && progress < 98) {
+    // Phase 3 maps to 92% - 98% progress range. Interpolate remaining Phase 3 time.
+    const phase3Percent = (progress - 92) / (98 - 92)
+    rawRemaining = Math.max(1, phase3Overhead * (1 - phase3Percent))
+  }
+
+  if (!eta) {
+    eta = {
+      remaining: rawRemaining,
+      lastUpdate: nowMs,
+      lastProgress: progress,
+      hasRealDuration: duration > 0
+    }
+    analyzeETAMap.value[path] = eta
+  } else if (duration > 0 && !eta.hasRealDuration) {
+    eta.remaining = rawRemaining
+    eta.lastUpdate = nowMs
+    eta.lastProgress = progress
+    eta.hasRealDuration = true
+  } else {
+    eta.remaining = rawRemaining
+    eta.lastUpdate = nowMs
+    eta.lastProgress = progress
+  }
+
+  // displayRemaining = luôn dùng rawRemaining (tính từ elapsed thực tế)
+  // Không dùng "countdown từ lastUpdate" vì sẽ drift về 0 khi progress đứng yên
+  let displayRemaining = Math.max(1, rawRemaining)
+
+  // Khi đang ở Bước 1 (progress <= 14%): đếm ngược từ initialRemaining - elapsed
+  if (progress <= 14) {
+    const elapsed = (nowMs - startTime) / 1000
+    displayRemaining = Math.max(1, initialRemaining - elapsed)
+  }
+
+  // Khi progress 15-92%: rawRemaining đã được tính đúng theo elapsed → dùng trực tiếp
+  // Khi progress 92-98%: interpolate phase3 overhead
+
+  // Sàn: không bao giờ hiện < phase3Overhead khi chưa vào Phase 3
+  if (progress < 92 && displayRemaining < phase3Overhead) {
+    displayRemaining = phase3Overhead
+  }
+
+  const m = Math.floor(displayRemaining / 60)
+  const s = Math.floor(displayRemaining % 60)
+
+  if (displayRemaining <= 5) {
+    return 'Sắp xong...'
+  }
+  return `Còn khoảng ${m > 0 ? `${m}ph ` : ''}${s}s`
+}
+
+const getExportETA = (): string => {
+  const now = currentTimeRef.value // dynamic dependency
+  const startTime = exportStartTime.value
+  const done = exportProgress.value.done
+  const total = exportProgress.value.total
+
+  if (!startTime || total <= 0) {
+    return 'Đang chuẩn bị...'
+  }
+  if (done === 0) {
+    return 'Đang xử lý...'
+  }
+  if (done >= total) {
+    return 'Hoàn thành'
+  }
+
+  const nowMs = Date.now()
+  const elapsed = (nowMs - startTime) / 1000
+  const avgTimePerClip = elapsed / done
+  const remainingClips = total - done
+  const rawRemaining = avgTimePerClip * remainingClips
+
+  let eta = exportETARecord.value
+  if (!eta) {
+    eta = {
+      remaining: rawRemaining,
+      lastUpdate: nowMs,
+      lastProgress: done
+    }
+    exportETARecord.value = eta
+  } else if (done !== eta.lastProgress) {
+    const secondsPass = (nowMs - eta.lastUpdate) / 1000
+    const currentCountdown = Math.max(1, eta.remaining - secondsPass)
+    const smoothed = currentCountdown * 0.6 + rawRemaining * 0.4
+    
+    eta.remaining = smoothed
+    eta.lastUpdate = nowMs
+    eta.lastProgress = done
+  }
+
+  const secondsSinceLastUpdate = (nowMs - eta.lastUpdate) / 1000
+  const displayRemaining = Math.max(1, eta.remaining - secondsSinceLastUpdate)
+
+  const m = Math.floor(displayRemaining / 60)
+  const s = Math.floor(displayRemaining % 60)
+
+  if (displayRemaining <= 1.5) {
+    return 'Còn vài giây...'
+  }
+  return `Còn khoảng ${m > 0 ? `${m}ph ` : ''}${s}s`
+}
+
+const formatExportStatusMsg = (msg: string): string => {
+  if (!msg) return ''
+  if (msg.includes('Đang bắt đầu...')) return msg
+  let cleaned = msg.replace("Đang xử lý Video: ", "👉 ")
+  cleaned = cleaned.replace(": Đang cắt video...", "")
+  cleaned = cleaned.replace(": Đang vẽ ảnh bìa AI...", "")
+  cleaned = cleaned.replace(": Hoàn thành! (THÀNH CÔNG)", " (Hoàn tất)")
+  cleaned = cleaned.replace(": Hoàn thành! (ĐÃ CÓ)", " (Hoàn tất)")
+  cleaned = cleaned.replace(": Hoàn thành! (THẤT BẠI)", " (Lỗi)")
+  return cleaned
+}
 
 const getThumbUrl = (path: string) => {
   if (!path || !streamPrefix.value) return ''
   return `${streamPrefix.value}${encodeURIComponent(path)}${streamSuffix.value}`
 }
 
-// Lắng nghe tiến trình phân tích từ Go Backend
 EventsOn('analyze_progress', (data: { path: string, progress: number }) => {
   if (data && data.path) {
     analyzeProgressMap.value[data.path] = data.progress
   }
 })
+
+// Nhận TẤT CẢ clip ngay sau Bước 2 (phát hiện điểm cắt xong, chưa có ảnh xem trước)
+// → Hiện clip lên giao diện ngay lập tức, không đợi ảnh xem trước
+EventsOn('clips_detected', (data: { path: string, clips: any[] }) => {
+  if (data && data.path && data.clips) {
+    const processed = data.clips.map((raw: any) => {
+      const c = new project.Clip(raw)
+      c.startTime = Math.round(c.startTime)
+      c.endTime = Math.round(c.endTime)
+      c.duration = Math.round(c.endTime - c.startTime)
+      applyGlobalRemixToClip(c)
+      return c
+    })
+    clipsMap.value[data.path] = processed
+  }
+})
+
+// Cập nhật ảnh xem trước cho từng clip đã hiện (Bước 3 chạy nền)
+// → Ảnh tự động "hiện dần" trên giao diện mà clip đã có sẵn
+EventsOn('clip_thumb_update', (data: { path: string, clipId: string, thumbnail: string, thumbEnd: string }) => {
+  if (data && data.path && data.clipId) {
+    const clips = clipsMap.value[data.path]
+    if (clips) {
+      const clip = clips.find((c: any) => c.id === data.clipId)
+      if (clip) {
+        clip.thumbnail = data.thumbnail || ''
+        clip.thumbEnd = data.thumbEnd || ''
+      }
+    }
+  }
+})
+
+// Download events (handled by composable)
+initDownloadEvents(addLog)
+// Image download events
+initImageEvents()
+
 
 const handleSelectFiles = async () => {
   try {
@@ -453,6 +1058,24 @@ const analyzeSingle = async (path: string): Promise<boolean> => {
   try {
     activeAnalyzingPaths.value.add(path)
     analyzeProgressMap.value[path] = 0
+    displayProgressMap.value[path] = 0
+    delete analyzeETAMap.value[path]
+    analyzeStartTimes.value[path] = Date.now()
+    
+    // Clear old clips to ensure the new analysis results completely overwrite the old ones
+    clipsMap.value[path] = []
+    
+    // Fetch video info to pre-calculate ETA duration
+    try {
+      const info = await GetVideoInfo(path)
+      if (info && info.Duration) {
+        videoDurationMap.value[path] = info.Duration
+        videoInfoMap.value[path] = info
+      }
+    } catch (e) {
+      console.error("Lỗi đọc duration cho ETA:", e)
+    }
+
     const clips = await Analyze(path, analyzerConfig)
     // Làm tròn mốc thời gian về 1 chữ số thập phân — backend trả số lẻ dài
     // (vd 485.13333333) rất khó nhìn/khó chỉnh trên ô nhập.
@@ -463,7 +1086,21 @@ const analyzeSingle = async (path: string): Promise<boolean> => {
       // Tự động áp dụng cấu hình chỉnh sửa video
       applyGlobalRemixToClip(c)
     }
-    clipsMap.value[path] = clips
+
+    // Nếu clip đã hiện trước đó (từ event clips_detected), chỉ cập nhật thumbnail
+    // để không ghi đè thay đổi user đã làm (chia, gộp, chỉnh sửa...)
+    const existing = clipsMap.value[path]
+    if (existing && existing.length > 0) {
+      for (const newClip of clips) {
+        const old = existing.find((c: any) => c.id === newClip.id)
+        if (old) {
+          old.thumbnail = newClip.thumbnail
+          old.thumbEnd = newClip.thumbEnd
+        }
+      }
+    } else {
+      clipsMap.value[path] = clips
+    }
     analyzeProgressMap.value[path] = 100
     return true
   } catch (err) {
@@ -477,6 +1114,39 @@ const analyzeSingle = async (path: string): Promise<boolean> => {
     return false
   } finally {
     activeAnalyzingPaths.value.delete(path)
+  }
+}
+
+// === Thêm nguyên video làm clip (để chỉ chỉnh sửa, không cần cắt) ===
+const addWholeVideoAsClip = async (path: string) => {
+  try {
+    const info = await GetVideoInfo(path)
+    if (!info || !info.Duration || info.Duration <= 0) {
+      showToast('Không đọc được thông tin video: ' + path.split('\\').pop(), 'error')
+      return
+    }
+    const clipId = 'whole_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
+    const clip = new project.Clip({
+      id: clipId,
+      index: 0,
+      startTime: 0,
+      endTime: Math.round(info.Duration),
+      duration: Math.round(info.Duration),
+      status: 'accepted',
+      thumbnail: '',
+      thumbEnd: '',
+      confidence: 100,
+      tier: 'auto',
+      reason: 'Nguyên video (để chỉnh sửa)',
+      signals: ['whole_video'],
+      edit: undefined as any,
+    })
+    ensureEdit(clip)
+    applyGlobalRemixToClip(clip)
+    clipsMap.value[path] = [clip]
+    showToast(`Đã thêm nguyên video làm 1 clip (${formatTime(info.Duration)})`, 'success')
+  } catch (err) {
+    showToast('Lỗi: ' + String(err), 'error')
   }
 }
 
@@ -504,9 +1174,16 @@ const analyzeAll = async () => {
   const allTargets = videosForBatch()
   if (allTargets.length === 0) return
 
-  // Lọc bỏ video đã cắt rồi (đã có clips) — tự động bỏ qua
-  const alreadyCut = allTargets.filter(p => clipsMap.value[p] && clipsMap.value[p].length > 0)
-  const targets = allTargets.filter(p => !clipsMap.value[p] || clipsMap.value[p].length === 0)
+  // If the user checked/selected specific videos, always re-analyze them.
+  // Only skip already-analyzed videos if doing bulk processing (no checkboxes ticked).
+  const isBatchAll = selectedVideos.value.size === 0
+  const targets = allTargets.filter(p => {
+    if (isBatchAll) {
+      return !clipsMap.value[p] || clipsMap.value[p].length === 0
+    }
+    return true // Ticked -> force re-analyze
+  })
+  const alreadyCut = allTargets.filter(p => !targets.includes(p))
 
   if (targets.length === 0) {
     showToast(`Tất cả ${alreadyCut.length} video đã được cắt rồi! Không cần cắt lại.`, 'info')
@@ -634,6 +1311,18 @@ const chooseOutDir = async () => {
   }
 }
 
+const chooseOutImageDir = async () => {
+  try {
+    const folder = await SelectFolder()
+    if (folder) {
+      outImageDir.value = folder
+      addLog(`Thư mục lưu ảnh thumbnail: ${folder}`)
+    }
+  } catch (err) {
+    addLog('Lỗi chọn thư mục: ' + err)
+  }
+}
+
 const stopExport = async () => {
   try {
     await CancelExport()
@@ -671,14 +1360,29 @@ const exportClips = async () => {
   const groupedKeys = Object.keys(clipsToExportMap)
   const finalTotal = Object.values(clipsToExportMap).reduce((acc, list) => acc + list.length, 0)
 
-  if (hasExportedCurrentSession.value) {
-    const confirmReExport = await showCustomConfirm('Bạn đã vừa xuất các clip này xong. Bạn có muốn tiếp tục xuất lại không?')
+  const alreadyCompleted = []
+  for (const [videoPath, list] of Object.entries(clipsToExportMap)) {
+    for (const clip of list) {
+      if (clip.status === 'completed') {
+        const vidName = videoPath.split('\\').pop() || 'Video'
+        alreadyCompleted.push(`${vidName} (Clip #${clip.index})`)
+      }
+    }
+  }
+
+  if (alreadyCompleted.length > 0) {
+    const listStr = alreadyCompleted.slice(0, 3).join(', ') + (alreadyCompleted.length > 3 ? ` và ${alreadyCompleted.length - 3} clip khác` : '')
+    const confirmReExport = await showCustomConfirm(`Phát hiện ${alreadyCompleted.length} clip đã được xuất trước đó (${listStr}). Bạn có muốn tiếp tục xuất lại để ghi đè không?`)
     if (!confirmReExport) return
   }
 
   isExporting.value = true
   isMultiExportRunning.value = true
   exportProgress.value = { done: 0, total: finalTotal }
+  exportStatusText.value = 'Đang bắt đầu...'
+  videoDoneCount.value = 0
+  thumbDoneCount.value = 0
+  exportStartTime.value = Date.now()
   
   try {
     const proj = namedProjects.value.find(p => p.id === activeProjectId.value)
@@ -709,7 +1413,11 @@ const exportClips = async () => {
         }
       })
 
-      const results = await ExportClips(projName, videoPath, list, outDir.value, analyzerConfig, exportJobs.value)
+      const exportDestDir = autoCreateSubfolders.value ? outDir.value + '\\video' : outDir.value
+      const imageDestDir = exportWithThumbnails.value 
+        ? (autoCreateSubfolders.value ? outDir.value + '\\image' : outImageDir.value)
+        : ''
+      const results = await ExportClips(projName, videoPath, list, exportDestDir, imageDestDir, analyzerConfig, exportJobs.value)
       unlisten()
 
       const stopped = results.some(r => r.error === 'Tiến trình xuất bị dừng' || r.error === 'Tiến trình bị dừng')
@@ -744,6 +1452,7 @@ const exportClips = async () => {
   } finally {
     isExporting.value = false
     isMultiExportRunning.value = false
+    exportStartTime.value = null
   }
 }
 
@@ -756,6 +1465,7 @@ const exportSelectedVideos = async () => {
     return
   }
   isExporting.value = true
+  exportStartTime.value = Date.now()
   let okTotal = 0, clipTotal = 0
   try {
     const proj = namedProjects.value.find(p => p.id === activeProjectId.value)
@@ -770,9 +1480,15 @@ const exportSelectedVideos = async () => {
       }
 
       const base = (path.split('\\').pop() || 'video').replace(/\.[^.]+$/, '')
-      const subDir = outDir.value + '\\' + base
+      const exportDestDir = autoCreateSubfolders.value ? outDir.value + '\\' + base + '\\video' : outDir.value + '\\' + base
+      const imageDestDir = exportWithThumbnails.value
+        ? (autoCreateSubfolders.value ? outDir.value + '\\' + base + '\\image' : outImageDir.value + '\\' + base)
+        : ''
       exportProgress.value = { done: 0, total: clips.length }
-      const results = await ExportClips(projName, path, clips, subDir, analyzerConfig, exportJobs.value)
+      exportStatusText.value = 'Đang bắt đầu...'
+      videoDoneCount.value = 0
+      thumbDoneCount.value = 0
+      const results = await ExportClips(projName, path, clips, exportDestDir, imageDestDir, analyzerConfig, exportJobs.value)
       
       const stopped = results.some(r => r.error === 'Tiến trình xuất bị dừng' || r.error === 'Tiến trình bị dừng')
       if (stopped) {
@@ -790,6 +1506,7 @@ const exportSelectedVideos = async () => {
     showToast('Lỗi xuất hàng loạt: ' + err, 'error')
   } finally {
     isExporting.value = false
+    exportStartTime.value = null
   }
 }
 
@@ -801,26 +1518,33 @@ const loadProject = async (projId: string) => {
   
   videoPaths.value = [...proj.videoPaths]
   selectedVideos.value = new Set(proj.selectedVideos)
-  outDir.value = proj.outDir || 'D:\\Output'
+  outDir.value = proj.outDir && proj.outDir !== 'D:\\Output' ? proj.outDir : globalSettingsOutDir.value
   exportJobs.value = proj.exportJobs || 2
   analyzeJobs.value = proj.analyzeJobs || 1
   
   if (proj.globalRemix) {
     Object.assign(globalRemix, proj.globalRemix)
+    if (globalRemix.musicLoop === undefined) globalRemix.musicLoop = false
+    if (!globalRemix.musicTracks) globalRemix.musicTracks = []
   }
 
   if (proj.analyzerConfig) {
     Object.assign(analyzerConfig, proj.analyzerConfig)
   } else {
-    // Reset to default settings if no project config exists yet
-    analyzerConfig.mode = 'smart'
-    analyzerConfig.sceneThreshold = 26.0
-    analyzerConfig.minClipDuration = 5.0
-    analyzerConfig.maxClipDuration = 30.0
-    analyzerConfig.autoAcceptScore = 60
-    analyzerConfig.reviewMinScore = 35
-    analyzerConfig.exportPreset = 'fast'
-    analyzerConfig.exportCRF = 23
+    // Kế thừa từ settings.json thay vì reset cứng
+    if (globalSettingsConfig.value) {
+      Object.assign(analyzerConfig, JSON.parse(JSON.stringify(globalSettingsConfig.value)))
+    } else {
+      analyzerConfig.mode = 'smart'
+      analyzerConfig.sceneThreshold = 26.0
+      analyzerConfig.minClipDuration = 5.0
+      analyzerConfig.maxClipDuration = 30.0
+      analyzerConfig.autoAcceptScore = 60
+      analyzerConfig.reviewMinScore = 35
+      analyzerConfig.exportPreset = 'fast'
+      analyzerConfig.exportCRF = 23
+      analyzerConfig.hardwareAccel = 'none'
+    }
   }
 
   clipsMap.value = {}
@@ -874,7 +1598,10 @@ watch(videoPaths, () => {
   saveActiveProjectState()
 }, { deep: true })
 
-watch(outDir, () => {
+watch(outDir, (newVal) => {
+  if (newVal) {
+    globalSettingsOutDir.value = newVal
+  }
   saveActiveProjectState()
 })
 
@@ -935,7 +1662,7 @@ const createProject = () => {
       musicVolume: 0.3,
       muteOriginal: false
     },
-    outDir: 'D:\\Output',
+    outDir: globalSettingsOutDir.value,
     exportJobs: 2,
     analyzeJobs: 1,
     createdAt: Date.now(),
@@ -1030,11 +1757,12 @@ const removeSelectedVideos = async () => {
   addLog(`Đã xóa ${count} video khỏi danh sách.`)
 }
 
-const playExportedClip = async (clip: project.Clip) => {
+const playExportedClip = async (clip: any) => {
   isPlayingExported.value = true
   currentPlayingClipIdx.value = clip.index
-  const cleanPath = outDir.value + '\\' + clip.id + '.mp4'
-  activeExportedSrc.value = await GetStreamURL(cleanPath)
+  // Dùng đường dẫn chính xác từ backend (lưu khi xuất xong)
+  const filePath = clip.exportedPath || (outDir.value + '\\' + clip.id + '.mp4')
+  activeExportedSrc.value = await GetStreamURL(filePath)
 }
 
 const stopPlayingExported = () => {
@@ -1042,11 +1770,12 @@ const stopPlayingExported = () => {
   activeExportedSrc.value = ''
 }
 
-const removeClip = (index: number) => {
+const removeClip = async (index: number) => {
   if (clipsMap.value[activeVideoPath.value]) {
     clipsMap.value[activeVideoPath.value].splice(index, 1)
     reindexClips()
     showToast('Đã xóa clip.', 'info')
+    await saveProject()
   }
 }
 
@@ -1076,6 +1805,13 @@ const removeSelectedClips = async () => {
   
   selectedClips.value = new Set()
   showToast(`Đã xóa thành công ${count} clip đã chọn.`, 'success')
+  await saveProject()
+}
+
+const onClipTimeChange = async (clip: project.Clip) => {
+  updateClipDuration(clip)
+  await refreshClipThumbs(clip)
+  await saveProject()
 }
 
 const updateClipDuration = (clip: project.Clip) => {
@@ -1143,6 +1879,7 @@ const splitClip = async (index: number, splitAt: number) => {
   await refreshClipThumbs(clip)
   await refreshClipThumbs(second)
   addLog(`Đã chia Clip #${index + 1} tại ${formatTime(splitAt)}.`)
+  await saveProject()
 }
 
 // Chia clip tại vị trí đang phát của video player.
@@ -1168,6 +1905,7 @@ const mergeWithNext = async (index: number) => {
   clips.splice(index + 1, 1)
   reindexClips()
   addLog(`Đã gộp Clip #${index + 1} với clip kế tiếp.`)
+  await saveProject()
 }
 
 // Gộp clip index với clip liền trước nó.
@@ -1180,12 +1918,13 @@ const mergeWithPrev = (index: number) => {
 
 // Lưu phiên làm việc hiện tại (clip + config) để mở lại sau.
 const saveProject = async () => {
-  if (!activeVideoPath.value || activeClips.value.length === 0) {
-    addLog('Chưa có clip để lưu.')
+  if (!activeVideoPath.value) {
+    addLog('Chưa có video để lưu.')
     return
   }
   try {
-    await SaveProject(activeVideoPath.value, activeClips.value, analyzerConfig)
+    const clips = clipsMap.value[activeVideoPath.value] || []
+    await SaveProject(activeVideoPath.value, clips, analyzerConfig)
     addLog('Đã lưu phiên làm việc.')
   } catch (e) {
     addLog('Lỗi lưu project: ' + String(e))
@@ -1247,7 +1986,7 @@ const defaultEdit = (): project.EditOps => project.EditOps.createFrom({
   hflip: false, // Lật ngang mặc định tắt
   texts: [],
   watermark: { enabled: false, imgPath: '', x: '', y: '', opacity: 1, scale: 0.2 },
-  audio: { volume: 1, mute: false, musicPath: '', musicVolume: 0.3, fadeIn: 0, fadeOut: 0 },
+  audio: { volume: 1, mute: false, musicPath: '', musicVolume: 0.3, fadeIn: 0, fadeOut: 0, musicLoop: false, musicTracks: [] },
   transition: { type: '', duration: 0 }
 })
 
@@ -1262,6 +2001,8 @@ const ensureEdit = (clip: project.Clip) => {
   if (!clip.edit.texts) clip.edit.texts = []
   if (!clip.edit.watermark) clip.edit.watermark = d.watermark
   if (!clip.edit.audio) clip.edit.audio = d.audio
+  if (clip.edit.audio.musicLoop === undefined) clip.edit.audio.musicLoop = false
+  if (!clip.edit.audio.musicTracks) clip.edit.audio.musicTracks = []
   if (!clip.edit.transition) clip.edit.transition = d.transition
 }
 
@@ -1282,6 +2023,8 @@ const applyGlobalRemixToClip = (clip: project.Clip) => {
     clip.edit.audio.musicPath = globalRemix.musicPath
     clip.edit.audio.musicVolume = globalRemix.musicVolume
     clip.edit.audio.mute = globalRemix.muteOriginal
+    clip.edit.audio.musicLoop = globalRemix.musicLoop
+    clip.edit.audio.musicTracks = globalRemix.musicTracks ? [...globalRemix.musicTracks] : []
   }
 }
 
@@ -1307,6 +2050,8 @@ const applyGlobalRemixToAllActive = () => {
     c.edit.audio.musicPath = globalRemix.musicPath
     c.edit.audio.musicVolume = globalRemix.musicVolume
     c.edit.audio.mute = globalRemix.muteOriginal
+    c.edit.audio.musicLoop = globalRemix.musicLoop
+    c.edit.audio.musicTracks = globalRemix.musicTracks ? [...globalRemix.musicTracks] : []
   }
   addLog('Đã áp dụng cấu hình chế cháo cho tất cả clip của video hiện tại.')
   showToast('Đã áp dụng cấu hình chế cháo cho tất cả clip của video hiện tại!', 'success')
@@ -1324,6 +2069,17 @@ const openEdit = (index: number) => {
   ensureEdit(clip)
   editClipIdx.value = index
   showEdit.value = true
+
+  // Reset AI thumbnail generator state
+  aiThumbState.isExtractingFrames = false
+  aiThumbState.extractedFrames = []
+  aiThumbState.selectedFrames = new Set()
+  aiThumbState.userPrompt = analyzerConfig.prompt || ''
+  aiThumbState.isGenerating = false
+  aiThumbState.generatedImage = ''
+  aiThumbState.statusText = ''
+  aiThumbState.aspectRatio = clip.edit?.aspect?.ratio || '9:16'
+
   // Đưa player về đầu clip để xem trước khi chỉnh.
   jumpToTime(clip.startTime)
 }
@@ -1553,55 +2309,72 @@ const formatSize = (bytes: number) => {
     <header class="header">
       <div class="header-left">
         <svg class="header-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
-        <h1>Smart Video Splitter Studio</h1>
+        <h1>Smart Splitter</h1>
         
         <!-- Bảng chọn dự án -->
-        <div class="project-selector-container">
+        <div class="project-selector-container" :class="{ 'panel-disabled': isAnalyzing || isExporting }">
           <label class="project-selector-lbl">Dự án:</label>
-          <select :value="activeProjectId" @change="e => loadProject((e.target as HTMLSelectElement).value)" class="project-dropdown">
+          <select :disabled="isAnalyzing || isExporting" :value="activeProjectId" @change="e => loadProject((e.target as HTMLSelectElement).value)" class="project-dropdown">
             <option v-for="p in namedProjects" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
-          <button @click="openCreateProject" class="btn-create-proj-mini" title="Tạo dự án mới">
-            ➕ Mới
+          <button :disabled="isAnalyzing || isExporting" @click="openCreateProject" class="btn-create-proj-mini flex-center" title="Tạo dự án mới" style="display:inline-flex; align-items:center; gap:3px;">
+            <svg viewBox="0 0 24 24" width="11" height="11"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+            Mới
           </button>
-          <button @click="openManageProjects" class="btn-manage-proj-mini" title="Quản lý dự án">
-            ⚙️ Quản lý
+          <button :disabled="isAnalyzing || isExporting" @click="openManageProjects" class="btn-manage-proj-mini flex-center" title="Quản lý dự án" style="display:inline-flex; align-items:center; gap:3px;">
+            <svg viewBox="0 0 24 24" width="11" height="11"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+            Quản lý
           </button>
         </div>
       </div>
       <div class="header-actions">
         <!-- Nút chọn video -->
-        <button @click="handleSelectFiles" class="btn select-btn flex-center">
+        <button :disabled="isAnalyzing || isExporting" @click="handleSelectFiles" class="btn select-btn flex-center">
           <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           Chọn Video Gốc
         </button>
-
+        <!-- Nút tải video online -->
+        <button :disabled="isAnalyzing || isExporting" @click="openDownloadPanel" class="btn select-btn flex-center">
+          <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M5 20h14v-2H5v2zM12 2L4 10h5v6h6v-6h5L12 2z"/></svg>
+          Tải Video Online
+        </button>
+        <!-- Nút tải ảnh theo chủ đề -->
+        <button @click="openImagePanel" class="btn select-btn flex-center img-dl-btn">
+          <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+          Tải Ảnh Chủ Đề
+        </button>
+ 
         <!-- Nút Bắt đầu / Dừng quét phân tích -->
-        <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0" @click="analyzeAll" class="btn start-btn flex-center">
+        <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0 || isExporting" @click="analyzeAll" class="btn start-btn flex-center">
           <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
           Bắt Đầu Cắt Tự Động
         </button>
         <button v-else @click="cancelCurrentAnalysis" class="btn stop-analyze-btn flex-center">
           <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
-          ⏹ Dừng Ngay ({{ processedVideosCount }}/{{ totalVideosCount }})
+          Dừng Ngay ({{ processedVideosCount }}/{{ totalVideosCount }})
         </button>
-
+ 
         <div class="header-divider"></div>
-
+ 
         <!-- Mở dự án gần đây -->
-        <button @click="openRecentProjects" class="icon-btn-circle" title="Project đã lưu">
+        <button :disabled="isAnalyzing || isExporting" @click="openRecentProjects" class="icon-btn-circle" title="Project đã lưu">
           <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.97 8.97 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
         </button>
-
+ 
         <!-- Lưu dự án -->
-        <button @click="saveProject" class="icon-btn-circle" title="Lưu phiên làm việc" v-if="activeClips.length > 0">
+        <button :disabled="isAnalyzing || isExporting" @click="saveProject" class="icon-btn-circle" title="Lưu phiên làm việc" v-if="activeClips.length > 0">
           <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
         </button>
-
+ 
         <!-- Nút chuyển chế độ Sáng/Tối -->
         <button @click="toggleColorScheme" class="icon-btn-circle theme-toggle-btn" :title="isDark ? 'Chuyển sang giao diện Sáng' : 'Chuyển sang giao diện Tối'">
           <svg v-if="isDark" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--wx-brand-accent);"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
           <svg v-else viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--wx-brand-primary);"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+        </button>
+ 
+        <!-- Nút Cài đặt chung -->
+        <button :disabled="isAnalyzing || isExporting" @click="showSettings = true" class="icon-btn-circle" title="Cài đặt chung">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
         </button>
 
       </div>
@@ -1612,16 +2385,16 @@ const formatSize = (bytes: number) => {
       <section class="section-top-videos">
         <div class="section-title-bar">
           <div class="title-left">
-            <h2>🎥 Danh sách Video Gốc</h2>
+            <h2>Danh sách Video Gốc</h2>
             <span class="video-counter">({{ videoPaths.length }} video)</span>
           </div>
-          <div class="title-right-actions" v-if="videoPaths.length > 0">
+          <div class="title-right-actions" v-if="videoPaths.length > 0" :class="{ 'panel-disabled': isAnalyzing || isExporting }">
             <button 
               v-if="selectedVideos.size > 0" 
               @click.stop="removeSelectedVideos" 
               class="btn-danger-compact" 
             >
-              🗑️ Xóa {{ selectedVideos.size }} video đã chọn
+              Xóa {{ selectedVideos.size }} video đã chọn
             </button>
             <label class="select-all-label" @click.stop>
               <input type="checkbox" :checked="isAllVideosSelected" @change="toggleSelectAllVideos" class="clip-checkbox" />
@@ -1639,7 +2412,7 @@ const formatSize = (bytes: number) => {
             
             <div class="video-card-row">
               <label class="video-select-wrap" @click.stop>
-                <input type="checkbox" class="clip-checkbox" :checked="selectedVideos.has(path)" @change="toggleVideoSelected(path)" />
+                <input type="checkbox" class="clip-checkbox" :checked="selectedVideos.has(path)" @change="toggleVideoSelected(path)" :disabled="isAnalyzing || isExporting" />
               </label>
               
               <div class="video-card-icon">
@@ -1648,22 +2421,26 @@ const formatSize = (bytes: number) => {
               
               <span class="video-card-name">{{ path.split('\\').pop() }}</span>
               
-              <span class="status-badge-compact done" v-if="clipsMap[path]" :title="`Đã quét ${clipsMap[path].length} clip`">
-                ✔ {{ clipsMap[path].length }}
+              <span class="status-badge-compact done" v-if="clipsMap[path] && clipsMap[path].length > 0" :title="`Đã quét ${clipsMap[path].length} clip`">
+                <svg viewBox="0 0 24 24" width="10" height="10" style="display:inline-block; vertical-align:middle; margin-right:2px;"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                {{ clipsMap[path].length }}
               </span>
               <span class="status-badge-compact pending" v-else title="Chờ quét phân đoạn">
-                ⏳
+                <svg viewBox="0 0 24 24" width="10" height="10" class="spin-hourglass" style="display:inline-block; vertical-align:middle;"><path fill="currentColor" d="M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5l-4-4V4h8v3.5l-4 4z"/></svg>
               </span>
-              
-              <button class="btn-remove-video" @click.stop="removeVideo(index)" title="Xóa video khỏi dự án">✕</button>
+
+              <button class="btn-whole-video" @click.stop="addWholeVideoAsClip(path)" title="Thêm nguyên video làm clip (để chỉnh sửa, không cắt)" v-if="!clipsMap[path] || clipsMap[path].length === 0" :disabled="isAnalyzing || isExporting" :style="isAnalyzing || isExporting ? { opacity: 0.4, pointerEvents: 'none' } : {}">
+                <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 12c-2.21 0-4-1.79-4-4s1.79-4 4-4 4 1.79 4 4-1.79 4-4 4z"/></svg>
+              </button>
+              <button class="btn-remove-video" @click.stop="removeVideo(index)" title="Xóa video khỏi dự án" :disabled="isAnalyzing || isExporting" :style="isAnalyzing || isExporting ? { opacity: 0.4, pointerEvents: 'none' } : {}">✕</button>
             </div>
 
             <!-- Tiến trình quét -->
             <div class="video-card-progress" v-if="activeAnalyzingPaths.has(path)">
               <div class="progress-bar-track">
-                <div class="progress-bar-fill" :style="{ width: (analyzeProgressMap[path] || 0) + '%' }"></div>
+                <div class="progress-bar-fill" :style="{ width: (displayProgressMap[path] || 0) + '%' }"></div>
               </div>
-              <span class="progress-text">{{ analyzeProgressMap[path] || 0 }}%</span>
+              <span class="progress-text">{{ Math.round(displayProgressMap[path] || 0) }}% <span class="progress-eta" style="font-size: 9.5px; opacity: 0.8; margin-left: 4px;">({{ getAnalyzeETA(path) }})</span></span>
             </div>
           </div>
         </div>
@@ -1678,10 +2455,10 @@ const formatSize = (bytes: number) => {
       <!-- BỐ CỤC GIỮA: CẤU HÌNH & TRÌNH PHÁT PREVIEW -->
       <section class="section-middle-workspace">
         <!-- Bên Trái: Bảng Cấu Hình Dự Án (Cắt & Sửa) -->
-        <div class="project-settings-panel">
-          <!-- Phần 1: Cấu hình cắt video -->
-          <div class="settings-section-header" style="margin-bottom: 6px;">
-            <h3 style="margin: 0; font-size: 13.5px; font-weight: 800; color: var(--accent-color); text-transform: uppercase;">✂️ Cấu hình cắt</h3>
+        <div class="project-settings-panel" :class="{ 'panel-disabled': isAnalyzing || isExporting }">
+          <div class="settings-section-header" style="margin-bottom: 6px; display:flex; align-items:center; gap:6px;">
+            <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--accent-color);"><path fill="currentColor" d="M19.07 4.93l-1.41 1.41 1.41 1.41c1.17 1.17 1.17 3.07 0 4.24s-3.07 1.17-4.24 0L12 9.17l-2.83 2.83c-1.17 1.17-3.07 1.17-4.24 0s-1.17-3.07 0-4.24l1.41-1.41-1.41-1.41c-2.34 2.34-2.34 6.14 0 8.49L7.76 16l-2.83 2.83c-1.17 1.17-1.17 3.07 0 4.24s3.07 1.17 4.24 0L12 20.24l2.83 2.83c1.17 1.17 3.07 1.17 4.24 0s1.17-3.07 0-4.24L16.24 16l2.83-2.83c2.34-2.34 2.34-6.14 0-8.49z"/></svg>
+            <h3 style="margin: 0; font-size: 13.5px; font-weight: 800; color: var(--accent-color); text-transform: uppercase;">Cấu hình cắt</h3>
           </div>
           
           <div class="compact-settings-group-list">
@@ -1699,11 +2476,11 @@ const formatSize = (bytes: number) => {
             <div class="compact-setting-grid-2" v-if="analyzerConfig.mode !== 'fixed'">
               <div class="compact-setting-item">
                 <label class="setting-title-lbl">Ngắn nhất (giây):</label>
-                <input type="number" v-model.number="analyzerConfig.minClipDuration" min="1" max="60" @change="analyzerConfig.minClipDuration = clampValue(analyzerConfig.minClipDuration, 1, 60, 5)" class="compact-input" />
+                <input type="number" v-model.number="analyzerConfig.minClipDuration" min="1" max="60" @change="onMinDurationChange" class="compact-input" />
               </div>
               <div class="compact-setting-item">
                 <label class="setting-title-lbl">Dài nhất (giây):</label>
-                <input type="number" v-model.number="analyzerConfig.maxClipDuration" min="10" max="600" @change="analyzerConfig.maxClipDuration = clampValue(analyzerConfig.maxClipDuration, 10, 600, 120)" class="compact-input" />
+                <input type="number" v-model.number="analyzerConfig.maxClipDuration" min="10" max="600" @change="onMaxDurationChange" class="compact-input" />
               </div>
             </div>
             <div class="compact-setting-row" v-else>
@@ -1713,13 +2490,14 @@ const formatSize = (bytes: number) => {
 
             <!-- Cài đặt nâng cao link -->
             <div style="text-align: center; margin: 2px 0;">
-              <button class="btn-link-toggle" @click="showAdvancedCutSettings = !showAdvancedCutSettings" style="background: transparent; border: none; color: var(--accent-color); font-size: 11px; font-weight: 700; cursor: pointer;">
-                {{ showAdvancedCutSettings ? '▼ Thu gọn tùy chọn khác' : '▶ Xem thêm tùy chọn khác' }}
+              <button class="btn-link-toggle" @click="showAdvancedCutSettings = !showAdvancedCutSettings" style="background: transparent; border: none; color: var(--accent-color); font-size: 11px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; justify-content: center;">
+                {{ showAdvancedCutSettings ? 'Thu gọn tùy chọn khác' : 'Xem thêm tùy chọn khác' }}
+                <svg viewBox="0 0 24 24" width="10" height="10" style="transition: transform 0.2s;" :style="{ transform: showAdvancedCutSettings ? 'rotate(180deg)' : 'rotate(0)' }"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
               </button>
             </div>
 
             <!-- Tùy chọn khác ẩn/hiện -->
-            <div v-if="showAdvancedCutSettings" style="display: flex; flex-direction: column; gap: 8px; background-color: rgba(0,0,0,0.15); padding: 8px; border-radius: 8px; border: 1px solid var(--border-color);">
+            <div v-if="showAdvancedCutSettings" style="display: flex; flex-direction: column; gap: 8px; background-color: var(--wx-surface-sunken); padding: 8px; border-radius: 8px; border: 1px solid var(--border-color);">
               <div class="compact-setting-grid-2">
                 <div class="compact-setting-item">
                   <label class="setting-title-lbl">Độ nhạy cắt (5-80):</label>
@@ -1739,14 +2517,26 @@ const formatSize = (bytes: number) => {
                   <option value="slow">Chậm (chất lượng cao)</option>
                 </select>
               </div>
+              <div class="compact-setting-row" style="margin-top: 8px;">
+                <label class="setting-title-lbl">Tăng tốc phần cứng (GPU):</label>
+                <select v-model="analyzerConfig.hardwareAccel" class="compact-select">
+                  <option value="auto">🚀 Tự động phát hiện (khuyên dùng)</option>
+                  <option value="nvidia">NVIDIA (Card rời NVIDIA)</option>
+                  <option value="intel">Intel (Card tích hợp Intel)</option>
+                  <option value="amd">AMD (Card rời AMD)</option>
+                  <option value="none">❌ Không tăng tốc (chỉ dùng CPU)</option>
+                </select>
+                <span style="font-size: 9px; opacity: 0.55; margin-top: 2px; display: block;">Bật GPU giúp phân tích & xuất video nhanh hơn 3-5 lần</span>
+              </div>
             </div>
           </div>
 
           <div style="border-bottom: 1px solid var(--border-color); margin: 6px 0;"></div>
 
           <!-- Phần 2: Cấu hình chỉnh sửa -->
-          <div class="settings-section-header" style="margin-bottom: 6px;">
-            <h3 style="margin: 0; font-size: 13.5px; font-weight: 800; color: var(--accent-color); text-transform: uppercase;">🎬 Cấu hình sửa</h3>
+          <div class="settings-section-header" style="margin-bottom: 6px; display:flex; align-items:center; gap:6px;">
+            <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--accent-color);"><path fill="currentColor" d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-2z"/></svg>
+            <h3 style="margin: 0; font-size: 13.5px; font-weight: 800; color: var(--accent-color); text-transform: uppercase;">Cấu hình sửa</h3>
           </div>
 
           <div class="remix-options-grid-compact">
@@ -1754,14 +2544,14 @@ const formatSize = (bytes: number) => {
             <div class="remix-card-compact" :class="{ enabled: globalRemix.hflip }">
               <label class="toggle-row-compact">
                 <input type="checkbox" v-model="globalRemix.hflip" />
-                <span>🔄 Lật ngang video (Mirror)</span>
+                <span>Lật ngang video (Mirror)</span>
               </label>
             </div>
 
             <!-- 2. Thay đổi tốc độ video -->
             <div class="remix-card-compact" :class="{ enabled: globalRemix.speed !== 1.0 }">
               <div class="remix-card-row-compact">
-                <span class="option-title-compact">⏩ Tốc độ phát:</span>
+                <span class="option-title-compact">Tốc độ phát:</span>
                 <div class="input-with-unit-mini">
                   <input type="number" v-model.number="globalRemix.speed" min="0.5" max="2" step="0.01" @change="globalRemix.speed = clampValue(globalRemix.speed, 0.5, 2.0, 1.0)" class="compact-input-speed" />
                   <span class="unit">×</span>
@@ -1779,7 +2569,7 @@ const formatSize = (bytes: number) => {
             <div class="remix-card-compact" :class="{ enabled: globalRemix.aspectEnabled }">
               <label class="toggle-row-compact" style="margin-bottom: 4px;">
                 <input type="checkbox" v-model="globalRemix.aspectEnabled" />
-                <span>📐 Tỷ lệ khung hình</span>
+                <span>Tỷ lệ khung hình</span>
               </label>
               <div class="aspect-controls-compact" v-if="globalRemix.aspectEnabled">
                 <select v-model="globalRemix.aspectRatio" class="compact-select-mini">
@@ -1799,7 +2589,7 @@ const formatSize = (bytes: number) => {
             <div class="remix-card-compact" :class="{ enabled: globalRemix.colorEnabled }">
               <label class="toggle-row-compact" style="margin-bottom: 4px;">
                 <input type="checkbox" v-model="globalRemix.colorEnabled" />
-                <span>🎨 Hiệu ứng màu sắc</span>
+                <span>Hiệu ứng màu sắc</span>
               </label>
               <div class="color-controls-compact" v-if="globalRemix.colorEnabled">
                 <select v-model="globalRemix.colorPreset" class="compact-select-mini" style="width: 100%; margin-bottom: 6px;">
@@ -1822,60 +2612,71 @@ const formatSize = (bytes: number) => {
               </div>
             </div>
 
-            <!-- 5. Nhạc nền -->
-            <div class="remix-card-compact" :class="{ enabled: globalRemix.musicPath !== '' || globalRemix.muteOriginal }">
-              <span class="option-title-compact">🎵 Âm thanh &amp; Nhạc nền</span>
-              <div class="audio-controls-compact">
-                <label class="toggle-row-mini-compact">
-                  <input type="checkbox" v-model="globalRemix.muteOriginal" />
-                  <span>Tắt tiếng gốc</span>
-                </label>
-                <div class="file-picker-row-compact" style="margin-top: 4px;">
-                  <button @click="pickGlobalMusic" class="btn-picker-compact">📁 Nhạc nền</button>
-                  <button v-if="globalRemix.musicPath" @click="clearGlobalMusic" class="btn-clear-compact">✕</button>
-                  <span class="music-name-tag-compact" v-if="globalRemix.musicPath" :title="globalRemix.musicPath">
-                    {{ globalMusicName }}
-                  </span>
+
+
+            <!-- 💡 Chủ đề Video (Prompt AI) -->
+            <div class="remix-card-compact" style="grid-column: 1 / -1; margin-top: 4px; border: 1px dashed var(--border-color); background: var(--l-bg-soft); padding: 10px 12px; border-radius: 8px; display: flex; flex-direction: column; gap: 8px;">
+              
+              <!-- Tiêu đề + Hành động -->
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span class="option-title-compact" style="color: var(--wx-brand-accent); font-weight: 700; margin-bottom: 0; font-size: 12.5px;">💡 Chủ đề Video (Prompt AI)</span>
+                
+                <!-- Nút thêm mẫu -->
+                <button @click="showAddPresetForm = !showAddPresetForm" class="text-btn" style="font-size: 11px; color: var(--accent-color); background: none; border: none; cursor: pointer; padding: 2px 6px; border-radius: 4px; background: rgba(99, 102, 241, 0.08); display: flex; align-items: center; gap: 4px;" title="Lưu prompt hiện tại thành mẫu mới">
+                  💾 Lưu mẫu hiện tại
+                </button>
+              </div>
+
+              <!-- Form thêm mẫu mới -->
+              <div v-if="showAddPresetForm" style="display: flex; flex-direction: column; gap: 6px; padding: 8px; background: rgba(255,255,255,0.02); border-radius: 6px; border: 1px solid rgba(255,255,255,0.06); animation: fadeIn 0.2s ease;">
+                <input type="text" v-model="newPresetName" placeholder="Tên mẫu gợi nhớ (ví dụ: Điện ảnh sắc nét)..." style="font-size: 11.5px; height: 28px; padding: 4px 8px; border-radius: 4px; background: var(--l-bg); border: 1px solid var(--border-color); color: var(--l-text); width: 100%; box-sizing: border-box; outline: none;" />
+                <div style="display: flex; gap: 6px; justify-content: flex-end;">
+                  <button @click="showAddPresetForm = false" style="font-size: 10.5px; padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border-color); background: none; color: var(--l-text); cursor: pointer;">Hủy</button>
+                  <button @click="addNewPreset" style="font-size: 10.5px; padding: 3px 10px; border-radius: 4px; border: none; background: var(--accent-color); color: white; cursor: pointer; font-weight: 600;">Lưu</button>
                 </div>
-                <div class="volume-slider-compact" v-if="globalRemix.musicPath" style="margin-top: 4px;">
-                  <span>Âm lượng: {{ Math.round(globalRemix.musicVolume * 100) }}%</span>
-                  <input type="range" v-model.number="globalRemix.musicVolume" min="0" max="1" step="0.05" />
+              </div>
+
+              <!-- Chọn nhanh mẫu bằng Tag/Pill trực quan -->
+              <div style="display: flex; flex-direction: column; gap: 4px;">
+                <span style="font-size: 11px; color: var(--l-text-muted); font-weight: 500;">Chọn nhanh mẫu prompt có sẵn:</span>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px;">
+                  <div v-for="preset in promptPresets" :key="preset.id" 
+                       style="position: relative; display: inline-flex; align-items: center;">
+                    
+                    <!-- Tag bấm để chọn -->
+                    <span @click="selectPresetTag(preset)"
+                          style="font-size: 11px; padding: 4px 10px; border-radius: 20px; cursor: pointer; transition: all 0.2s; user-select: none; font-weight: 500;"
+                          :style="{
+                            background: selectedPromptPresetId === preset.id ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.03)',
+                            border: selectedPromptPresetId === preset.id ? '1px solid var(--accent-color)' : '1px solid rgba(255,255,255,0.08)',
+                            color: selectedPromptPresetId === preset.id ? 'var(--accent-color)' : 'var(--l-text-muted)'
+                          }">
+                      {{ preset.name }}
+                    </span>
+
+                    <!-- Nút xóa tag nếu không phải mặc định -->
+                    <button v-if="!['default_auto','1','2','3','4'].includes(preset.id)"
+                            @click.stop="deletePresetById(preset.id)"
+                            style="margin-left: -6px; background: #ef4444; color: white; border: none; border-radius: 50%; width: 12px; height: 12px; font-size: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 2; box-shadow: 0 1px 3px rgba(0,0,0,0.3); padding: 0;"
+                            title="Xóa mẫu này">
+                      ✕
+                    </button>
+                  </div>
                 </div>
+              </div>
+
+              <!-- Nội dung Prompt -->
+              <div style="display: flex; flex-direction: column; gap: 4px;">
+                <span style="font-size: 11px; color: var(--l-text-muted); font-weight: 500;">Nội dung mô tả (được gửi cho AI):</span>
+                <textarea v-model="analyzerConfig.prompt" 
+                          placeholder="Mô tả nội dung cần phân tích (ví dụ: cô gái xinh nhảy múa, bối cảnh sang trọng...). Để trống sẽ tự nhận diện theo hình ảnh video." 
+                          class="text-content-input" 
+                          style="margin-bottom: 0; font-size: 11.5px; height: 60px; min-height: 45px; padding: 8px; border-radius: 6px; box-sizing: border-box; width: 100%; resize: vertical; font-family: inherit; line-height: 1.45; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); color: var(--l-text); outline: none;"></textarea>
               </div>
             </div>
           </div>
 
-          <div style="border-bottom: 1px solid var(--border-color); margin: 6px 0;"></div>
 
-          <!-- Phần 3: Cấu hình luồng chạy -->
-          <div class="settings-section-header" style="margin-bottom: 6px;">
-            <h3 style="margin: 0; font-size: 13.5px; font-weight: 800; color: var(--accent-color); text-transform: uppercase;">⚙️ Cấu hình luồng</h3>
-          </div>
-
-          <div class="compact-settings-group-list" style="margin-bottom: 6px;">
-            <div class="compact-setting-grid-2">
-              <div class="compact-setting-item">
-                <label class="setting-title-lbl">Luồng cắt song song:</label>
-                <select v-model.number="analyzeJobs" class="compact-select">
-                  <option :value="1">1 video (ổn định)</option>
-                  <option :value="2">2 video</option>
-                  <option :value="3">3 video</option>
-                  <option :value="4">4 video (mạnh)</option>
-                </select>
-              </div>
-              <div class="compact-setting-item">
-                <label class="setting-title-lbl">Luồng xuất song song:</label>
-                <select v-model.number="exportJobs" class="compact-select">
-                  <option :value="1">1 clip (yếu)</option>
-                  <option :value="2">2 clip</option>
-                  <option :value="3">3 clip</option>
-                  <option :value="4">4 clip</option>
-                  <option :value="6">6 clip</option>
-                  <option :value="8">8 clip (mạnh)</option>
-                </select>
-              </div>
-            </div>
-          </div>
 
           <!-- Áp dụng hàng loạt -->
           <div style="margin-top: auto; border-top: 1px solid var(--border-color); padding-top: 8px;">
@@ -1883,8 +2684,9 @@ const formatSize = (bytes: number) => {
               <input type="checkbox" v-model="globalRemix.autoApply" />
               <span>Tự động áp dụng khi quét mới</span>
             </label>
-            <button @click="applyGlobalRemixToAllActive" class="btn primary-btn flex-center font-bold" style="width: 100%; padding: 6px; border-radius: 6px; background-color: var(--accent-color); color: white; border: none; cursor: pointer; font-size: 11.5px;">
-              💾 Áp hiệu ứng cho tất cả clip hiện tại
+            <button @click="applyGlobalRemixToAllActive" class="btn primary-btn flex-center font-bold" style="width: 100%; padding: 6px; border-radius: 6px; background-color: var(--accent-color); color: white; border: none; cursor: pointer; font-size: 11.5px; display: flex; align-items: center; justify-content: center; gap: 4px;">
+              <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
+              Áp hiệu ứng cho tất cả clip hiện tại
             </button>
           </div>
         </div>
@@ -1905,12 +2707,7 @@ const formatSize = (bytes: number) => {
           </div>
 
           <div class="player-container-mini">
-            <!-- Banner video đã xuất -->
-            <div class="exported-banner flex-center" v-if="isPlayingExported">
-              <svg class="banner-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
-              <span>Phát thử clip #{{ currentPlayingClipIdx }} đã xuất</span>
-              <button @click="stopPlayingExported" class="back-to-original-btn">Xem video gốc</button>
-            </div>
+            
             
             <video v-if="activeVideoSrc" ref="videoPlayer" :src="computedVideoSrc" controls class="video-player-mini" @timeupdate="onVideoTimeUpdate"></video>
             <div class="empty-player-screen" v-else>
@@ -1924,11 +2721,11 @@ const formatSize = (bytes: number) => {
                 <div class="spinner"></div>
                 <h4>Đang tự động cắt: <span class="processing-name-tag">{{ activeProcessingVideoName }}</span></h4>
                 <div class="progress-label flex-between" style="width: 100%;">
-                  <span>Tiến trình:</span>
-                  <span>{{ analyzeProgressMap[activeVideoPath] || 0 }}%</span>
+                  <span>Tiến trình: <strong style="color: var(--accent-color); margin-left: 4px;">{{ getAnalyzeETA(activeVideoPath) }}</strong></span>
+                  <span>{{ Math.round(displayProgressMap[activeVideoPath] || 0) }}%</span>
                 </div>
                 <div class="progress-container">
-                  <div class="progress-bar" :style="{ width: (analyzeProgressMap[activeVideoPath] || 0) + '%' }"></div>
+                  <div class="progress-bar" :style="{ width: (displayProgressMap[activeVideoPath] || 0) + '%' }"></div>
                 </div>
               </div>
             </div>
@@ -1965,17 +2762,65 @@ const formatSize = (bytes: number) => {
             </div>
           </div>
 
-          <!-- Nút hành động riêng lẻ -->
-          <div class="single-analyze-trigger-row" v-if="!isAnalyzing && videoPaths.length > 0">
-            <button @click="startAnalysis" class="btn single-analyze-btn flex-center">
-              🔍 Cắt tự động video đang chọn
-            </button>
+          <!-- Trình ghép nhạc nền & Lặp nhạc (Tối ưu hóa không gian) -->
+          <div class="music-merging-panel" v-if="videoPaths.length > 0" :class="{ 'panel-disabled': isAnalyzing || isExporting }" style="margin-top: 15px; background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255,255,255,0.06); padding: 16px; border-radius: 12px; backdrop-filter: blur(8px);">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+              <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--wx-brand-accent); display: flex; align-items: center; gap: 8px;">
+                  🎵 Trình Ghép Nhạc Nền & Lặp Nhạc (Áp dụng hàng loạt)
+                </h3>
+                <button @click="pickGlobalMusic" class="btn active-btn" style="font-size: 11.5px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; cursor: pointer; border: none; font-weight: 600;">
+                  ➕ Thêm nhạc nền
+                </button>
+                <button v-if="globalRemix.musicTracks && globalRemix.musicTracks.length > 0" @click="clearGlobalMusic" class="btn cancel-btn" style="font-size: 11.5px; padding: 5px 12px; border-radius: 6px; cursor: pointer; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); color: var(--l-text-muted);">
+                  ✕ Xóa tất cả
+                </button>
+              </div>
+              <div style="display: flex; gap: 16px; font-size: 12.5px; align-items: center;">
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--l-text);">
+                  <input type="checkbox" v-model="globalRemix.muteOriginal" style="width: 15px; height: 15px; border-radius: 4px;" />
+                  <span>🔇 Tắt tiếng gốc</span>
+                </label>
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--l-text);">
+                  <input type="checkbox" v-model="globalRemix.musicLoop" style="width: 15px; height: 15px; border-radius: 4px;" />
+                  <span>🔁 Tự động lặp lại nhạc</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Danh sách bài hát đã ghép -->
+            <div class="music-tracks-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto;" :style="{ marginBottom: globalRemix.musicTracks && globalRemix.musicTracks.length > 0 ? '12px' : '0' }">
+              <div v-if="!globalRemix.musicTracks || globalRemix.musicTracks.length === 0" style="padding: 20px; text-align: center; color: var(--l-text-muted); font-size: 12.5px; border: 1px dashed rgba(255,255,255,0.08); border-radius: 8px;">
+                Chưa chọn nhạc nền nào. Bấm nút "Thêm nhạc nền" ở trên để chọn các file nhạc nền ghép nối tiếp.
+              </div>
+              <div v-else v-for="(track, index) in globalRemix.musicTracks" :key="index" style="display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); padding: 8px 12px; border-radius: 8px; transition: all 0.2s;">
+                <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;">
+                  <span style="font-size: 11px; background: var(--accent-color); color: white; padding: 2px 6px; border-radius: 4px; font-weight: 700;">#{{ index + 1 }}</span>
+                  <span style="font-size: 12.5px; font-weight: 600; color: var(--l-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="track">
+                    {{ track.split('\\').pop() }}
+                  </span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <button @click="moveMusicTrack(index, -1)" :disabled="index === 0" class="mini-icon-btn" style="padding: 4px; background: none; border: none; color: var(--l-text-muted); cursor: pointer;" title="Lên">▲</button>
+                  <button @click="moveMusicTrack(index, 1)" :disabled="index === globalRemix.musicTracks.length - 1" class="mini-icon-btn" style="padding: 4px; background: none; border: none; color: var(--l-text-muted); cursor: pointer;" title="Xuống">▼</button>
+                  <button @click="removeMusicTrack(index)" class="mini-icon-btn" style="padding: 4px; background: none; border: none; color: var(--wx-brand-accent); cursor: pointer;" title="Xóa">✕</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Dòng chỉnh âm lượng (chỉ hiện khi có bài hát) -->
+            <div style="display: flex; justify-content: flex-end;" v-if="globalRemix.musicTracks && globalRemix.musicTracks.length > 0">
+              <div style="display: flex; align-items: center; gap: 10px; width: 320px; max-width: 100%;">
+                <span style="font-size: 12px; color: var(--l-text-muted); white-space: nowrap;">Âm lượng nhạc: {{ Math.round(globalRemix.musicVolume * 100) }}%</span>
+                <input type="range" v-model.number="globalRemix.musicVolume" min="0" max="1" step="0.05" style="flex: 1; height: 4px; cursor: pointer;" />
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
       <!-- BỐ CỤC DƯỚI: DANH SÁCH CLIPS ĐÃ CẮT & XUẤT BẢN -->
-      <section class="section-bottom-clips" :style="{ paddingBottom: selectedClips.size > 0 ? '100px' : '16px' }">
+      <section class="section-bottom-clips" :class="{ 'panel-disabled': isAnalyzing || isExporting }" :style="{ paddingBottom: selectedClips.size > 0 ? '100px' : '16px' }">
         <div class="section-title-bar-clips">
           <div class="title-left-clips">
             <h2>✂️ Danh sách Video Đã Cắt</h2>
@@ -2004,7 +2849,7 @@ const formatSize = (bytes: number) => {
               <div class="clip-card-header-bar">
                 <div class="header-left-wrap">
                   <label class="clip-select-wrap" @click.stop>
-                    <input type="checkbox" class="clip-checkbox" :checked="selectedClips.has(clip.id)" @change="toggleClipSelected(clip.id)" />
+                    <input type="checkbox" class="clip-checkbox" :checked="selectedClips.has(clip.id)" @change="toggleClipSelected(clip.id)" :disabled="isExporting" />
                   </label>
                   <span class="clip-title-tag">Clip #{{ clip.index }}</span>
                   <span class="status-dot done" v-if="clip.status === 'completed'" title="Đã xuất"></span>
@@ -2029,23 +2874,20 @@ const formatSize = (bytes: number) => {
               <div class="clip-time-inputs-row">
                 <div class="input-block">
                   <span class="input-lbl">Bắt đầu</span>
-                  <input type="number" step="1" v-model.number="clip.startTime" @input="updateClipDuration(clip)" @change="refreshClipThumbs(clip)" />
+                  <input type="number" step="1" v-model.number="clip.startTime" :disabled="isExporting" @input="updateClipDuration(clip)" @change="onClipTimeChange(clip)" />
                 </div>
                 <div class="input-arrow-mini">➔</div>
                 <div class="input-block">
                   <span class="input-lbl">Kết thúc</span>
-                  <input type="number" step="1" v-model.number="clip.endTime" @input="updateClipDuration(clip)" @change="refreshClipThumbs(clip)" />
+                  <input type="number" step="1" v-model.number="clip.endTime" :disabled="isExporting" @input="updateClipDuration(clip)" @change="onClipTimeChange(clip)" />
                 </div>
               </div>
 
               <div class="clip-card-actions-row">
-                <button v-if="clip.status === 'completed'" @click="playExportedClip(clip)" class="mini-act-btn btn-watch" title="Phát video đã xuất">
-                  ▶ Phát
-                </button>
-                <button @click="openEdit(idx)" class="mini-act-btn btn-edit" title="Chỉnh sửa (Chèn chữ, watermark...)">
+                <!-- <button v-if="!isExporting" @click="openEdit(idx)" class="mini-act-btn btn-edit" title="Chỉnh sửa (Chèn chữ, watermark...)">
                   ✏️ Sửa
-                </button>
-                <button @click="removeClip(idx)" class="mini-act-btn btn-delete" title="Xóa clip">
+                </button> -->
+                <button v-if="!isExporting" @click="removeClip(idx)" class="mini-act-btn btn-delete" title="Xóa clip">
                   🗑️ Xóa
                 </button>
               </div>
@@ -2077,25 +2919,62 @@ const formatSize = (bytes: number) => {
           </div>
         </div>
 
-        <!-- PANEL XUẤT BẢN CỐ ĐỊNH Ở CUỐI GÓC DƯỚI CLIPS -->
-        <div class="clips-export-publisher-bar" v-if="selectedClips.size > 0">
-          <div class="pub-left">
-            <div class="pub-input-group">
-              <label>📁 Thư mục lưu video xuất:</label>
-              <div class="input-with-button-row">
-                <input type="text" v-model="outDir" class="pub-text-input" placeholder="D:\Output" style="flex: 1;" />
-                <button @click="chooseOutDir" class="btn-picker-folder" title="Chọn thư mục lưu">📂 Chọn thư mục</button>
-              </div>
-            </div>
+        <!-- PANEL XUẤN BẢN CỐ ĐỊNH Ở CUỐI GÓC DƯỚI CLIPS -->
+        <div class="clips-export-publisher-bar" v-if="selectedClips.size > 0" :class="{ 'panel-disabled': isAnalyzing }">
+          <div class="pub-left" style="display: flex; align-items: center; flex: none; flex-shrink: 0;">
+            <label class="toggle-row inline" style="cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 8px; margin-bottom: 0; user-select: none; font-weight: 600; color: var(--l-text); white-space: nowrap; flex-shrink: 0;">
+              <input type="checkbox" v-model="exportWithThumbnails" style="width: 16px; height: 16px; accent-color: var(--wx-brand-primary);" />
+              Xuất kèm ảnh Thumbnail
+            </label>
           </div>
 
-          <div class="pub-right">
+          <div class="pub-right" style="display: flex; align-items: center; gap: 16px; flex: 1; justify-content: flex-end;">
             <!-- Tiến trình xuất -->
-            <div v-if="isExporting && exportProgress.total > 0" class="pub-progress-box">
-              <div class="progress-info">Đang xuất: {{ exportProgress.done }} / {{ exportProgress.total }} clip</div>
-              <div class="progress-bar-container">
-                <div class="progress-bar-fill" :style="{ width: (exportProgress.done / exportProgress.total * 100) + '%' }"></div>
+            <div v-if="isExporting && exportProgress.total > 0" class="pub-progress-box" 
+                 :style="{
+                   display: 'flex', 
+                   flexDirection: 'row',
+                   flexWrap: 'nowrap',
+                   alignItems: 'center', 
+                   gap: '12px', 
+                   flex: 1, 
+                   minWidth: '580px', 
+                   padding: '6px 12px', 
+                   userSelect: 'none', 
+                   fontSize: '12.5px',
+                   borderRadius: '8px',
+                   border: '1px solid rgba(255, 255, 255, 0.06)',
+                   background: `linear-gradient(to right, rgba(16, 185, 129, 0.12) 0%, rgba(16, 185, 129, 0.12) ${exportProgress.done / exportProgress.total * 100}%, rgba(255, 255, 255, 0.01) ${exportProgress.done / exportProgress.total * 100}%)`
+                 }">
+              <!-- Tổng tiến độ Video -->
+              <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
+                🎬 Cắt Video: <strong style="color: var(--success-color);">{{ videoDoneCount }}/{{ exportProgress.total }}</strong>
+              </span>
+              
+              <span style="color: rgba(255,255,255,0.15)">|</span>
+              
+              <!-- Tổng tiến độ Thumbnail -->
+              <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
+                🎨 Ảnh bìa AI: 
+                <template v-if="exportWithThumbnails">
+                  <strong style="color: #38bdf8;">{{ thumbDoneCount }}/{{ exportProgress.total }}</strong>
+                </template>
+                <span v-else style="color: var(--text-muted); font-size: 11px; font-weight: normal; font-style: italic;">(Tắt)</span>
+              </span>
+              
+              <span style="color: rgba(255,255,255,0.15)">|</span>
+
+              <!-- Tên Video đang xử lý -->
+              <div style="color: var(--l-text-muted); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; text-align: left;" :title="exportStatusText">
+                {{ formatExportStatusMsg(exportStatusText) }}
               </div>
+              
+              <span style="color: rgba(255,255,255,0.15)">|</span>
+              
+              <!-- ETA -->
+              <span class="eta-badge" style="font-size: 11px; font-weight: bold; color: var(--accent-color); padding: 2px 6px; background: rgba(99, 102, 241, 0.1); border-radius: 4px; white-space: nowrap;">
+                {{ getExportETA() }}
+              </span>
             </div>
 
             <button v-if="!isExporting" @click="removeSelectedClips" class="btn delete-selected-btn-bar flex-center" title="Xóa các clip đã chọn">
@@ -2515,2506 +3394,656 @@ const formatSize = (bytes: number) => {
               </div>
               <p class="preview-note">Transition được đặt ở cấp clip nhưng áp đồng nhất toàn bộ mối nối khi ghép (lấy cấu hình đầu tiên tìm thấy).</p>
             </div>
+
+            <!-- 🎨 Ảnh Thumbnail AI -->
+            <div class="settings-group">
+              <h3 class="group-title">🎨 Ảnh Thumbnail AI (Gemini + Imagen 4)</h3>
+              
+              <div v-if="!geminiAPIKey" class="group-empty" style="padding: 10px; font-size: 12px; color: var(--wx-brand-accent);">
+                ⚠️ Vui lòng cấu hình <strong>Google Gemini API Key</strong> trong phần <strong>Cài đặt chung</strong> ở Header trước để kích hoạt tính năng này.
+              </div>
+              <div v-else>
+                <div style="margin-bottom: 12px;">
+                  <button @click="getClipFrames" :disabled="aiThumbState.isExtractingFrames" class="btn select-btn flex-center" style="font-size:12px; padding: 6px 12px; width: 100%; justify-content: center; background: var(--bg-panel-dark); cursor: pointer;">
+                    <svg viewBox="0 0 24 24" width="14" height="14" style="margin-right:4px;"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+                    {{ aiThumbState.isExtractingFrames ? 'Đang trích xuất ảnh mẫu...' : 'Lấy 3 ảnh mẫu từ Clip này' }}
+                  </button>
+                </div>
+
+                <!-- Hiển thị 3 ảnh mẫu trích xuất -->
+                <div v-if="aiThumbState.extractedFrames.length > 0" style="margin-bottom: 15px;">
+                  <label class="input-lbl" style="margin-bottom: 6px;">Chọn ảnh mẫu gửi cho AI tham chiếu phong cách:</label>
+                  <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;">
+                    <div v-for="(frame, fi) in aiThumbState.extractedFrames" :key="frame" 
+                      style="position: relative; border-radius: 4px; overflow: hidden; border: 2px solid var(--border-color); cursor: pointer;"
+                      :style="{ borderColor: aiThumbState.selectedFrames.has(frame) ? 'var(--wx-brand-primary)' : 'var(--border-color)' }"
+                      @click="aiThumbState.selectedFrames.has(frame) ? aiThumbState.selectedFrames.delete(frame) : aiThumbState.selectedFrames.add(frame)">
+                      <img :src="getThumbUrl(frame)" style="width:100%; height:80px; object-fit:cover; display:block;" />
+                      <div style="position: absolute; top: 4px; right: 4px; background: rgba(0,0,0,0.6); border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; color: white; font-size: 10px; font-weight: bold;">
+                        <span v-if="aiThumbState.selectedFrames.has(frame)">✓</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Input Prompt -->
+                <div style="margin-bottom: 12px;">
+                  <label class="input-lbl">Chủ đề hoặc ý tưởng thiết kế (Prompt):</label>
+                  <textarea v-model="aiThumbState.userPrompt" placeholder="Ví dụ: Một cô gái xinh đẹp cá tính, phong cách anime rực rỡ, ánh sáng neon hồng xanh lung linh..." 
+                    style="width: 100%; height: 70px; box-sizing: border-box; padding: 8px; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-main); font-size: 12px; font-family: inherit; resize: vertical;"></textarea>
+                </div>
+
+                <div class="settings-grid" style="grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+                  <div class="setting-item">
+                    <label>Tỉ lệ ảnh sinh</label>
+                    <select v-model="aiThumbState.aspectRatio" style="width:100%; height: 35px; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-main); padding: 0 8px;">
+                      <option value="9:16">9:16 (Dọc - TikTok/Reels)</option>
+                      <option value="1:1">1:1 (Vuông)</option>
+                      <option value="16:9">16:9 (Ngang)</option>
+                    </select>
+                  </div>
+                  <div class="setting-item" style="display: flex; align-items: flex-end;">
+                    <button @click="generateAIThumbnailImg" :disabled="aiThumbState.isGenerating || !aiThumbState.userPrompt.trim()" class="btn start-btn flex-center" style="font-size:12px; padding: 0 12px; width: 100%; height: 35px; justify-content: center; background: var(--wx-brand-accent); color: white; cursor: pointer;">
+                      🎨 {{ aiThumbState.isGenerating ? 'Đang tạo...' : 'Tạo bằng AI' }}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Status text / Loading -->
+                <div v-if="aiThumbState.statusText" style="font-size: 12px; text-align: center; margin-top: 8px; color: var(--wx-brand-primary);">
+                  <span v-if="aiThumbState.isGenerating" style="display:inline-block; animation: spin 1s linear infinite; margin-right: 5px;">🌀</span>
+                  {{ aiThumbState.statusText }}
+                </div>
+
+                <!-- Preview Generated Image -->
+                <div v-if="aiThumbState.generatedImage" style="margin-top: 15px; border-top: 1px solid var(--border-color); padding-top: 12px; text-align: center;">
+                  <span class="input-lbl" style="margin-bottom: 6px; display: block;">Ảnh Thumbnail AI đã tạo:</span>
+                  <img :src="getThumbUrl(aiThumbState.generatedImage)" style="max-width: 100%; max-height: 250px; border-radius: 6px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); border: 2px solid var(--wx-brand-accent);" />
+                  <p style="font-size: 11px; color: var(--text-muted); margin-top: 5px; margin-bottom: 0;">Ảnh bìa đã được tự động lưu và áp dụng cho Clip này.</p>
+                </div>
+              </div>
+            </div>
           </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- ============ DOWNLOAD ONLINE VIDEO MODAL ============ -->
+    <Teleport to="body">
+      <div class="modal-overlay" v-if="showDownloadPanel" @click.self="showDownloadPanel = false">
+        <div class="settings-modal dl-modal">
+          <div class="modal-header">
+            <h2 style="display:flex; align-items:center; gap:6px;">
+              <svg viewBox="0 0 24 24" width="18" height="18" style="color:var(--accent-color);"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.53c-.26-.81-1-1.4-1.9-1.4h-1v-3c0-.55-.45-1-1-1h-6v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+              Tải Video Online
+            </h2>
+            <button class="modal-close" @click="showDownloadPanel = false">✕</button>
+          </div>
+          <div class="modal-body">
+            <!-- Mode Selector Switch: Dán Link vs Tìm Kiếm -->
+            <div style="display: flex; gap: 8px; margin-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 10px;">
+              <button type="button" @click="downloadMode = 'link'; downloadUrl = ''; probeResult = null" 
+                      style="font-size: 11px; padding: 5px 12px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; outline: none; display: flex; align-items: center; gap: 4px;"
+                      :style="{
+                        background: downloadMode === 'link' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.02)',
+                        borderColor: downloadMode === 'link' ? 'var(--accent-color)' : 'rgba(255,255,255,0.08)',
+                        color: downloadMode === 'link' ? 'var(--accent-color)' : 'var(--l-text-muted)'
+                      }">
+                🔗 Dán link nguồn trực tiếp
+              </button>
+              <button type="button" @click="downloadMode = 'search'; downloadUrl = ''; probeResult = null" 
+                      style="font-size: 11px; padding: 5px 12px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; outline: none; display: flex; align-items: center; gap: 4px;"
+                      :style="{
+                        background: downloadMode === 'search' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.02)',
+                        borderColor: downloadMode === 'search' ? 'var(--accent-color)' : 'rgba(255,255,255,0.08)',
+                        color: downloadMode === 'search' ? 'var(--accent-color)' : 'var(--l-text-muted)'
+                      }">
+                🔍 Tìm kiếm bằng từ khóa
+              </button>
+            </div>
+
+            <!-- Single Input Box depending on Active Mode -->
+            <div style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px;">
+              <label style="font-size: 11px; color: var(--l-text-muted); font-weight: 600;">
+                {{ downloadMode === 'link' ? 'NHẬP ĐƯỜNG DẪN LINK NGUỒN CỦA VIDEO / DANH SÁCH / KÊNH:' : 'NHẬP TỪ KHÓA / CHỦ ĐỀ CẦN TÌM KIẾM ĐA NGUỒN:' }}
+              </label>
+              <div style="display: flex; gap: 8px;">
+                <input v-model="downloadUrl" type="text" class="dl-url-input" style="flex: 1;" 
+                       :placeholder="downloadMode === 'link' ? 'Dán link video, kênh hoặc playlist (YouTube, TikTok, Facebook Reel/Watch hoặc website nguồn bất kỳ)...' : 'Nhập từ khóa tìm kiếm (ví dụ: xe độ, vlog, nấu ăn, hài hước)...'" 
+                       @keyup.enter="probeUrl" :disabled="isProbing" />
+                <button @click="probeUrl" class="btn dl-probe-btn" :disabled="isProbing" style="display:inline-flex; align-items:center; gap:4px; white-space: nowrap; height: 38px;">
+                  <template v-if="isProbing">
+                    <svg viewBox="0 0 24 24" width="14" height="14" class="spin-hourglass" style="display:inline-block; animation: spin 1.5s linear infinite;"><path fill="currentColor" d="M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5l-4-4V4h8v3.5l-4 4z"/></svg>
+                    Đang dò...
+                  </template>
+                  <template v-else>
+                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                    {{ downloadMode === 'link' ? 'Dò link' : 'Tìm kiếm' }}
+                  </template>
+                </button>
+              </div>
+            </div>
+
+            <!-- Loại link + Cookie + Nguồn tìm kiếm -->
+            <div class="dl-options-row">
+              <div class="dl-opt-group">
+                <label>Loại link:</label>
+                <select v-model="dlLinkType" class="dl-select">
+                  <option value="auto">Tự nhận diện {{ detectedLinkType !== 'auto' ? '(' + (detectedLinkType === 'video' ? 'Video đơn' : detectedLinkType === 'profile' ? 'Profile' : 'Playlist') + ')' : '' }}</option>
+                  <option value="video">Video đơn</option>
+                  <option value="profile">Profile / Kênh</option>
+                  <option value="playlist">Playlist</option>
+                </select>
+              </div>
+              <div class="dl-opt-group" style="flex: 1.8; min-width: 250px;" v-if="downloadMode === 'search'">
+                <label>Nguồn tìm kiếm:</label>
+                <div style="display: flex; gap: 5px; margin-top: 4px;">
+                  <button type="button" @click="searchSource = 'youtube'" 
+                          style="font-size: 11px; padding: 4px 8px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; outline: none;"
+                          :style="{
+                            background: searchSource === 'youtube' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.02)',
+                            borderColor: searchSource === 'youtube' ? 'var(--accent-color)' : 'rgba(255,255,255,0.08)',
+                            color: searchSource === 'youtube' ? 'var(--accent-color)' : 'var(--l-text-muted)'
+                          }">
+                    YouTube
+                  </button>
+                  <button type="button" @click="searchSource = 'tiktok'" 
+                          style="font-size: 11px; padding: 4px 8px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; outline: none;"
+                          :style="{
+                            background: searchSource === 'tiktok' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.02)',
+                            borderColor: searchSource === 'tiktok' ? 'var(--accent-color)' : 'rgba(255,255,255,0.08)',
+                            color: searchSource === 'tiktok' ? 'var(--accent-color)' : 'var(--l-text-muted)'
+                          }">
+                    TikTok
+                  </button>
+                  <button type="button" @click="searchSource = 'facebook'" 
+                          style="font-size: 11px; padding: 4px 8px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; outline: none;"
+                          :style="{
+                            background: searchSource === 'facebook' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.02)',
+                            borderColor: searchSource === 'facebook' ? 'var(--accent-color)' : 'rgba(255,255,255,0.08)',
+                            color: searchSource === 'facebook' ? 'var(--accent-color)' : 'var(--l-text-muted)'
+                          }">
+                    Facebook
+                  </button>
+                  <button type="button" @click="searchSource = 'all'" 
+                          style="font-size: 11px; padding: 4px 8px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; outline: none;"
+                          :style="{
+                            background: searchSource === 'all' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.02)',
+                            borderColor: searchSource === 'all' ? 'var(--accent-color)' : 'rgba(255,255,255,0.08)',
+                            color: searchSource === 'all' ? 'var(--accent-color)' : 'var(--l-text-muted)'
+                          }">
+                    Hỗn hợp
+                  </button>
+                </div>
+              </div>
+              <div class="dl-opt-group">
+                <label>Cookie:</label>
+                <select v-model="cookieBrowser" class="dl-select">
+                  <option value="">Không dùng</option>
+                  <option value="chrome">Chrome</option>
+                  <option value="edge">Edge</option>
+                  <option value="firefox">Firefox</option>
+                </select>
+              </div>
+              <div class="dl-opt-group" v-if="probeResult">
+                <span class="dl-platform-badge" :class="probeResult.platform">
+                  {{ probeResult.platform === 'youtube' ? 'YouTube' : probeResult.platform === 'tiktok' ? 'TikTok' : probeResult.platform === 'facebook' ? 'Facebook' : probeResult.platform === 'mixed' ? 'Hỗn hợp' : 'Khác' }}
+                </span>
+                <span class="dl-type-badge">{{ probeResult.type === 'playlist' ? 'Playlist/Profile' : 'Video đơn' }}</span>
+                <span class="dl-count-badge">{{ probeResult.entries.length }} video</span>
+              </div>
+            </div>
+
+            <!-- Cấu hình Profile/Playlist: số lượng + thứ tự -->
+            <div class="dl-profile-config" v-if="isProfileOrPlaylist && !probeResult">
+              <div class="dl-opt-group">
+                <label>Số video tối đa:</label>
+                <select v-model.number="dlMaxCount" class="dl-select">
+                  <option :value="10">10 video</option>
+                  <option :value="20">20 video</option>
+                  <option :value="30">30 video</option>
+                  <option :value="50">50 video</option>
+                  <option :value="100">100 video</option>
+                  <option :value="200">200 video</option>
+                  <option :value="0">Tất cả (chậm)</option>
+                </select>
+              </div>
+              <div class="dl-opt-group">
+                <label>Thứ tự lấy:</label>
+                <select v-model="dlFetchOrder" class="dl-select">
+                  <option value="newest">Mới nhất trước</option>
+                  <option value="oldest">Cũ nhất trước</option>
+                </select>
+              </div>
+              <div class="dl-profile-hint">
+                Dò {{ dlMaxCount > 0 ? dlMaxCount : 'tất cả' }} video {{ dlFetchOrder === 'newest' ? 'mới nhất' : 'cũ nhất' }}. Sau khi dò xong, bạn có thể lọc/sắp xếp thêm theo views, likes, thời lượng.
+              </div>
+            </div>
+
+            <!-- Filters (chỉ hiển thị khi có nhiều hơn 1 video) -->
+            <div class="dl-filters-row" v-if="probeResult && probeResult.entries.length > 1">
+              <div class="dl-filter-item">
+                <label>Sắp xếp:</label>
+                <select v-model="dlSortBy" class="dl-select">
+                  <option value="views">Nhiều view nhất</option>
+                  <option value="likes">Nhiều like nhất</option>
+                  <option value="date">Mới nhất</option>
+                  <option value="duration">Dài nhất</option>
+                </select>
+              </div>
+              <div class="dl-filter-item">
+                <label>Từ khóa:</label>
+                <input v-model="dlKeyword" type="text" class="dl-filter-input" placeholder="Lọc tiêu đề..." />
+              </div>
+              <div class="dl-filter-item">
+                <label>Min views:</label>
+                <input v-model.number="dlMinViews" type="number" class="dl-filter-input" min="0" step="100" />
+              </div>
+            </div>
+
+            <!-- Select all + count -->
+            <div class="dl-select-bar" v-if="probeResult && filteredDlEntries.length > 0">
+              <label class="dl-select-all-label" @click="dlToggleAll">
+                <input type="checkbox" :checked="dlSelectedCount === filteredDlEntries.length && filteredDlEntries.length > 0" @click.stop="dlToggleAll" />
+                Chọn tất cả
+              </label>
+              <span class="dl-selected-count">Đã chọn: {{ dlSelectedCount }}/{{ filteredDlEntries.length }}</span>
+            </div>
+
+            <!-- Video entries list -->
+            <div class="dl-entries-list" v-if="probeResult">
+              <div v-for="entry in filteredDlEntries" :key="entry.id" class="dl-entry-card" :class="{ selected: dlSelectedIds.has(entry.id) }" @click="dlToggle(entry.id)">
+                <input type="checkbox" :checked="dlSelectedIds.has(entry.id)" @click.stop="dlToggle(entry.id)" class="dl-entry-check" />
+                <div class="dl-entry-thumb">
+                  <img v-if="entry.thumbnail" :src="entry.thumbnail" alt="" referrerpolicy="no-referrer" crossorigin="anonymous" @error="($event.target as HTMLImageElement).style.display='none'; ($event.target as HTMLImageElement).parentElement!.classList.add('dl-entry-thumb-placeholder'); ($event.target as HTMLImageElement).parentElement!.textContent='🎬'" />
+                  <span v-else>🎬</span>
+                </div>
+                <div class="dl-entry-info">
+                  <div class="dl-entry-title">{{ entry.title || 'Không rõ tên' }}</div>
+                  <div class="dl-entry-meta">
+                    <span v-if="entry.viewCount" title="Lượt xem" style="display:inline-flex; align-items:center; gap:2px;">
+                      <svg viewBox="0 0 24 24" width="11" height="11" style="color:var(--text-muted);"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                      {{ formatViewCount(entry.viewCount) }}
+                    </span>
+                    <span v-if="entry.likeCount" title="Lượt thích" style="display:inline-flex; align-items:center; gap:2px;">
+                      <svg viewBox="0 0 24 24" width="11" height="11" style="color:var(--text-muted);"><path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                      {{ formatViewCount(entry.likeCount) }}
+                    </span>
+                    <span v-if="entry.duration" title="Thời lượng" style="display:inline-flex; align-items:center; gap:2px;">
+                      <svg viewBox="0 0 24 24" width="11" height="11" style="color:var(--text-muted);"><path fill="currentColor" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+                      {{ formatTime(entry.duration) }}
+                    </span>
+                    <span v-if="entry.uploadDate" title="Ngày đăng" style="display:inline-flex; align-items:center; gap:2px;">
+                      <svg viewBox="0 0 24 24" width="11" height="11" style="color:var(--text-muted);"><path fill="currentColor" d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11z"/></svg>
+                      {{ formatDlDate(entry.uploadDate) }}
+                    </span>
+                    <a v-if="entry.url" :href="entry.url" target="_blank" @click.stop 
+                       style="display:inline-flex; align-items:center; gap:2px; color: var(--accent-color); text-decoration: none; font-size: 11px; margin-left: auto; font-weight: 600;" 
+                       title="Xem video gốc trên trình duyệt">
+                      🔗 Xem
+                    </a>
+                    <button v-if="entry.url" type="button" @click.stop="copyToClipboard(entry.url)"
+                       style="display:inline-flex; align-items:center; gap:2px; color: var(--accent-color); background: none; border: none; font-size: 11px; margin-left: 8px; font-weight: 600; cursor: pointer; padding: 0;" 
+                       title="Sao chép đường dẫn video gốc">
+                      📋 Copy
+                    </button>
+                  </div>
+                  <div v-if="entry.url" style="font-size: 10px; color: var(--l-text-muted); opacity: 0.6; margin-top: 4px; word-break: break-all; user-select: text;" @click.stop>
+                    {{ entry.url }}
+                  </div>
+                </div>
+                <!-- Per-entry progress -->
+                <div class="dl-entry-progress" v-if="dlProgressMap.get(entry.id)">
+                  <template v-if="dlProgressMap.get(entry.id)!.status === 'done'">
+                    <svg viewBox="0 0 24 24" width="16" height="16" style="color:var(--success-color);"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                  </template>
+                  <template v-else-if="dlProgressMap.get(entry.id)!.status === 'error'">
+                    <svg viewBox="0 0 24 24" width="16" height="16" style="color:var(--danger-color);"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                  </template>
+                  <template v-else>
+                    <div class="dl-mini-progress-bar">
+                      <div class="dl-mini-progress-fill" :style="{ width: dlProgressMap.get(entry.id)!.percent + '%' }"></div>
+                    </div>
+                    <span class="dl-mini-pct">{{ Math.round(dlProgressMap.get(entry.id)!.percent) }}%</span>
+                  </template>
+                </div>
+              </div>
+              <div v-if="filteredDlEntries.length === 0" class="dl-empty">
+                Không tìm thấy video phù hợp với bộ lọc.
+              </div>
+            </div>
+
+            <!-- Download progress summary -->
+            <div class="dl-progress-section" v-if="dlProgressMap.size > 0">
+              <h4 class="dl-progress-title" style="display:flex; align-items:center; gap:6px; margin: 12px 0 6px 0;">
+                <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--accent-color);"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                Tiến trình tải
+              </h4>
+              <div v-for="[id, p] of dlProgressMap" :key="id" class="dl-progress-row">
+                <span class="dl-prog-icon" v-if="p.status === 'done'">
+                  <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--success-color);"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                </span>
+                <span class="dl-prog-icon" v-else-if="p.status === 'error'">
+                  <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--danger-color);"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                </span>
+                <span class="dl-prog-icon" v-else>
+                  <svg viewBox="0 0 24 24" width="14" height="14" class="spin-hourglass" style="display:inline-block;"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                </span>
+                <span class="dl-prog-title">{{ p.title }}</span>
+                <div class="dl-prog-bar" v-if="p.status === 'downloading'">
+                  <div class="dl-prog-fill" :style="{ width: p.percent + '%' }"></div>
+                </div>
+                <span class="dl-prog-pct" v-if="p.status === 'downloading'">{{ Math.round(p.percent) }}% · {{ p.speed }} · ETA {{ p.eta }}</span>
+                <span class="dl-prog-pct" v-else-if="p.status === 'done'" style="color: var(--success-color)">Hoàn tất</span>
+                <span class="dl-prog-pct" v-else style="color: var(--danger-color)">{{ p.error || 'Lỗi' }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-footer dl-footer">
+            <div class="dl-footer-left">
+              <div class="dl-dir-row">
+                <label>Lưu vào:</label>
+                <input v-model="downloadDir" type="text" class="dl-dir-input" readonly />
+                <button @click="pickDownloadDir" class="btn dl-dir-btn" style="display:inline-flex; align-items:center; justify-content:center; padding: 4px 8px;">
+                  <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--text-main);"><path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="dl-footer-right">
+              <button v-if="isDownloading" @click="cancelDl" class="btn stop-analyze-btn" style="display:inline-flex; align-items:center; gap:4px; justify-content:center;">
+                <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
+                Hủy tải
+              </button>
+              <button v-else @click="startDownload" :disabled="dlSelectedCount === 0" class="btn start-btn dl-start-btn" style="display:inline-flex; align-items:center; gap:4px; justify-content:center;">
+                <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
+                Tải {{ dlSelectedCount }} video
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- ===== MODAL CÀI ĐẶT CHUNG (Global Settings) ===== -->
+    <Teleport to="body">
+      <div class="modal-overlay" v-if="showSettings" @click.self="showSettings = false">
+        <div class="settings-modal" style="width: 520px; max-height: 85vh;">
+          <div class="modal-header">
+            <h2 style="display:flex; align-items:center; gap:6px;">
+              <svg viewBox="0 0 24 24" width="18" height="18" style="color:var(--l-accent);"><path fill="currentColor" d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/></svg>
+              Cài đặt chung
+            </h2>
+            <button class="modal-close" @click="showSettings = false">✕</button>
+          </div>
+          <div class="modal-body" style="overflow-y: auto;">
+            <div class="settings-group" style="margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid var(--l-border);">
+              <h4 style="margin-top: 0; margin-bottom: 10px; color: var(--wx-brand-accent); font-size: 13.5px; font-weight: 700;">🔑 Cấu hình AI Thumbnail (Google Gemini)</h4>
+              <div class="setting-item" style="margin-bottom: 8px;">
+                <label style="font-size: 12.5px; font-weight: 600;">Google Gemini API Key:</label>
+                <input type="password" v-model="geminiAPIKey" class="text-content-input" placeholder="Dán Gemini API Key của bạn..." style="margin-bottom: 0;" />
+              </div>
+              <p class="settings-hint" style="font-size: 11px; color: var(--l-text-muted); margin: 0; line-height: 1.4;">API Key được lưu bảo mật cục bộ tại máy của bạn.</p>
+            </div>
+            
+            <div class="settings-group">
+              <h4 style="margin-top: 0; margin-bottom: 15px; color: var(--wx-brand-primary); font-size: 13.5px; font-weight: 700;">💻 Cấu hình hiệu năng & hệ thống</h4>
+              <div class="settings-grid" style="grid-template-columns: 1fr; gap: 15px; margin-bottom: 15px;">
+                <!-- Checkbox tự động tạo thư mục con -->
+                <div class="setting-item" style="margin-bottom: 5px;">
+                  <label class="toggle-row inline" style="font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                    <input type="checkbox" v-model="autoCreateSubfolders" style="width:16px; height:16px;" />
+                    Tự động tạo thư mục con (Video / Ảnh) bên trong thư mục xuất
+                  </label>
+                </div>
+
+                <!-- Thư mục lưu video -->
+                <div class="setting-item">
+                  <label style="font-size: 12.5px; font-weight: 600;">
+                    {{ autoCreateSubfolders ? 'Thư mục xuất chung mặc định:' : 'Thư mục lưu video xuất:' }}
+                  </label>
+                  <div class="file-picker-row">
+                    <input type="text" v-model="outDir" class="file-path-input" style="flex: 1;" readonly />
+                    <button class="mini-add-btn" @click="chooseOutDir" style="padding: 7px 14px; white-space: nowrap; cursor: pointer;">📁 Chọn thư mục</button>
+                  </div>
+                </div>
+
+                <!-- Thư mục lưu ảnh -->
+                <div class="setting-item" v-if="!autoCreateSubfolders">
+                  <label style="font-size: 12.5px; font-weight: 600;">Thư mục lưu ảnh (Thumbnail) xuất:</label>
+                  <div class="file-picker-row">
+                    <input type="text" v-model="outImageDir" class="file-path-input" style="flex: 1;" readonly />
+                    <button class="mini-add-btn" @click="chooseOutImageDir" style="padding: 7px 14px; white-space: nowrap; cursor: pointer;">📁 Chọn thư mục</button>
+                  </div>
+                </div>
+
+                <!-- Gợi ý đường dẫn con -->
+                <div v-else style="background: var(--l-bg-soft); border: 1px dashed var(--l-border); padding: 8px 12px; border-radius: 8px; font-size: 11.5px; color: var(--l-text-muted); line-height: 1.4;">
+                  💡 <strong>Quy tắc tự chia thư mục con:</strong><br />
+                  - Video sẽ lưu tại: <code style="color: var(--l-accent);">{{ outDir }}\video</code><br />
+                  - Ảnh bìa sẽ lưu tại: <code style="color: var(--wx-brand-accent);">{{ outDir }}\image</code>
+                </div>
+                
+                <div class="settings-grid" style="grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 5px;">
+                  <div>
+                    <label style="font-size: 12.5px; font-weight: 600; white-space: nowrap;">Cắt song song:</label>
+                    <select v-model="analyzeJobs" style="width: 100%; height: 35px; border-radius: 6px; border: 1px solid var(--l-border); background: var(--l-bg); color: var(--l-text);">
+                      <option :value="1">1 video (ổn định)</option>
+                      <option :value="2">2 video</option>
+                      <option :value="3">3 video</option>
+                      <option :value="4">4 video</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style="font-size: 12.5px; font-weight: 600; white-space: nowrap;">Xuất song song:</label>
+                    <select v-model="exportJobs" style="width: 100%; height: 35px; border-radius: 6px; border: 1px solid var(--l-border); background: var(--l-bg); color: var(--l-text);">
+                      <option :value="1">1 clip</option>
+                      <option :value="2">2 clip</option>
+                      <option :value="3">3 clip</option>
+                      <option :value="4">4 clip</option>
+                      <option :value="6">6 clip</option>
+                      <option :value="8">8 clip (mạnh)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer" style="justify-content: flex-end;">
+            <button class="btn save-btn" @click="showSettings = false">✅ Hoàn tất</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- IMAGE DOWNLOADER MODAL                                  -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <Teleport to="body">
+      <div class="modal-overlay" v-if="showImagePanel" @click.self="showImagePanel = false">
+        <div class="settings-modal" style="width:min(92vw,900px);max-height:88vh;display:flex;flex-direction:column;">
+
+          <!-- Header -->
+          <div class="modal-header">
+            <h2 style="display:flex;align-items:center;gap:8px;">
+              <svg viewBox="0 0 24 24" width="18" height="18" style="color:#06b6d4;flex-shrink:0;"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+              Tải Ảnh Theo Chủ Đề
+            </h2>
+            <button class="modal-close" @click="showImagePanel = false">✕</button>
+          </div>
+
+          <!-- Search section -->
+          <div class="modal-body" style="padding:16px 20px 14px;border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0;">
+            <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px;">
+              <label style="font-size:11px;color:var(--l-text-muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em;">Nhập chủ đề / từ khóa:</label>
+              <div style="display:flex;gap:8px;">
+                <input v-model="imageQuery" type="text" class="dl-url-input" style="flex:1;"
+                  placeholder="VD: mèo cute, phong cảnh Việt Nam, ẩm thực đường phố, nature..."
+                  @keyup.enter="searchImages" :disabled="isImageSearching || isImageDownloading" />
+                <button @click="searchImages" class="btn dl-probe-btn"
+                  :disabled="isImageSearching || isImageDownloading || !imageQuery.trim()"
+                  style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap;height:38px;background:linear-gradient(135deg,#0891b2,#06b6d4)!important;">
+                  <template v-if="isImageSearching">
+                    <span style="display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .9s linear infinite;"></span>
+                    Đang tìm...
+                  </template>
+                  <template v-else>
+                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                    Tìm Ảnh
+                  </template>
+                </button>
+              </div>
+            </div>
+            <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">
+              <div style="flex:1;min-width:220px;">
+                <label style="font-size:11px;color:var(--l-text-muted);font-weight:600;display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;">Nguồn ảnh:</label>
+                <div style="display:flex;gap:5px;flex-wrap:wrap;">
+                  <button v-for="src in IMAGE_SOURCES" :key="src.value" type="button" :title="src.hint"
+                    @click="imageSource = src.value"
+                    style="font-size:12px;padding:5px 12px;border-radius:7px;cursor:pointer;transition:all .2s;font-weight:600;outline:none;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;"
+                    :style="{
+                      background: imageSource===src.value ? 'rgba(6,182,212,.15)' : 'rgba(255,255,255,.03)',
+                      border: imageSource===src.value ? '1px solid #06b6d4' : '1px solid rgba(255,255,255,.08)',
+                      color: imageSource===src.value ? '#22d3ee' : 'var(--l-text-muted)'
+                    }">
+                    {{ src.icon }} {{ src.label }}
+                    <span v-if="src.needsKey" style="font-size:9px;padding:1px 5px;background:rgba(245,158,11,.2);color:#fbbf24;border-radius:4px;border:1px solid rgba(245,158,11,.35);">Key</span>
+                  </button>
+                </div>
+                <p v-if="imageSelectedSource" style="font-size:11px;color:var(--l-text-muted);margin:5px 0 0;font-style:italic;line-height:1.4;">{{ imageSelectedSource.hint }}</p>
+              </div>
+              <div style="flex-shrink:0;">
+                <label style="font-size:11px;color:var(--l-text-muted);font-weight:600;display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;">Số lượng:</label>
+                <select v-model="imageMaxCount" class="dl-select" style="padding:7px 12px;font-size:13px;">
+                  <option :value="20">20 ảnh</option>
+                  <option :value="50">50 ảnh</option>
+                  <option :value="100">100 ảnh</option>
+                  <option :value="200">200 ảnh</option>
+                  <option :value="500">500 ảnh</option>
+                  <option :value="1000">1000 ảnh</option>
+                </select>
+              </div>
+            </div>
+            <div v-if="sourceNeedsKey" style="display:flex;align-items:center;gap:10px;margin-top:10px;padding:10px 14px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;flex-wrap:wrap;">
+              <svg viewBox="0 0 24 24" width="14" height="14" style="color:#fbbf24;flex-shrink:0;"><path fill="currentColor" d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
+              <label style="font-size:12px;color:var(--l-text-muted);font-weight:600;white-space:nowrap;flex-shrink:0;">{{ imageSelectedSource?.label }} API Key:</label>
+              <div style="flex:1;min-width:160px;display:flex;gap:6px;align-items:center;position:relative;">
+                <input v-model="imageApiKey" type="password" class="dl-url-input" style="flex:1;height:34px;font-size:12.5px;" :placeholder="`Nhập ${imageSelectedSource?.label} API Key...`" />
+                <!-- Badge: key từ .env -->
+                <span v-if="imageHasEnvKey" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;background:rgba(16,185,129,.15);color:#10b981;border:1px solid rgba(16,185,129,.3);pointer-events:none;">✅ .env</span>
+              </div>
+              <!-- Hint khi chưa có key -->
+              <span v-if="!imageApiKey" style="font-size:11px;color:#fbbf24;flex-basis:100%;margin-top:2px;">
+                ⚠️ Chưa có key. Nhập vào đây hoặc thêm vào file <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:3px;">frontend/.env.local</code> để dùng mặc định.
+              </span>
+              <span v-else-if="imageHasEnvKey" style="font-size:11px;color:#10b981;flex-basis:100%;margin-top:2px;">
+                ✅ Đang dùng key từ file <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:3px;">frontend/.env.local</code>
+              </span>
+              <a :href="imageSource==='pixabay'?'https://pixabay.com/api/docs/':imageSource==='unsplash'?'https://unsplash.com/developers':'https://www.pexels.com/api/'" target="_blank" style="font-size:12px;font-weight:600;color:#06b6d4;text-decoration:none;white-space:nowrap;flex-shrink:0;">Lấy key miễn phí →</a>
+            </div>
+          </div>
+
+          <!-- Results -->
+          <div style="flex:1;overflow-y:auto;padding:14px 20px;">
+            <div v-if="!imageSearchResult && !isImageSearching" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;height:200px;color:var(--l-text-muted);text-align:center;">
+              <svg viewBox="0 0 24 24" width="56" height="56" style="opacity:.2;"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+              <p style="font-size:14.5px;font-weight:600;margin:0;">Nhập chủ đề → nhấn <span style="color:#06b6d4;">Tìm Ảnh</span> để bắt đầu</p>
+              <p style="font-size:12px;opacity:.55;margin:0;">DuckDuckGo miễn phí không cần key • Hỗ trợ tiếng Việt & tiếng Anh</p>
+            </div>
+            <div v-if="isImageSearching" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;height:200px;color:var(--l-text-muted);">
+              <div style="width:40px;height:40px;border:3px solid rgba(255,255,255,.1);border-top-color:#06b6d4;border-radius:50%;animation:spin .9s linear infinite;"></div>
+              <p style="font-size:14px;font-weight:600;margin:0;">Đang tìm kiếm từ <span style="color:#22d3ee;">{{ imageSelectedSource?.label }}</span>...</p>
+            </div>
+            <template v-if="imageSearchResult && !isImageSearching">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <span style="font-size:13px;color:var(--l-text-muted);display:flex;align-items:center;gap:8px;">
+                  <strong style="color:var(--l-text);font-size:17px;">{{ imageAllEntries.length }}</strong> ảnh tìm thấy
+                  <span style="font-size:10.5px;font-weight:700;padding:2px 9px;border-radius:12px;background:rgba(6,182,212,.12);color:#22d3ee;text-transform:capitalize;">{{ imageSearchResult.source }}</span>
+                </span>
+                <button type="button" @click="imageToggleAll"
+                  style="font-size:12px;padding:5px 14px;border-radius:7px;cursor:pointer;transition:all .18s;font-weight:600;outline:none;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);color:var(--l-text-muted);display:inline-flex;align-items:center;gap:5px;">
+                  {{ imageSelectedCount === imageAllEntries.length ? "Bỏ tất cả" : "Chọn tất cả" }}
+                  <span style="font-weight:700;color:var(--l-text);">({{ imageSelectedCount }}/{{ imageAllEntries.length }})</span>
+                </button>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:9px;">
+                <div v-for="entry in imageAllEntries" :key="entry.id" @click="toggleImage(entry.id)"
+                  style="border-radius:9px;overflow:hidden;cursor:pointer;transition:all .18s;position:relative;"
+                  :style="{
+                    border: selectedImageIds.has(entry.id) ? '2px solid #06b6d4' : '2px solid rgba(255,255,255,.06)',
+                    background: 'rgba(255,255,255,.03)',
+                    transform: selectedImageIds.has(entry.id) ? 'translateY(-2px)' : 'translateY(0)',
+                    boxShadow: selectedImageIds.has(entry.id) ? '0 6px 20px rgba(6,182,212,.2)' : 'none'
+                  }">
+                  <div style="position:relative;aspect-ratio:4/3;overflow:hidden;background:rgba(0,0,0,.3);">
+                    <img :src="entry.thumbUrl || entry.url" :alt="entry.title || 'anh'" loading="lazy"
+                      style="width:100%;height:100%;object-fit:cover;display:block;transition:transform .25s;"
+                      @error="($event.target as HTMLImageElement).style.display='none'"
+                      @mouseover="($event.target as HTMLImageElement).style.transform='scale(1.07)'"
+                      @mouseleave="($event.target as HTMLImageElement).style.transform='scale(1)'" />
+                    <div v-if="selectedImageIds.has(entry.id)"
+                      style="position:absolute;top:6px;right:6px;width:22px;height:22px;border-radius:50%;background:#06b6d4;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:white;box-shadow:0 2px 8px rgba(0,0,0,.5);">
+                      <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                    </div>
+                  </div>
+                  <div v-if="entry.author" style="padding:5px 7px;">
+                    <p style="font-size:10px;color:var(--l-text-muted);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">by {{ entry.author }}</p>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Log strip -->
+          <div v-if="imageSearchLog.length > 0" style="padding:7px 20px;background:rgba(0,0,0,.2);border-top:1px solid rgba(255,255,255,.05);font-size:11px;line-height:1.4;color:var(--l-text-muted);font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;">
+            {{ imageSearchLog[0] }}
+          </div>
+
+          <!-- Footer -->
+          <div class="modal-footer" style="flex-direction:column;gap:10px;padding:14px 20px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--l-text-muted);flex-shrink:0;"><path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+              <span style="font-size:12px;color:var(--l-text-muted);font-weight:600;white-space:nowrap;flex-shrink:0;">Lưu vào:</span>
+              <input v-model="imageDir" class="dl-url-input" style="flex:1;height:34px;font-size:12px;cursor:default;" readonly placeholder="Thư mục lưu ảnh..." />
+              <button @click="pickImageDir" style="padding:6px 12px;font-size:15px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:7px;color:var(--l-text);cursor:pointer;flex-shrink:0;">&#128193;</button>
+            </div>
+            <div v-if="isImageDownloading" style="display:flex;align-items:center;gap:10px;">
+              <div style="flex:1;height:5px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden;">
+                <div :style="{width: imageDownloadProgress+'%'}" style="height:100%;background:linear-gradient(90deg,#0891b2,#06b6d4);border-radius:3px;transition:width .4s ease;"></div>
+              </div>
+              <span style="font-size:12px;color:var(--l-text-muted);font-weight:700;white-space:nowrap;">{{ downloadDoneCount }}/{{ downloadTotalCount }} ảnh</span>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:10px;">
+              <button v-if="isImageDownloading" @click="cancelImageDl"
+                style="padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;background:rgba(255,255,255,.05);border:1px solid rgba(239,68,68,.3);color:#f87171;">
+                &#9209; Dừng tải</button>
+              <button v-if="!isImageDownloading" @click="showImagePanel = false"
+                style="padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:var(--l-text-muted);">
+                Đóng</button>
+              <button @click="startImageDownload"
+                :disabled="isImageDownloading || isImageSearching || imageSelectedCount === 0"
+                style="padding:8px 24px;border-radius:8px;font-size:13.5px;font-weight:700;cursor:pointer;transition:all .2s;border:none;display:inline-flex;align-items:center;gap:6px;"
+                :style="{
+                  background: (isImageDownloading||isImageSearching||imageSelectedCount===0)?'rgba(255,255,255,.07)':'linear-gradient(135deg,#0891b2,#06b6d4)',
+                  color: (isImageDownloading||isImageSearching||imageSelectedCount===0)?'rgba(255,255,255,.25)':'white',
+                  boxShadow: (isImageDownloading||isImageSearching||imageSelectedCount===0)?'none':'0 4px 14px rgba(6,182,212,.4)',
+                  cursor: (isImageDownloading||isImageSearching||imageSelectedCount===0)?'not-allowed':'pointer'
+                }">
+                <svg v-if="!isImageDownloading" viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M5 20h14v-2H5v2zM12 2L4 10h5v6h6v-6h5L12 2z"/></svg>
+                <span v-if="isImageDownloading">Đang tải {{ downloadDoneCount }}/{{ downloadTotalCount }}...</span>
+                <span v-else-if="imageSelectedCount===0">Chọn ảnh để tải</span>
+                <span v-else>Tải {{ imageSelectedCount }} ảnh đã chọn</span>
+              </button>
+            </div>
+          </div>
+
         </div>
       </div>
     </Teleport>
   </main>
 </template>
 
-<style scoped>
-/* Core Variables & Reset */
-.app-container {
-  --bg-app: var(--wx-surface-sunken);
-  --bg-panel: var(--wx-surface-base);
-  --bg-card: var(--wx-surface-elevated);
-  --bg-card-hover: var(--wx-hover-bg);
-  --border-color: var(--wx-border-default);
-  --accent-color: var(--wx-brand-primary);
-  --accent-hover: var(--wx-brand-accent);
-  --success-color: var(--wx-success-solid);
-  --danger-color: var(--wx-danger-solid);
-  --text-main: var(--wx-text-primary);
-  --text-muted: var(--wx-text-muted);
-  
-  font-family: 'Outfit', 'Inter', system-ui, -apple-system, sans-serif;
-  background-color: var(--bg-app);
-  color: var(--text-main);
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
 
-/* Header */
-.header {
-  background-color: var(--bg-panel);
-  border-bottom: 1px solid var(--border-color);
-  padding: 12px 24px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  z-index: 100;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-}
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.project-selector-container {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: 20px;
-  background-color: rgba(255, 255, 255, 0.05);
-  padding: 4px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border-color);
-}
-.project-selector-lbl {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-.project-dropdown {
-  background: transparent;
-  border: none;
-  color: var(--text-main);
-  font-size: 12.5px;
-  font-weight: 700;
-  cursor: pointer;
-  outline: none;
-  padding-right: 4px;
-}
-.project-dropdown option {
-  background-color: var(--bg-panel);
-  color: var(--text-main);
-}
-.btn-create-proj-mini,
-.btn-manage-proj-mini {
-  background-color: rgba(255, 255, 255, 0.08);
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
-  font-size: 10.5px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.btn-create-proj-mini:hover,
-.btn-manage-proj-mini:hover {
-  background-color: rgba(255, 255, 255, 0.15);
-  color: var(--text-main);
-}
-.header-icon {
-  width: 26px;
-  height: 26px;
-  color: var(--accent-color);
-}
-.header h1 {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 800;
-  background: linear-gradient(135deg, #a5b4fc, #818cf8, #6366f1);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  letter-spacing: -0.03em;
-}
-.header-subtitle {
-  font-size: 11.5px;
-  color: var(--text-muted);
-  background: rgba(255, 255, 255, 0.05);
-  padding: 2px 8px;
-  border-radius: 6px;
-  margin-left: 8px;
-}
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.header-divider {
-  width: 1px;
-  height: 24px;
-  background-color: var(--border-color);
-  margin: 0 4px;
-}
+<style scoped src="./VideoSplitter.scoped.css"></style>
 
-/* Common Components */
-.btn {
-  padding: 8px 16px;
-  border: none;
-  border-radius: 8px;
-  font-weight: 700;
-  font-size: 13.5px;
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.btn-icon {
-  width: 16px;
-  height: 16px;
-}
-.select-btn {
-  background-color: transparent;
-  border: 1px solid var(--accent-color);
-  color: var(--accent-color);
-}
-.select-btn:hover {
-  background-color: var(--hover-bg);
-}
-.start-btn {
-  background: var(--accent-gradient);
-  color: #ffffff;
-  box-shadow: var(--shadow-sm);
-}
-.start-btn:hover:not(:disabled) {
-  opacity: 0.9;
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-glow);
-}
-.start-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  box-shadow: none;
-}
-.stop-analyze-btn {
-  background: linear-gradient(135deg, #ef4444, #dc2626);
-  color: #ffffff;
-  box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
-  animation: pulse-stop 1.5s ease-in-out infinite;
-  font-weight: 700;
-}
-.stop-analyze-btn:hover {
-  background: linear-gradient(135deg, #dc2626, #b91c1c);
-  box-shadow: 0 0 20px rgba(239, 68, 68, 0.6);
-  transform: translateY(-1px);
-}
-@keyframes pulse-stop {
-  0%, 100% { box-shadow: 0 0 8px rgba(239, 68, 68, 0.3); }
-  50% { box-shadow: 0 0 18px rgba(239, 68, 68, 0.6); }
-}
-.icon-btn-circle {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: 50%;
-  width: 38px;
-  height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-main);
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.icon-btn-circle:hover {
-  background: var(--hover-bg);
-  border-color: var(--accent-hover);
-  color: var(--accent-hover);
-}
-
-/* Vertical Workspace Layout */
-.app-body-vertical {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-  padding: 16px;
-  gap: 16px;
-  box-sizing: border-box;
-}
-
-/* SECTION TOP: ORIGINAL VIDEOS */
-.section-top-videos {
-  background-color: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-.section-title-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.title-right-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.btn-danger-compact {
-  padding: 5px 10px;
-  font-size: 11.5px;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  color: #f87171;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  box-sizing: border-box;
-}
-.btn-danger-compact:hover {
-  background: rgba(239, 68, 68, 0.25);
-  border-color: rgba(239, 68, 68, 0.5);
-  color: #fff;
-}
-.title-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.title-left h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--accent-color);
-}
-.video-counter {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.select-all-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
-  color: var(--text-muted);
-  cursor: pointer;
-  user-select: none;
-  transition: color 0.2s;
-}
-.select-all-label:hover {
-  color: var(--text-main);
-}
-
-/* Horizontal scrollable video list */
-.video-horizontal-grid {
-  display: flex;
-  gap: 12px;
-  overflow-x: auto;
-  padding-bottom: 6px;
-}
-.video-horizontal-grid::-webkit-scrollbar {
-  height: 6px;
-}
-.video-horizontal-grid::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.03);
-  border-radius: 4px;
-}
-.video-horizontal-grid::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 4px;
-}
-.video-card-item {
-  min-width: 280px;
-  max-width: 280px;
-  background-color: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  padding: 8px 12px;
-  position: relative;
-  cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  overflow: hidden;
-  height: 48px;
-  display: flex;
-  align-items: center;
-  box-sizing: border-box;
-}
-.video-card-item:hover {
-  background-color: rgba(255, 255, 255, 0.06);
-  border-color: rgba(99, 102, 241, 0.4);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-}
-.video-card-item.active {
-  border-color: var(--accent-color);
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(99, 102, 241, 0.05));
-  box-shadow: 0 0 15px rgba(99, 102, 241, 0.25);
-}
-.video-card-item.video-picked {
-  background-color: rgba(99, 102, 241, 0.05);
-}
-.video-card-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-}
-.video-select-wrap {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  cursor: pointer;
-}
-.clip-checkbox {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent-color);
-  cursor: pointer;
-}
-.video-card-icon {
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-.video-card-item.active .video-card-icon {
-  color: var(--accent-color);
-}
-.video-card-name {
-  font-size: 12.5px;
-  font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-main);
-  flex: 1;
-}
-.status-badge-compact {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-weight: bold;
-  flex-shrink: 0;
-}
-.status-badge-compact.done {
-  background-color: rgba(16, 185, 129, 0.15);
-  color: #34d399;
-}
-.status-badge-compact.pending {
-  background-color: rgba(255, 255, 255, 0.05);
-  color: var(--text-muted);
-}
-.btn-remove-video {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
-  font-size: 10px;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  cursor: pointer;
-  transition: all 0.2s;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.btn-remove-video:hover {
-  background-color: rgba(239, 68, 68, 0.15);
-  border-color: rgba(239, 68, 68, 0.4);
-  color: #f87171;
-}
-.video-card-progress {
-  position: absolute;
-  inset: 0;
-  background: var(--wx-surface-sunken);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 10px;
-  border-radius: 8px;
-  gap: 10px;
-  z-index: 10;
-  box-sizing: border-box;
-}
-.video-card-progress .progress-bar-track {
-  height: 6px;
-  background: rgba(128, 128, 128, 0.2);
-  border-radius: 3px;
-  flex: 1;
-  overflow: hidden;
-  position: relative;
-}
-.video-card-progress .progress-bar-fill {
-  height: 100%;
-  background: var(--accent-color);
-  border-radius: 3px;
-  transition: width 0.2s ease;
-}
-.progress-text {
-  font-size: 11px;
-  color: var(--accent-color);
-  font-weight: bold;
-  flex-shrink: 0;
-  min-width: 32px;
-  text-align: right;
-}
-
-/* SECTION MIDDLE: SIDE BY SIDE CONFIG & PREVIEW */
-.section-middle-workspace {
-  display: grid;
-  grid-template-columns: 360px 1fr;
-  gap: 12px;
-  align-items: stretch;
-}
-
-.project-settings-panel {
-  background-color: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  padding: 10px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  height: 0;
-  min-height: 100%;
-  box-sizing: border-box;
-  overflow-y: auto;
-}
-.panel-tabs {
-  display: flex;
-  background-color: rgba(0, 0, 0, 0.2);
-  padding: 3px;
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
-  margin-bottom: 12px;
-  gap: 2px;
-}
-.panel-tab-btn {
-  flex: 1;
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  border-radius: 6px;
-  transition: all 0.2s;
-  text-align: center;
-}
-.panel-tab-btn:hover {
-  color: var(--text-main);
-}
-.panel-tab-btn.active {
-  background-color: var(--accent-color);
-  color: #fff;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-}
-.panel-tab-content {
-  flex: 1;
-  overflow-y: auto;
-  padding-right: 2px;
-  max-height: 380px;
-}
-.panel-tab-content::-webkit-scrollbar {
-  width: 4px;
-}
-.panel-tab-content::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 2px;
-}
-
-/* Tab 1: Compact cut settings */
-.compact-settings-group-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.compact-setting-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.setting-title-lbl {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text-muted);
-}
-.cut-mode-compact-buttons {
-  display: flex;
-  gap: 4px;
-  background-color: rgba(0, 0, 0, 0.2);
-  padding: 3px;
-  border-radius: 6px;
-  border: 1px solid var(--border-color);
-}
-.btn-cut-mode-pill {
-  flex: 1;
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  padding: 5px 8px;
-  font-size: 11px;
-  font-weight: 700;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.btn-cut-mode-pill:hover {
-  color: #fff;
-}
-.btn-cut-mode-pill.active {
-  background-color: var(--accent-color);
-  color: #fff;
-}
-.compact-setting-grid-2 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-.compact-setting-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.compact-input {
-  background-color: var(--wx-surface-sunken);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  padding: 6px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  width: 100%;
-}
-.compact-input:focus {
-  border-color: var(--accent-color);
-  outline: none;
-}
-.compact-select {
-  background-color: var(--wx-surface-sunken);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  padding: 6px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-/* Tab 2: Compact Edit presets settings */
-.remix-options-grid-compact {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.remix-card-compact {
-  background-color: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  padding: 8px 10px;
-  transition: all 0.2s;
-}
-.remix-card-compact.enabled {
-  border-left: 3px solid var(--accent-color);
-  border-color: rgba(99, 102, 241, 0.2);
-  background-color: rgba(99, 102, 241, 0.02);
-}
-.toggle-row-compact {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text-main);
-  cursor: pointer;
-  user-select: none;
-}
-.toggle-row-compact input {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--accent-color);
-}
-.remix-card-row-compact {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.option-title-compact {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text-main);
-}
-.compact-input-speed {
-  width: 50px;
-  background-color: var(--wx-surface-sunken);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  padding: 4px;
-  border-radius: 4px;
-  font-size: 11.5px;
-  text-align: center;
-}
-.speed-presets-compact {
-  display: flex;
-  gap: 4px;
-  margin-top: 6px;
-}
-.btn-preset-mini {
-  flex: 1;
-  background-color: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
-  font-size: 10px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.btn-preset-mini:hover {
-  background-color: rgba(255, 255, 255, 0.1);
-  color: #fff;
-}
-.btn-preset-mini.active {
-  background-color: var(--accent-color);
-  border-color: var(--accent-color);
-  color: #fff;
-}
-.aspect-controls-compact,
-.color-controls-compact {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 6px;
-  background-color: rgba(0, 0, 0, 0.15);
-  padding: 6px;
-  border-radius: 6px;
-}
-.compact-select-mini {
-  background-color: var(--wx-surface-sunken);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  padding: 4px;
-  border-radius: 4px;
-  font-size: 11px;
-  cursor: pointer;
-  width: 100%;
-}
-.compact-select-mini option {
-  background-color: var(--bg-panel);
-  color: var(--text-main);
-}
-.sliders-grid-compact {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-}
-.slider-item-compact {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.slider-item-compact span {
-  font-size: 9.5px;
-  color: var(--text-muted);
-}
-.slider-item-compact input[type="range"] {
-  width: 100%;
-  accent-color: var(--accent-color);
-}
-.audio-controls-compact {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
-}
-.toggle-row-mini-compact {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.toggle-row-mini-compact input {
-  width: 13px;
-  height: 13px;
-}
-.file-picker-row-compact {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-}
-.btn-picker-compact {
-  background-color: rgba(99, 102, 241, 0.15);
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  color: var(--accent-color);
-  font-size: 10px;
-  padding: 3px 6px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.btn-picker-compact:hover {
-  background-color: rgba(99, 102, 241, 0.25);
-}
-.btn-clear-compact {
-  background-color: rgba(244, 63, 94, 0.15);
-  border: 1px solid rgba(244, 63, 94, 0.3);
-  color: var(--danger-color);
-  padding: 3px 6px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 10px;
-}
-.music-name-tag-compact {
-  font-size: 9.5px;
-  color: #fbbf24;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  background-color: rgba(251, 191, 36, 0.08);
-  padding: 2px 4px;
-  border-radius: 4px;
-  flex: 1;
-}
-.volume-slider-compact {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.volume-slider-compact span {
-  font-size: 9.5px;
-  color: var(--text-muted);
-}
-.volume-slider-compact input {
-  width: 100%;
-}
-
-/* Left remix config panel */
-.remix-config-panel {
-  background-color: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-.remix-config-panel .panel-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid var(--border-color);
-  padding-bottom: 8px;
-}
-.remix-config-panel h3 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 800;
-  color: #fbbf24; /* Warning/Remix color */
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-}
-.auto-apply-label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11.5px;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.remix-options-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 380px;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-.remix-options-grid::-webkit-scrollbar {
-  width: 4px;
-}
-.remix-options-grid::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 2px;
-}
-.remix-card {
-  background-color: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  padding: 10px;
-  transition: all 0.2s;
-}
-.remix-card.enabled {
-  border-color: rgba(251, 191, 36, 0.4);
-  background-color: rgba(251, 191, 36, 0.03);
-}
-.toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  user-select: none;
-  font-weight: 700;
-  font-size: 12.5px;
-  color: var(--text-main);
-}
-.toggle-row input {
-  width: 15px;
-  height: 15px;
-}
-.option-title {
-  font-size: 13px;
-  font-weight: 700;
-}
-.option-desc {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin: 4px 0 0 0;
-  line-height: 1.35;
-}
-.remix-card-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.input-with-unit-mini {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.input-with-unit-mini input {
-  width: 60px;
-  background-color: var(--wx-surface-sunken);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  padding: 4px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-  text-align: center;
-}
-.speed-presets {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-.btn-preset {
-  background-color: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--border-color);
-  color: var(--text-muted);
-  font-size: 11px;
-  padding: 3px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.btn-preset:hover {
-  background-color: rgba(255, 255, 255, 0.12);
-  color: #fff;
-}
-.btn-preset.active {
-  background-color: #fbbf24;
-  border-color: #fbbf24;
-  color: #000;
-  font-bold: true;
-}
-.aspect-controls,
-.color-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-  background-color: rgba(0, 0, 0, 0.15);
-  padding: 8px;
-  border-radius: 6px;
-}
-.remix-select {
-  background-color: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  color: #fff;
-  padding: 5px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.sliders-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-.slider-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.slider-item label {
-  font-size: 10px;
-  color: var(--text-muted);
-}
-.slider-item input[type="range"] {
-  width: 100%;
-  accent-color: var(--accent-color);
-}
-.audio-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 6px;
-}
-.toggle-row-mini {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  cursor: pointer;
-}
-.toggle-row-mini input {
-  width: 14px;
-  height: 14px;
-}
-.btn-picker {
-  background-color: rgba(99, 102, 241, 0.15);
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  color: var(--accent-color);
-  font-size: 11px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.btn-picker:hover {
-  background-color: rgba(99, 102, 241, 0.25);
-}
-.file-picker-row {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-.btn-clear {
-  background-color: rgba(244, 63, 94, 0.15);
-  border: 1px solid rgba(244, 63, 94, 0.3);
-  color: #fda4af;
-  padding: 4px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.music-name-tag {
-  font-size: 10.5px;
-  color: #fbbf24;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  background-color: rgba(251, 191, 36, 0.1);
-  padding: 3px 6px;
-  border-radius: 4px;
-  margin-top: 4px;
-}
-.volume-slider {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 4px;
-}
-.volume-slider label {
-  font-size: 10px;
-  color: var(--text-muted);
-}
-.volume-slider input {
-  width: 100%;
-}
-.remix-panel-footer {
-  margin-top: auto;
-  border-top: 1px solid var(--border-color);
-  padding-top: 10px;
-}
-
-/* Right preview column */
-.preview-workspace {
-  background-color: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-.workspace-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.active-video-details {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  font-size: 11.5px;
-}
-.video-label-now {
-  color: var(--text-muted);
-}
-.video-name-now {
-  font-weight: 800;
-  color: var(--accent-color);
-}
-.video-res-now {
-  background-color: rgba(255, 255, 255, 0.05);
-  padding: 2px 6px;
-  border-radius: 4px;
-  color: var(--text-muted);
-}
-.player-container-mini {
-  background-color: #000;
-  border-radius: 8px;
-  overflow: hidden;
-  position: relative;
-  aspect-ratio: 16/9;
-  width: 100%;
-  max-height: 380px;
-  border: 1px solid var(--border-color);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-}
-.video-player-mini {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-.empty-videos-placeholder {
-  border: 1px dashed var(--border-color);
-  border-radius: 10px;
-  padding: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  font-size: 12.5px;
-  background-color: rgba(255, 255, 255, 0.01);
-}
-.empty-videos-placeholder .placeholder-content {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.empty-videos-placeholder .placeholder-icon {
-  color: var(--accent-color);
-}
-.workspace-meta-empty {
-  min-height: 22px;
-  display: flex;
-  align-items: center;
-}
-.empty-player-screen {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  font-size: 12.5px;
-  background-color: rgba(0, 0, 0, 0.5);
-  gap: 8px;
-}
-.player-emoji {
-  font-size: 32px;
-}
-.exported-banner {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  background-color: rgba(16, 185, 129, 0.95);
-  color: #fff;
-  padding: 6px 12px;
-  font-size: 11px;
-  z-index: 5;
-  display: flex;
-  justify-content: space-between;
-}
-.back-to-original-btn {
-  background-color: #fff;
-  color: #047857;
-  border: none;
-  font-size: 9.5px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-weight: 700;
-}
-.visual-timeline-container-mini {
-  background-color: rgba(0,0,0,0.2);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  padding: 8px;
-}
-.timeline-header {
-  font-size: 10px;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
-.visual-timeline {
-  display: flex;
-  height: 24px;
-  background-color: rgba(255,255,255,0.05);
-  border-radius: 4px;
-  overflow: hidden;
-  border: 1px solid var(--border-color);
-  position: relative;
-}
-.timeline-playhead {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background-color: var(--wx-danger-solid, #ef4444);
-  box-shadow: 0 0 6px rgba(239, 68, 68, 0.9);
-  pointer-events: none;
-  z-index: 10;
-  transform: translateX(-50%);
-  transition: left 0.05s linear;
-}
-.timeline-segment {
-  height: 100%;
-  border-right: 1px solid var(--bg-panel);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 800;
-  color: #fff;
-  background-color: rgba(99, 102, 241, 0.4);
-  transition: all 0.2s;
-}
-.timeline-segment:hover {
-  background-color: var(--accent-color);
-  filter: brightness(1.2);
-}
-.timeline-segment-placeholder {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10.5px;
-  color: var(--text-muted);
-  background-color: rgba(255, 255, 255, 0.02);
-  font-weight: 500;
-  font-style: italic;
-}
-.single-analyze-trigger-row {
-  margin-top: auto;
-}
-.single-analyze-btn {
-  background-color: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  width: 100%;
-  padding: 8px;
-  font-size: 12.5px;
-}
-.single-analyze-btn:hover {
-  background-color: var(--accent-color);
-  color: #fff;
-  border-color: var(--accent-color);
-}
-
-/* SECTION BOTTOM: CLIPS GRID & EXPORT PANEL */
-.section-bottom-clips {
-  background-color: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  flex: 1;
-}
-.section-title-bar-clips {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid var(--border-color);
-  padding-bottom: 10px;
-}
-.title-left-clips {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.title-left-clips h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--accent-color);
-}
-.clips-counter {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.clips-batch-selector-row {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-.selected-badge {
-  font-size: 11.5px;
-  background-color: rgba(16, 185, 129, 0.15);
-  color: #34d399;
-  padding: 2px 8px;
-  border-radius: 6px;
-}
-
-/* Grid list of split clips */
-.clips-view-container {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 250px;
-}
-.clips-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-}
-.clip-modern-card {
-  background-color: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  transition: all 0.2s;
-}
-.clip-modern-card:hover {
-  background-color: rgba(255, 255, 255, 0.05);
-  border-color: #475569;
-}
-.clip-modern-card.clip-selected {
-  border-color: var(--accent-color);
-  background-color: rgba(99, 102, 241, 0.05);
-}
-.clip-modern-card.clip-done {
-  border-color: rgba(16, 185, 129, 0.4);
-}
-.clip-card-header-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.clip-source-video-tag {
-  font-size: 11px;
-  color: var(--accent-color);
-  background: rgba(37, 99, 235, 0.1);
-  padding: 2px 8px;
-  border-radius: 4px;
-  margin-top: 4px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 600;
-}
-.header-left-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.clip-title-tag {
-  font-size: 13px;
-  font-weight: 800;
-  color: var(--text-main);
-}
-.status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-.status-dot.done {
-  background-color: var(--success-color);
-}
-.status-dot.pending {
-  background-color: var(--danger-color);
-}
-.clip-duration-tag {
-  font-size: 11.5px;
-  color: var(--text-muted);
-  font-weight: 700;
-}
-.clip-thumbs-section {
-  display: block;
-}
-.thumb-box-single {
-  position: relative;
-  aspect-ratio: 16/9;
-  background-color: #000;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid var(--border-color);
-  cursor: pointer;
-  width: 100%;
-}
-.thumb-box-single img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transition: transform 0.2s;
-}
-.thumb-box-single:hover img {
-  transform: scale(1.05);
-}
-.thumb-box-single .play-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(0,0,0,0.35);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 18px;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-.thumb-box-single:hover .play-overlay {
-  opacity: 1;
-}
-.clip-time-inputs-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-}
-.clip-card-actions-row {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 4px;
-  width: 100%;
-}
-.input-block {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.input-lbl {
-  font-size: 9px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-}
-.input-block input {
-  background-color: var(--wx-surface-sunken);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  padding: 5px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-family: monospace;
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  -moz-appearance: textfield;
-}
-.input-block input::-webkit-outer-spin-button,
-.input-block input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-.input-block input:focus {
-  border-color: var(--accent-color);
-  outline: none;
-}
-.input-arrow-mini {
-  color: var(--text-muted);
-  font-size: 11px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* Applied effects display */
-.clip-effects-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  min-height: 18px;
-  align-items: center;
-}
-.eff-chip {
-  font-size: 9.5px;
-  font-weight: 800;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background-color: rgba(255,255,255,0.06);
-  color: var(--text-muted);
-  border: 1px solid var(--border-color);
-}
-.eff-chip.chip-lật {
-  color: #fca5a5;
-  background-color: rgba(239, 68, 68, 0.1);
-  border-color: rgba(239, 68, 68, 0.2);
-}
-.eff-chip.chip-màu {
-  color: #fcd34d;
-  background-color: rgba(245, 158, 11, 0.1);
-  border-color: rgba(245, 158, 11, 0.2);
-}
-.eff-chip.chip-nhạc {
-  color: #6ee7b7;
-  background-color: rgba(16, 185, 129, 0.1);
-  border-color: rgba(16, 185, 129, 0.2);
-}
-.eff-chip-empty {
-  font-size: 10px;
-  color: var(--text-muted);
-  font-style: italic;
-}
-
-.mini-act-btn {
-  background-color: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 11.5px;
-  font-weight: 700;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  white-space: nowrap;
-  height: 28px;
-  box-sizing: border-box;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  flex: 1;
-}
-.mini-act-btn:hover {
-  background-color: rgba(99, 102, 241, 0.15);
-  border-color: var(--accent-color);
-  color: #fff;
-}
-.mini-act-btn.btn-watch {
-  background-color: rgba(16, 185, 129, 0.1);
-  color: #34d399;
-  border-color: rgba(16, 185, 129, 0.25);
-}
-.mini-act-btn.btn-watch:hover {
-  background-color: rgba(16, 185, 129, 0.2);
-  color: #fff;
-  border-color: #34d399;
-}
-.mini-act-btn.btn-edit {
-  background-color: rgba(99, 102, 241, 0.1);
-  color: #a5b4fc;
-  border-color: rgba(99, 102, 241, 0.25);
-}
-.mini-act-btn.btn-edit:hover {
-  background-color: var(--accent-color);
-  border-color: var(--accent-color);
-  color: #fff;
-}
-.mini-act-btn.btn-delete {
-  background-color: rgba(239, 68, 68, 0.1);
-  color: #f87171;
-  border-color: rgba(239, 68, 68, 0.25);
-}
-.mini-act-btn.btn-delete:hover {
-  background-color: var(--danger-color);
-  border-color: var(--danger-color);
-  color: #fff;
-}
-
-/* Toast Notifications Styling */
-.toast-container {
-  position: fixed;
-  top: 24px;
-  right: 24px;
-  z-index: 10000;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  pointer-events: none;
-  max-width: 400px;
-  width: calc(100% - 48px);
-}
-.toast-item {
-  pointer-events: auto;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  background: var(--wx-glass-heavy-bg, rgba(15, 23, 42, 0.95));
-  backdrop-filter: blur(12px);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);
-  color: var(--text-main);
-  animation: toastIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
-  transition: all 0.3s ease;
-}
-.toast-item.success {
-  border-left: 4px solid var(--success-color);
-}
-.toast-item.error {
-  border-left: 4px solid var(--danger-color);
-}
-.toast-item.warning {
-  border-left: 4px solid var(--warning-color, #fbbf24);
-}
-.toast-item.info {
-  border-left: 4px solid var(--accent-color);
-}
-.toast-icon-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  flex-shrink: 0;
-}
-.toast-content {
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.4;
-  flex: 1;
-}
-.toast-close-btn {
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  font-size: 12px;
-  cursor: pointer;
-  padding: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.2s;
-}
-.toast-close-btn:hover {
-  color: var(--text-main);
-}
-
-/* Toast Transitions */
-.toast-slide-enter-from {
-  transform: translateX(120%) scale(0.9);
-  opacity: 0;
-}
-.toast-slide-leave-to {
-  transform: translateX(120%);
-  opacity: 0;
-}
-
-@keyframes toastIn {
-  from {
-    transform: translateX(120%) scale(0.9);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0) scale(1);
-    opacity: 1;
-  }
-}
-
-.btn-delete-selected-clips {
-  padding: 4px 8px; 
-  font-size: 11px; 
-  background: rgba(239, 68, 68, 0.15); 
-  border: 1px solid rgba(239, 68, 68, 0.4); 
-  color: #f87171; 
-  border-radius: 4px; 
-  cursor: pointer; 
-  transition: all 0.2s; 
-  font-weight: bold; 
-  margin-right: 8px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.btn-delete-selected-clips:hover {
-  background: rgba(239, 68, 68, 0.3);
-  color: #fff;
-  border-color: rgba(239, 68, 68, 0.6);
-}
-
-.delete-selected-btn-bar {
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(220, 38, 38, 0.3));
-  border: 1px solid rgba(239, 68, 68, 0.4);
-  color: #f87171;
-  padding: 10px 20px;
-  border-radius: 8px;
-  font-size: 13.5px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.15);
-}
-.delete-selected-btn-bar:hover {
-  background: linear-gradient(135deg, #ef4444, #dc2626);
-  color: #fff;
-  border-color: #ef4444;
-  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3);
-}
-
-.empty-clips-panel {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 40px;
-  color: var(--text-muted);
-  text-align: center;
-}
-.empty-emoji {
-  font-size: 38px;
-  margin-bottom: 8px;
-}
-.empty-clips-panel p {
-  font-size: 12px;
-  max-width: 400px;
-  line-height: 1.5;
-  margin-top: 4px;
-}
-
-/* EXPORT PUBLISHER BAR */
-.clips-export-publisher-bar {
-  position: fixed;
-  bottom: 20px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: calc(100% - 40px);
-  max-width: 1100px;
-  z-index: 1000;
-  background: var(--wx-glass-heavy-bg, rgba(30, 41, 59, 0.9));
-  backdrop-filter: blur(12px);
-  border: 1px solid var(--wx-border-default);
-  border-radius: 12px;
-  padding: 12px 24px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 20px;
-  animation: slideUpBar 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
-}
-
-@keyframes slideUpBar {
-  from {
-    transform: translate(-50%, 100%) scale(0.95);
-    opacity: 0;
-  }
-  to {
-    transform: translate(-50%, 0) scale(1);
-    opacity: 1;
-  }
-}
-.pub-left {
-  display: flex;
-  gap: 16px;
-  flex: 1;
-}
-.pub-input-group {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1;
-}
-.pub-input-group label {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-weight: 700;
-}
-.pub-text-input {
-  background-color: var(--wx-surface-sunken);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  padding: 8px 12px;
-  border-radius: 6px;
-  font-size: 12.5px;
-}
-.pub-select-input {
-  background-color: var(--wx-surface-sunken);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  padding: 8px 12px;
-  border-radius: 6px;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-.pub-right {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  min-width: 320px;
-  justify-content: flex-end;
-}
-.pub-progress-box {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1;
-}
-.progress-info {
-  font-size: 11px;
-  color: var(--success-color);
-  text-align: right;
-  font-weight: 700;
-}
-.progress-bar-container {
-  height: 6px;
-  background-color: rgba(255,255,255,0.05);
-  border-radius: 4px;
-  overflow: hidden;
-  border: 1px solid var(--border-color);
-}
-.progress-bar-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--success-color), #34d399);
-  transition: width 0.3s;
-}
-.big-export-btn {
-  background: linear-gradient(135deg, var(--success-color), #059669);
-  color: #fff;
-  padding: 10px 24px;
-  border-radius: 8px;
-  font-size: 14px;
-  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
-}
-.big-export-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #34d399, var(--success-color));
-}
-.input-with-button-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  width: 100%;
-}
-.btn-picker-folder {
-  background-color: var(--wx-surface-sunken);
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  padding: 8px 12px;
-  border-radius: 6px;
-  font-size: 12.5px;
-  font-weight: 700;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-  transition: all 0.2s;
-  height: 36px;
-  box-sizing: border-box;
-}
-.btn-picker-folder:hover {
-  border-color: var(--accent-color);
-  background-color: rgba(99, 102, 241, 0.1);
-}
-.stop-export-btn {
-  background: linear-gradient(135deg, var(--danger-color), #dc2626) !important;
-  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3) !important;
-}
-.stop-export-btn:hover {
-  background: linear-gradient(135deg, #f87171, var(--danger-color)) !important;
-}
-
-/* WELCOME EMPTY STATE */
-.empty-state-welcome {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.welcome-box {
-  text-align: center;
-  background-color: var(--bg-panel);
-  border: 1px solid var(--border-color);
-  padding: 40px;
-  border-radius: 16px;
-  max-width: 480px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
-}
-.welcome-graphic {
-  font-size: 60px;
-  margin-bottom: 16px;
-}
-.welcome-box h2 {
-  font-size: 20px;
-  font-weight: 800;
-  margin: 0 0 10px 0;
-}
-.welcome-box p {
-  color: var(--text-muted);
-  font-size: 13.5px;
-  line-height: 1.5;
-  margin: 0 0 24px 0;
-}
-.select-btn-big {
-  background-color: var(--accent-color);
-  color: #fff;
-  padding: 12px 24px;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 700;
-  width: 100%;
-}
-.select-btn-big:hover {
-  background-color: var(--accent-hover);
-}
-
-/* SYSTEM STATUS FOOTER */
-.system-status-footer {
-  background-color: #0b0f19;
-  border-top: 1px solid var(--border-color);
-  padding: 6px 16px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.status-indicator-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: var(--text-muted);
-}
-.status-indicator-dot.active {
-  background-color: var(--success-color);
-  box-shadow: 0 0 8px var(--success-color);
-  animation: pulseStatus 1.5s infinite;
-}
-@keyframes pulseStatus {
-  0% { transform: scale(0.9); opacity: 0.6; }
-  50% { transform: scale(1.1); opacity: 1; }
-  100% { transform: scale(0.9); opacity: 0.6; }
-}
-.status-msg-text {
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-</style>
-
-<!-- CSS Global cho Teleport (Settings Modal + Edit screen) — LIGHT THEME -->
-<style>
-/* Bảng màu sáng dùng chung cho các phần teleport (nằm ngoài .app-container
-   nên không thừa hưởng biến CSS của component). */
-.modal-overlay,
-.edit-screen {
-  --l-bg: var(--wx-surface-base);
-  --l-bg-soft: var(--wx-surface-elevated);
-  --l-bg-sunken: var(--wx-surface-sunken);
-  --l-border: var(--wx-border-default);
-  --l-text: var(--wx-text-primary);
-  --l-text-muted: var(--wx-text-secondary);
-  --l-accent: var(--wx-brand-primary);
-}
-
-/* Modal Overlay */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 18, 30, 0.35);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 9000;
-  animation: fadeIn 0.2s ease;
-}
-.settings-modal {
-  background: var(--l-bg);
-  border: 1px solid var(--l-border);
-  border-radius: 16px;
-  width: 560px;
-  max-height: 85vh;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 24px 60px rgba(15, 18, 30, 0.25);
-  animation: modalSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-  color: var(--l-text);
-}
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px 24px 16px;
-  border-bottom: 1px solid var(--l-border);
-}
-.modal-header h2 {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 700;
-  color: var(--l-text);
-}
-.modal-close {
-  background: transparent;
-  border: none;
-  color: var(--l-text-muted);
-  font-size: 18px;
-  cursor: pointer;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s;
-}
-.modal-close:hover {
-  background: var(--l-bg-sunken);
-  color: var(--l-text);
-}
-.modal-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 18px 24px;
-  text-align: left;
-}
-.modal-footer {
-  display: flex;
-  justify-content: space-between;
-  padding: 16px 24px;
-  border-top: 1px solid var(--l-border);
-}
-
-/* Settings Groups */
-.settings-group {
-  margin-bottom: 16px;
-}
-.settings-group:last-child {
-  margin-bottom: 0;
-}
-.mode-name em {
-  font-style: normal;
-  font-weight: 600;
-  font-size: 10.5px;
-  color: #6366f1;
-}
-.group-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--l-accent);
-  margin: 0 0 12px 0;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-.settings-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-}
-
-/* Mode selector (3 chế độ phân tích) */
-.mode-selector {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.mode-option {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--l-border);
-  border-radius: 10px;
-  cursor: pointer;
-  background: var(--l-bg-soft);
-  transition: all 0.2s;
-}
-.mode-option:hover {
-  border-color: #b9bdc9;
-}
-.mode-option.active {
-  border-color: var(--l-accent);
-  background: rgba(99, 102, 241, 0.08);
-}
-.mode-option input[type="radio"] {
-  accent-color: var(--l-accent);
-  flex-shrink: 0;
-}
-.mode-content {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.mode-name {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--l-text);
-}
-.mode-desc {
-  font-size: 11px;
-  color: var(--l-text-muted);
-  line-height: 1.4;
-}
-.setting-item {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.setting-item label {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--l-text);
-}
-.setting-item .hint {
-  display: block;
-  font-size: 11px;
-  color: var(--l-text-muted);
-  font-weight: 400;
-  margin-top: 2px;
-  line-height: 1.35;
-}
-.input-with-unit {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.input-with-unit input {
-  flex: 1;
-  padding: 7px 10px;
-  background: var(--l-bg);
-  border: 1px solid var(--l-border);
-  border-radius: 6px;
-  color: var(--l-text);
-  font-size: 13px;
-  font-weight: 500;
-}
-.input-with-unit input:focus {
-  border-color: var(--l-accent);
-  outline: none;
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
-}
-.unit {
-  font-size: 11px;
-  color: var(--l-text-muted);
-  min-width: 32px;
-}
-.setting-item select {
-  padding: 7px 10px;
-  background: var(--l-bg);
-  border: 1px solid var(--l-border);
-  border-radius: 6px;
-  color: var(--l-text);
-  font-size: 13px;
-  cursor: pointer;
-}
-.setting-item select:focus {
-  border-color: var(--l-accent);
-  outline: none;
-}
-
-/* Buttons in modal */
-.reset-btn {
-  background: transparent;
-  border: 1px solid var(--l-border);
-  color: var(--l-text-muted);
-  padding: 8px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.reset-btn:hover {
-  background: var(--l-bg-sunken);
-  border-color: #b9bdc9;
-  color: var(--l-text);
-}
-.save-btn {
-  background: linear-gradient(135deg, #6366f1, #4f46e5);
-  border: none;
-  color: white;
-  padding: 8px 24px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
-}
-.save-btn:hover {
-  background: linear-gradient(135deg, #818cf8, #6366f1);
-}
-.settings-btn {
-  background: transparent !important;
-  border: 1px solid #d1d5db !important;
-  padding: 8px !important;
-  border-radius: 8px !important;
-  color: #6b7280 !important;
-  cursor: pointer !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  box-shadow: none !important;
-  transition: all 0.2s !important;
-}
-.settings-btn:hover {
-  border-color: #6366f1 !important;
-  color: #6366f1 !important;
-  background: rgba(99, 102, 241, 0.06) !important;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-@keyframes modalSlideIn {
-  from { opacity: 0; transform: scale(0.95) translateY(10px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
-}
-
-/* Recent Projects Modal */
-.recent-modal {
-  width: 520px;
-}
-.empty-recent {
-  text-align: center;
-  padding: 40px 20px;
-  color: var(--l-text-muted);
-}
-.empty-recent .empty-graphic {
-  font-size: 40px;
-  margin-bottom: 12px;
-}
-.empty-recent p {
-  font-size: 13px;
-  line-height: 1.5;
-}
-.recent-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.recent-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
-  background: var(--l-bg-soft);
-  border: 1px solid var(--l-border);
-  border-radius: 10px;
-  transition: border-color 0.2s;
-}
-.recent-item:hover {
-  border-color: #b9bdc9;
-}
-.recent-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  overflow: hidden;
-  cursor: pointer;
-}
-.recent-name {
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--l-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.recent-meta {
-  font-size: 11.5px;
-  color: var(--l-text-muted);
-}
-.recent-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.btn-mini {
-  border: none;
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.btn-mini.open {
-  background: #6366f1;
-  color: #fff;
-}
-.btn-mini.open:hover {
-  background: #4f46e5;
-}
-.btn-mini.del {
-  background: var(--l-bg-sunken);
-  color: #ef4444;
-}
-.btn-mini.del:hover {
-  background: #ef4444;
-  color: #fff;
-}
-
-/* Edit clip modal */
-.edit-modal {
-  width: 640px;
-}
-.toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--l-text);
-  cursor: pointer;
-  user-select: none;
-  margin-bottom: 12px;
-}
-.toggle-row input {
-  width: 16px;
-  height: 16px;
-  accent-color: #6366f1;
-  cursor: pointer;
-}
-.toggle-row.inline {
-  margin-bottom: 0;
-}
-
-/* ===== MÀN HÌNH CHỈNH SỬA CLIP (GĐ6 full screen) — LIGHT ===== */
-.edit-screen {
-  position: fixed;
-  inset: 0;
-  z-index: 9500;
-  background: var(--l-bg-soft);
-  display: flex;
-  flex-direction: column;
-  animation: fadeIn 0.2s ease;
-  color: var(--l-text);
-}
-.edit-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 14px 24px;
-  background: var(--l-bg);
-  border-bottom: 1px solid var(--l-border);
-  flex-shrink: 0;
-}
-.edit-header-left {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-.edit-header-left h2 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--l-text);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.edit-time-sub {
-  font-size: 12px;
-  color: var(--l-text-muted);
-  font-weight: 500;
-  font-family: monospace;
-}
-.edit-back-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--l-bg-soft);
-  border: 1px solid var(--l-border);
-  color: var(--l-text);
-  padding: 8px 14px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.edit-back-btn svg {
-  width: 16px;
-  height: 16px;
-}
-.edit-back-btn:hover {
-  background: var(--l-bg-sunken);
-  color: var(--l-text);
-}
-.edit-header-right {
-  display: flex;
-  gap: 10px;
-}
-.edit-body {
-  flex: 1;
-  display: flex;
-  overflow: hidden;
-}
-.edit-preview {
-  width: 46%;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  border-right: 1px solid var(--l-border);
-  overflow-y: auto;
-}
-.edit-preview-frame {
-  background: #000;
-  border-radius: 12px;
-  overflow: hidden;
-  border: 1px solid var(--l-border);
-  margin: 0 auto;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.edit-preview-frame.ar-16-9 { aspect-ratio: 16/9; }
-.edit-preview-frame.ar-9-16 { aspect-ratio: 9/16; max-width: 300px; }
-.edit-preview-frame.ar-1-1 { aspect-ratio: 1/1; max-width: 420px; }
-.edit-preview-video {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-.edit-filter-summary {
-  background: var(--l-bg);
-  border: 1px solid var(--l-border);
-  border-radius: 10px;
-  padding: 14px;
-}
-.summary-title {
-  font-size: 12px;
-  color: var(--l-text-muted);
-  font-weight: 600;
-}
-.summary-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-}
-.summary-chip {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 3px 10px;
-  border-radius: 12px;
-  background: rgba(99, 102, 241, 0.1);
-  color: #4f46e5;
-  border: 1px solid rgba(99, 102, 241, 0.25);
-}
-.summary-empty {
-  font-size: 12px;
-  color: var(--l-text-muted);
-  font-style: italic;
-}
-.preview-note {
-  font-size: 11px;
-  color: var(--l-text-muted);
-  line-height: 1.4;
-  margin: 8px 0 0 0;
-}
-.edit-controls {
-  flex: 1;
-  padding: 24px;
-  overflow-y: auto;
-}
-.group-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-.group-title-row .group-title {
-  margin: 0;
-}
-.mini-add-btn {
-  background: rgba(99, 102, 241, 0.1);
-  color: #4f46e5;
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.mini-add-btn:hover {
-  background: rgba(99, 102, 241, 0.18);
-}
-.mini-del-btn {
-  background: var(--l-bg-sunken);
-  color: #ef4444;
-  border: none;
-  border-radius: 6px;
-  width: 26px;
-  height: 26px;
-  font-size: 13px;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-.mini-del-btn:hover {
-  background: #ef4444;
-  color: #fff;
-}
-.group-empty {
-  font-size: 12px;
-  color: var(--l-text-muted);
-  font-style: italic;
-  padding: 8px 0;
-}
-.text-item-card {
-  background: var(--l-bg);
-  border: 1px solid var(--l-border);
-  border-radius: 10px;
-  padding: 12px;
-  margin-bottom: 10px;
-}
-.text-item-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-}
-.text-item-idx {
-  font-size: 12px;
-  font-weight: 700;
-  color: #4f46e5;
-}
-.text-content-input,
-.file-path-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px 10px;
-  background: var(--l-bg);
-  border: 1px solid var(--l-border);
-  border-radius: 6px;
-  color: var(--l-text);
-  font-size: 13px;
-  margin-bottom: 10px;
-}
-.text-content-input:focus,
-.file-path-input:focus {
-  border-color: var(--l-accent);
-  outline: none;
-}
-.file-picker-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-.file-picker-row .file-path-input {
-  margin-bottom: 0;
-}
-.setting-item input:disabled {
-  opacity: 0.4;
-}
-</style>
+<style src="./VideoSplitter.global.css"></style>

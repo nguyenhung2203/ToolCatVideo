@@ -37,8 +37,9 @@ type Clip struct {
 	Confidence int      `json:"confidence"` // điểm tin cậy của ranh giới BẮT ĐẦU clip (0-100)
 	Tier       string   `json:"tier"`       // auto / review / reject
 	Reason     string   `json:"reason"`     // lý do xác định ranh giới
-	Signals    []string `json:"signals"`    // các tín hiệu đã phát hiện
-	Edit       EditOps  `json:"edit"`       // các thao tác chỉnh sửa áp cho clip khi xuất
+	Signals      []string `json:"signals"`    // các tín hiệu đã phát hiện
+	Edit         EditOps  `json:"edit"`       // các thao tác chỉnh sửa áp cho clip khi xuất
+	ExportedPath string   `json:"exportedPath"` // đường dẫn video đã xuất để phát ngay
 }
 
 // === EDIT OPERATIONS ===
@@ -96,12 +97,14 @@ type WatermarkOp struct {
 
 // AudioOp điều chỉnh âm thanh clip.
 type AudioOp struct {
-	Volume       float64 `json:"volume"`       // hệ số âm lượng (1 = giữ nguyên)
-	Mute         bool    `json:"mute"`         // tắt tiếng gốc
-	MusicPath    string  `json:"musicPath"`    // đường dẫn nhạc nền; "" = không
-	MusicVolume  float64 `json:"musicVolume"`  // âm lượng nhạc nền (1 = giữ nguyên)
-	FadeIn       float64 `json:"fadeIn"`       // fade in (giây)
-	FadeOut      float64 `json:"fadeOut"`      // fade out (giây)
+	Volume       float64  `json:"volume"`       // hệ số âm lượng (1 = giữ nguyên)
+	Mute         bool     `json:"mute"`         // tắt tiếng gốc
+	MusicPath    string   `json:"musicPath"`    // đường dẫn nhạc nền; "" = không (file nhạc đầu tiên hoặc đơn)
+	MusicVolume  float64  `json:"musicVolume"`  // âm lượng nhạc nền (1 = giữ nguyên)
+	FadeIn       float64  `json:"fadeIn"`       // fade in (giây)
+	FadeOut      float64  `json:"fadeOut"`      // fade out (giây)
+	MusicLoop    bool     `json:"musicLoop"`    // tự động lặp nhạc nền nếu ngắn hơn video
+	MusicTracks  []string `json:"musicTracks"`  // danh sách nhiều file nhạc nền để ghép nối tiếp
 }
 
 // TransitionOp hiệu ứng chuyển cảnh vào đầu clip (dùng khi ghép nhiều clip).
@@ -158,10 +161,12 @@ type AnalyzerConfig struct {
 	ReviewMinScore   int           `json:"reviewMinScore"`   // Ngưỡng điểm tối thiểu để cần duyệt — mặc định 60
 	SilenceThreshold float64       `json:"silenceThreshold"` // Ngưỡng dB cho silence — mặc định -30
 	SilenceDuration  float64       `json:"silenceDuration"`  // Thời lượng tối thiểu silence (giây) — mặc định 0.5
-	ProxyFPS         int           `json:"proxyFPS"`         // FPS proxy video — mặc định 15
+	ProxyFPS         int           `json:"proxyFPS"`         // FPS proxy video — mặc định 4
 	Weights          SignalWeights `json:"weights"`          // Trọng số từng tín hiệu
 	ExportPreset     string        `json:"exportPreset"`     // FFmpeg preset (ultrafast/fast/medium) — mặc định "fast"
 	ExportCRF        int           `json:"exportCRF"`        // Chất lượng xuất (0-51, thấp = tốt hơn) — mặc định 23
+	HardwareAccel    string        `json:"hardwareAccel"`    // acceleration method: none / nvidia / intel / amd — mặc định none
+	Prompt           string        `json:"prompt"`           // Ý tưởng / chủ đề thiết kế cho video này
 }
 
 // DefaultWeights trả về trọng số tín hiệu mặc định.
@@ -191,15 +196,16 @@ func DefaultConfig() AnalyzerConfig {
 		Mode:             ModeSmart,
 		SceneThreshold:   26.0,
 		MinClipDuration:  5.0,
-		MaxClipDuration:  30.0,
+		MaxClipDuration:  60.0,
 		AutoAcceptScore:  60, // visual-only scene change (45 - 10 = 35) sẽ được xếp vào review candidate, không bị auto-accept tràn lan
 		ReviewMinScore:   35,
 		SilenceThreshold: -30,
 		SilenceDuration:  0.5,
-		ProxyFPS:         10,
+		ProxyFPS:         4,
 		Weights:          DefaultWeights(),
 		ExportPreset:     "fast",
 		ExportCRF:        23,
+		HardwareAccel:    "none",
 	}
 }
 
