@@ -194,10 +194,6 @@ function updateSelectionFromDrag() {
             :class="{ active: imageSource === src.value }"
             @click="imageSource = src.value"
           >
-            <Globe v-if="src.value === 'duckduckgo'" :size="12" />
-            <Palette v-else-if="src.value === 'pixabay'" :size="12" />
-            <Camera v-else-if="src.value === 'unsplash'" :size="12" />
-            <ImageIcon v-else-if="src.value === 'pexels'" :size="12" />
             {{ src.label }}
             <span v-if="src.needsKey" class="img-key-badge">Key</span>
           </button>

@@ -9,7 +9,7 @@ import VideoDownloader from './VideoDownloader.vue'
 import ImageDownloader from './ImageDownloader.vue'
 import {
   Video, Scissors, Download, Settings, Sun, Moon, History, Save,
-  Plus, Trash2, Trash, RefreshCw, X, Check, ChevronDown, ChevronUp,
+  Plus, Trash2, Trash, RefreshCw, X, Check, Key, ChevronDown, ChevronUp,
   Play, Square, Pause, RotateCcw, Copy, FolderOpen, Music,
   Image as ImageIcon, Type, Layers, Zap, AlertTriangle, Info,
   Clock, Film, Monitor, Loader2, ArrowRight, Upload, BarChart2,
