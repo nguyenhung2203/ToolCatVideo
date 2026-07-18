@@ -128,14 +128,7 @@ func (a *App) GetStreamURL(filePath string) string {
 	q := url.Values{}
 	q.Set("path", filePath)
 	q.Set("token", a.streamToken)
-	urlStr := fmt.Sprintf("http://127.0.0.1:%d/stream?%s", a.streamPort, q.Encode())
-	
-	// Ghi đè URL hiện tại vào thư mục Temp để phục vụ phân tích chẩn đoán
-	tempDir := filepath.Join(os.TempDir(), "video-splitter")
-	_ = os.MkdirAll(tempDir, 0755)
-	_ = os.WriteFile(filepath.Join(tempDir, "current_stream_url.txt"), []byte(urlStr), 0644)
-	
-	return urlStr
+	return fmt.Sprintf("http://127.0.0.1:%d/stream?%s", a.streamPort, q.Encode())
 }
 
 // SelectFiles mở hộp thoại chọn nhiều file video
