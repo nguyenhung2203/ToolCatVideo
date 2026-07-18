@@ -5,6 +5,7 @@ import { project, storage, main } from '../../wailsjs/go/models'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { useTheme } from '../ui-system/composables/useTheme'
 import { useDownloader } from './composables/useDownloader'
+import { useImageDownloader, IMAGE_SOURCES } from './composables/useImageDownloader'
 
 const { isDark, toggleColorScheme } = useTheme()
 
@@ -311,18 +312,31 @@ const {
   pickDownloadDir, addDownloadedToProject, initDownloadEvents, copyToClipboard,
 } = useDownloader(showToast, videoPaths)
 
+// === Download Images (composable) ===
+const {
+  showImagePanel, imageQuery, imageSource, imageApiKey, imageMaxCount,
+  isSearching: isImageSearching, isDownloading: isImageDownloading,
+  searchResult: imageSearchResult, imageDir, selectedImageIds,
+  progressMap: imageProgressMap, searchLog: imageSearchLog,
+  downloadDoneCount, downloadTotalCount, downloadProgress: imageDownloadProgress,
+  selectedCount: imageSelectedCount, allEntries: imageAllEntries,
+  sourceNeedsKey, selectedSource: imageSelectedSource, hasEnvKey: imageHasEnvKey,
+  toggleSelectAll: imageToggleAll, toggleImage, openImagePanel,
+  searchImages, startImageDownload, cancelImageDl, pickImageDir, initImageEvents,
+} = useImageDownloader(showToast)
+
 const globalSettingsConfig = ref<any>(null)
 
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
   sceneThreshold: 26.0,
   minClipDuration: 5.0,
-  maxClipDuration: 30.0,
+  maxClipDuration: 60.0,
   autoAcceptScore: 60,
   reviewMinScore: 35,
   silenceThreshold: -30,
   silenceDuration: 0.5,
-  proxyFPS: 10,
+  proxyFPS: 4,
   weights: {
     visualChange: 45,
     blackFrame: 35,
@@ -760,9 +774,10 @@ const currentTimeRef = ref(Date.now())
 const displayProgressMap = ref<Record<string, number>>({})
 let timerInterval: any = null
 
-const analyzeETAMap = ref<Record<string, { remaining: number, lastUpdate: number, lastProgress: number }>>({})
+const analyzeETAMap = ref<Record<string, { remaining: number, lastUpdate: number, lastProgress: number, hasRealDuration?: boolean }>>({})
 const exportETARecord = ref<{ remaining: number, lastUpdate: number, lastProgress: number } | null>(null)
 const videoDurationMap = ref<Record<string, number>>({})
+const videoInfoMap = ref<Record<string, project.VideoInfo>>({})
 
 const getAnalyzeETA = (path: string): string => {
   const now = currentTimeRef.value // dynamic dependency
@@ -777,24 +792,37 @@ const getAnalyzeETA = (path: string): string => {
   }
 
   const duration = videoDurationMap.value[path] || (path === activeVideoPath.value && videoInfo.value?.Duration) || 0
+  const info = videoInfoMap.value[path] || (path === activeVideoPath.value && videoInfo.value)
 
   // Calculate default initial estimate based on duration, mode, and realistic startup overheads across all 3 phases
   let initialRemaining = 45 // fallback default
   if (duration > 0) {
     const mode = analyzerConfig.mode
     if (mode === 'fast' || mode === 'fixed') {
-      initialRemaining = 3 + duration / 80 // fast/fixed mode: 3s startup overhead + 80x speed
+      // Fast mode: KHÔNG tạo proxy, chạy thẳng PySceneDetect trên video gốc
+      // Nhanh hơn nhưng ít chính xác hơn — thời gian ≈ duration / 60 (PySceneDetect CPU)
+      initialRemaining = 5 + duration / 60.0
     } else if (mode === 'precise') {
-      initialRemaining = 15 + duration / 3.4 // precise mode: 15s startup overhead + 3.4x speed (including proxy, WAV, AI, and thumbnails)
+      initialRemaining = 15 + duration / 10.0 // precise: proxy + WAV + Librosa
     } else {
-      initialRemaining = 12 + duration / 5.0 // smart mode: 12s startup overhead + 5.0x speed (including proxy, AI, and thumbnails)
+      initialRemaining = 10 + duration / 18.0 // smart: proxy 320×180 + multi-detector
     }
     if (initialRemaining < 3) initialRemaining = 3
+
+    // Apply complexity factor based on resolution and FPS
+    if (info && info.Width && info.Height && info.FPS) {
+      const pixelRate = info.Width * info.Height * info.FPS
+      const standardRate = 1920 * 1080 * 30 // standard 1080p 30fps
+      let complexity = pixelRate / standardRate
+      if (complexity < 0.25) complexity = 0.25
+      if (complexity > 4.0) complexity = 4.0 // Cap at 4.0x since scaling is not strictly linear for GPU decoding
+      initialRemaining = initialRemaining * complexity
+    }
   }
 
-  // Scale initial estimate based on the number of parallel analyze threads (more concurrency = slower per-video speed)
+  // Scale initial estimate based on parallel analyze threads (gentle sub-linear scaling since cores share resources)
   const jobCount = analyzeJobs.value || 1
-  const concurrencyMultiplier = jobCount // linear scaling for shared CPU/Disk resources (1 job -> 1x, 2 jobs -> 2x, 3 jobs -> 3x, 4 jobs -> 4x)
+  const concurrencyMultiplier = 1.0 + (jobCount - 1) * 0.25
   initialRemaining = initialRemaining * concurrencyMultiplier
 
   let eta = analyzeETAMap.value[path]
@@ -820,47 +848,46 @@ const getAnalyzeETA = (path: string): string => {
   }
 
   if (!eta) {
-    // Initialize
     eta = {
-      remaining: progress >= 15 ? rawRemaining : initialRemaining,
+      remaining: rawRemaining,
       lastUpdate: nowMs,
-      lastProgress: progress
+      lastProgress: progress,
+      hasRealDuration: duration > 0
     }
     analyzeETAMap.value[path] = eta
-  } else if (Math.abs(progress - eta.lastProgress) >= 1) {
-    // Only smooth and update reference if progress has shifted by at least 1% to prevent minor noise fluctuations
-    let targetRemaining = rawRemaining
-    
-    // Smooth the transition (blend 70% old estimate counting down, 30% new raw estimate)
-    const secondsPass = (nowMs - eta.lastUpdate) / 1000
-    const currentCountdown = Math.max(1, eta.remaining - secondsPass)
-    
-    const smoothed = currentCountdown * 0.7 + targetRemaining * 0.3
-    
-    eta.remaining = smoothed
+  } else if (duration > 0 && !eta.hasRealDuration) {
+    eta.remaining = rawRemaining
+    eta.lastUpdate = nowMs
+    eta.lastProgress = progress
+    eta.hasRealDuration = true
+  } else {
+    eta.remaining = rawRemaining
     eta.lastUpdate = nowMs
     eta.lastProgress = progress
   }
 
-  // Calculate the current display remaining time based on seconds passed since lastUpdate
-  const secondsSinceLastUpdate = (nowMs - eta.lastUpdate) / 1000
-  let displayRemaining = Math.max(1, eta.remaining - secondsSinceLastUpdate)
+  // displayRemaining = luôn dùng rawRemaining (tính từ elapsed thực tế)
+  // Không dùng "countdown từ lastUpdate" vì sẽ drift về 0 khi progress đứng yên
+  let displayRemaining = Math.max(1, rawRemaining)
 
-  // Clamp display remaining time to at least 10s while in Giai đoạn 1/3 (progress <= 5%)
-  // This prevents the countdown from reaching 0 before the backend is done preparing/creating proxy.
-  if (progress <= 5 && displayRemaining < 10) {
-    displayRemaining = 10
+  // Khi đang ở Bước 1 (progress <= 14%): đếm ngược từ initialRemaining - elapsed
+  if (progress <= 14) {
+    const elapsed = (nowMs - startTime) / 1000
+    displayRemaining = Math.max(1, initialRemaining - elapsed)
   }
 
-  // Nếu chưa bước vào Bước 3 (tiến trình < 92%), thời gian còn lại tối thiểu phải bằng thời gian ước tính của Bước 3 (phase3Overhead)
+  // Khi progress 15-92%: rawRemaining đã được tính đúng theo elapsed → dùng trực tiếp
+  // Khi progress 92-98%: interpolate phase3 overhead
+
+  // Sàn: không bao giờ hiện < phase3Overhead khi chưa vào Phase 3
   if (progress < 92 && displayRemaining < phase3Overhead) {
     displayRemaining = phase3Overhead
   }
 
   const m = Math.floor(displayRemaining / 60)
   const s = Math.floor(displayRemaining % 60)
-  
-  if (displayRemaining <= 1.5) {
+
+  if (displayRemaining <= 5) {
     return 'Sắp xong...'
   }
   return `Còn khoảng ${m > 0 ? `${m}ph ` : ''}${s}s`
@@ -974,6 +1001,8 @@ EventsOn('clip_thumb_update', (data: { path: string, clipId: string, thumbnail: 
 
 // Download events (handled by composable)
 initDownloadEvents(addLog)
+// Image download events
+initImageEvents()
 
 
 const handleSelectFiles = async () => {
@@ -1038,6 +1067,7 @@ const analyzeSingle = async (path: string): Promise<boolean> => {
       const info = await GetVideoInfo(path)
       if (info && info.Duration) {
         videoDurationMap.value[path] = info.Duration
+        videoInfoMap.value[path] = info
       }
     } catch (e) {
       console.error("Lỗi đọc duration cho ETA:", e)
@@ -1878,12 +1908,13 @@ const mergeWithPrev = (index: number) => {
 
 // Lưu phiên làm việc hiện tại (clip + config) để mở lại sau.
 const saveProject = async () => {
-  if (!activeVideoPath.value || activeClips.value.length === 0) {
-    addLog('Chưa có clip để lưu.')
+  if (!activeVideoPath.value) {
+    addLog('Chưa có video để lưu.')
     return
   }
   try {
-    await SaveProject(activeVideoPath.value, activeClips.value, analyzerConfig)
+    const clips = clipsMap.value[activeVideoPath.value] || []
+    await SaveProject(activeVideoPath.value, clips, analyzerConfig)
     addLog('Đã lưu phiên làm việc.')
   } catch (e) {
     addLog('Lỗi lưu project: ' + String(e))
@@ -2268,7 +2299,7 @@ const formatSize = (bytes: number) => {
     <header class="header">
       <div class="header-left">
         <svg class="header-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
-        <h1>Smart Video Splitter Studio</h1>
+        <h1>Smart Splitter</h1>
         
         <!-- Bảng chọn dự án -->
         <div class="project-selector-container" :class="{ 'panel-disabled': isAnalyzing || isExporting }">
@@ -2296,6 +2327,11 @@ const formatSize = (bytes: number) => {
         <button :disabled="isAnalyzing || isExporting" @click="openDownloadPanel" class="btn select-btn flex-center">
           <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M5 20h14v-2H5v2zM12 2L4 10h5v6h6v-6h5L12 2z"/></svg>
           Tải Video Online
+        </button>
+        <!-- Nút tải ảnh theo chủ đề -->
+        <button @click="openImagePanel" class="btn select-btn flex-center img-dl-btn">
+          <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+          Tải Ảnh Chủ Đề
         </button>
  
         <!-- Nút Bắt đầu / Dừng quét phân tích -->
@@ -3806,6 +3842,191 @@ const formatSize = (bytes: number) => {
           <div class="modal-footer" style="justify-content: flex-end;">
             <button class="btn save-btn" @click="showSettings = false">✅ Hoàn tất</button>
           </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- IMAGE DOWNLOADER MODAL                                  -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <Teleport to="body">
+      <div class="modal-overlay" v-if="showImagePanel" @click.self="showImagePanel = false">
+        <div class="settings-modal" style="width:min(92vw,900px);max-height:88vh;display:flex;flex-direction:column;">
+
+          <!-- Header -->
+          <div class="modal-header">
+            <h2 style="display:flex;align-items:center;gap:8px;">
+              <svg viewBox="0 0 24 24" width="18" height="18" style="color:#06b6d4;flex-shrink:0;"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+              Tải Ảnh Theo Chủ Đề
+            </h2>
+            <button class="modal-close" @click="showImagePanel = false">✕</button>
+          </div>
+
+          <!-- Search section -->
+          <div class="modal-body" style="padding:16px 20px 14px;border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0;">
+            <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px;">
+              <label style="font-size:11px;color:var(--l-text-muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em;">Nhập chủ đề / từ khóa:</label>
+              <div style="display:flex;gap:8px;">
+                <input v-model="imageQuery" type="text" class="dl-url-input" style="flex:1;"
+                  placeholder="VD: mèo cute, phong cảnh Việt Nam, ẩm thực đường phố, nature..."
+                  @keyup.enter="searchImages" :disabled="isImageSearching || isImageDownloading" />
+                <button @click="searchImages" class="btn dl-probe-btn"
+                  :disabled="isImageSearching || isImageDownloading || !imageQuery.trim()"
+                  style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap;height:38px;background:linear-gradient(135deg,#0891b2,#06b6d4)!important;">
+                  <template v-if="isImageSearching">
+                    <span style="display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .9s linear infinite;"></span>
+                    Đang tìm...
+                  </template>
+                  <template v-else>
+                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                    Tìm Ảnh
+                  </template>
+                </button>
+              </div>
+            </div>
+            <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">
+              <div style="flex:1;min-width:220px;">
+                <label style="font-size:11px;color:var(--l-text-muted);font-weight:600;display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;">Nguồn ảnh:</label>
+                <div style="display:flex;gap:5px;flex-wrap:wrap;">
+                  <button v-for="src in IMAGE_SOURCES" :key="src.value" type="button" :title="src.hint"
+                    @click="imageSource = src.value"
+                    style="font-size:12px;padding:5px 12px;border-radius:7px;cursor:pointer;transition:all .2s;font-weight:600;outline:none;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;"
+                    :style="{
+                      background: imageSource===src.value ? 'rgba(6,182,212,.15)' : 'rgba(255,255,255,.03)',
+                      border: imageSource===src.value ? '1px solid #06b6d4' : '1px solid rgba(255,255,255,.08)',
+                      color: imageSource===src.value ? '#22d3ee' : 'var(--l-text-muted)'
+                    }">
+                    {{ src.icon }} {{ src.label }}
+                    <span v-if="src.needsKey" style="font-size:9px;padding:1px 5px;background:rgba(245,158,11,.2);color:#fbbf24;border-radius:4px;border:1px solid rgba(245,158,11,.35);">Key</span>
+                  </button>
+                </div>
+                <p v-if="imageSelectedSource" style="font-size:11px;color:var(--l-text-muted);margin:5px 0 0;font-style:italic;line-height:1.4;">{{ imageSelectedSource.hint }}</p>
+              </div>
+              <div style="flex-shrink:0;">
+                <label style="font-size:11px;color:var(--l-text-muted);font-weight:600;display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;">Số lượng:</label>
+                <select v-model="imageMaxCount" class="dl-select" style="padding:7px 12px;font-size:13px;">
+                  <option :value="20">20 ảnh</option>
+                  <option :value="50">50 ảnh</option>
+                  <option :value="100">100 ảnh</option>
+                  <option :value="200">200 ảnh</option>
+                  <option :value="500">500 ảnh</option>
+                  <option :value="1000">1000 ảnh</option>
+                </select>
+              </div>
+            </div>
+            <div v-if="sourceNeedsKey" style="display:flex;align-items:center;gap:10px;margin-top:10px;padding:10px 14px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;flex-wrap:wrap;">
+              <svg viewBox="0 0 24 24" width="14" height="14" style="color:#fbbf24;flex-shrink:0;"><path fill="currentColor" d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
+              <label style="font-size:12px;color:var(--l-text-muted);font-weight:600;white-space:nowrap;flex-shrink:0;">{{ imageSelectedSource?.label }} API Key:</label>
+              <div style="flex:1;min-width:160px;display:flex;gap:6px;align-items:center;position:relative;">
+                <input v-model="imageApiKey" type="password" class="dl-url-input" style="flex:1;height:34px;font-size:12.5px;" :placeholder="`Nhập ${imageSelectedSource?.label} API Key...`" />
+                <!-- Badge: key từ .env -->
+                <span v-if="imageHasEnvKey" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;background:rgba(16,185,129,.15);color:#10b981;border:1px solid rgba(16,185,129,.3);pointer-events:none;">✅ .env</span>
+              </div>
+              <!-- Hint khi chưa có key -->
+              <span v-if="!imageApiKey" style="font-size:11px;color:#fbbf24;flex-basis:100%;margin-top:2px;">
+                ⚠️ Chưa có key. Nhập vào đây hoặc thêm vào file <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:3px;">frontend/.env.local</code> để dùng mặc định.
+              </span>
+              <span v-else-if="imageHasEnvKey" style="font-size:11px;color:#10b981;flex-basis:100%;margin-top:2px;">
+                ✅ Đang dùng key từ file <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:3px;">frontend/.env.local</code>
+              </span>
+              <a :href="imageSource==='pixabay'?'https://pixabay.com/api/docs/':imageSource==='unsplash'?'https://unsplash.com/developers':'https://www.pexels.com/api/'" target="_blank" style="font-size:12px;font-weight:600;color:#06b6d4;text-decoration:none;white-space:nowrap;flex-shrink:0;">Lấy key miễn phí →</a>
+            </div>
+          </div>
+
+          <!-- Results -->
+          <div style="flex:1;overflow-y:auto;padding:14px 20px;">
+            <div v-if="!imageSearchResult && !isImageSearching" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;height:200px;color:var(--l-text-muted);text-align:center;">
+              <svg viewBox="0 0 24 24" width="56" height="56" style="opacity:.2;"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+              <p style="font-size:14.5px;font-weight:600;margin:0;">Nhập chủ đề → nhấn <span style="color:#06b6d4;">Tìm Ảnh</span> để bắt đầu</p>
+              <p style="font-size:12px;opacity:.55;margin:0;">DuckDuckGo miễn phí không cần key • Hỗ trợ tiếng Việt & tiếng Anh</p>
+            </div>
+            <div v-if="isImageSearching" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;height:200px;color:var(--l-text-muted);">
+              <div style="width:40px;height:40px;border:3px solid rgba(255,255,255,.1);border-top-color:#06b6d4;border-radius:50%;animation:spin .9s linear infinite;"></div>
+              <p style="font-size:14px;font-weight:600;margin:0;">Đang tìm kiếm từ <span style="color:#22d3ee;">{{ imageSelectedSource?.label }}</span>...</p>
+            </div>
+            <template v-if="imageSearchResult && !isImageSearching">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <span style="font-size:13px;color:var(--l-text-muted);display:flex;align-items:center;gap:8px;">
+                  <strong style="color:var(--l-text);font-size:17px;">{{ imageAllEntries.length }}</strong> ảnh tìm thấy
+                  <span style="font-size:10.5px;font-weight:700;padding:2px 9px;border-radius:12px;background:rgba(6,182,212,.12);color:#22d3ee;text-transform:capitalize;">{{ imageSearchResult.source }}</span>
+                </span>
+                <button type="button" @click="imageToggleAll"
+                  style="font-size:12px;padding:5px 14px;border-radius:7px;cursor:pointer;transition:all .18s;font-weight:600;outline:none;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);color:var(--l-text-muted);display:inline-flex;align-items:center;gap:5px;">
+                  {{ imageSelectedCount === imageAllEntries.length ? "Bỏ tất cả" : "Chọn tất cả" }}
+                  <span style="font-weight:700;color:var(--l-text);">({{ imageSelectedCount }}/{{ imageAllEntries.length }})</span>
+                </button>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:9px;">
+                <div v-for="entry in imageAllEntries" :key="entry.id" @click="toggleImage(entry.id)"
+                  style="border-radius:9px;overflow:hidden;cursor:pointer;transition:all .18s;position:relative;"
+                  :style="{
+                    border: selectedImageIds.has(entry.id) ? '2px solid #06b6d4' : '2px solid rgba(255,255,255,.06)',
+                    background: 'rgba(255,255,255,.03)',
+                    transform: selectedImageIds.has(entry.id) ? 'translateY(-2px)' : 'translateY(0)',
+                    boxShadow: selectedImageIds.has(entry.id) ? '0 6px 20px rgba(6,182,212,.2)' : 'none'
+                  }">
+                  <div style="position:relative;aspect-ratio:4/3;overflow:hidden;background:rgba(0,0,0,.3);">
+                    <img :src="entry.thumbUrl || entry.url" :alt="entry.title || 'anh'" loading="lazy"
+                      style="width:100%;height:100%;object-fit:cover;display:block;transition:transform .25s;"
+                      @error="($event.target as HTMLImageElement).style.display='none'"
+                      @mouseover="($event.target as HTMLImageElement).style.transform='scale(1.07)'"
+                      @mouseleave="($event.target as HTMLImageElement).style.transform='scale(1)'" />
+                    <div v-if="selectedImageIds.has(entry.id)"
+                      style="position:absolute;top:6px;right:6px;width:22px;height:22px;border-radius:50%;background:#06b6d4;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:white;box-shadow:0 2px 8px rgba(0,0,0,.5);">
+                      <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                    </div>
+                  </div>
+                  <div v-if="entry.author" style="padding:5px 7px;">
+                    <p style="font-size:10px;color:var(--l-text-muted);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">by {{ entry.author }}</p>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Log strip -->
+          <div v-if="imageSearchLog.length > 0" style="padding:7px 20px;background:rgba(0,0,0,.2);border-top:1px solid rgba(255,255,255,.05);font-size:11px;color:var(--l-text-muted);font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+            {{ imageSearchLog[0] }}
+          </div>
+
+          <!-- Footer -->
+          <div class="modal-footer" style="flex-direction:column;gap:10px;padding:14px 20px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--l-text-muted);flex-shrink:0;"><path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+              <span style="font-size:12px;color:var(--l-text-muted);font-weight:600;white-space:nowrap;flex-shrink:0;">Lưu vào:</span>
+              <input v-model="imageDir" class="dl-url-input" style="flex:1;height:34px;font-size:12px;cursor:default;" readonly placeholder="Thư mục lưu ảnh..." />
+              <button @click="pickImageDir" style="padding:6px 12px;font-size:15px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:7px;color:var(--l-text);cursor:pointer;flex-shrink:0;">&#128193;</button>
+            </div>
+            <div v-if="isImageDownloading" style="display:flex;align-items:center;gap:10px;">
+              <div style="flex:1;height:5px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden;">
+                <div :style="{width: imageDownloadProgress+'%'}" style="height:100%;background:linear-gradient(90deg,#0891b2,#06b6d4);border-radius:3px;transition:width .4s ease;"></div>
+              </div>
+              <span style="font-size:12px;color:var(--l-text-muted);font-weight:700;white-space:nowrap;">{{ downloadDoneCount }}/{{ downloadTotalCount }} ảnh</span>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:10px;">
+              <button v-if="isImageDownloading" @click="cancelImageDl"
+                style="padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;background:rgba(255,255,255,.05);border:1px solid rgba(239,68,68,.3);color:#f87171;">
+                &#9209; Dừng tải</button>
+              <button v-if="!isImageDownloading" @click="showImagePanel = false"
+                style="padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:var(--l-text-muted);">
+                Đóng</button>
+              <button @click="startImageDownload"
+                :disabled="isImageDownloading || isImageSearching || imageSelectedCount === 0"
+                style="padding:8px 24px;border-radius:8px;font-size:13.5px;font-weight:700;cursor:pointer;transition:all .2s;border:none;display:inline-flex;align-items:center;gap:6px;"
+                :style="{
+                  background: (isImageDownloading||isImageSearching||imageSelectedCount===0)?'rgba(255,255,255,.07)':'linear-gradient(135deg,#0891b2,#06b6d4)',
+                  color: (isImageDownloading||isImageSearching||imageSelectedCount===0)?'rgba(255,255,255,.25)':'white',
+                  boxShadow: (isImageDownloading||isImageSearching||imageSelectedCount===0)?'none':'0 4px 14px rgba(6,182,212,.4)',
+                  cursor: (isImageDownloading||isImageSearching||imageSelectedCount===0)?'not-allowed':'pointer'
+                }">
+                <svg v-if="!isImageDownloading" viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M5 20h14v-2H5v2zM12 2L4 10h5v6h6v-6h5L12 2z"/></svg>
+                <span v-if="isImageDownloading">Đang tải {{ downloadDoneCount }}/{{ downloadTotalCount }}...</span>
+                <span v-else-if="imageSelectedCount===0">Chọn ảnh để tải</span>
+                <span v-else>Tải {{ imageSelectedCount }} ảnh đã chọn</span>
+              </button>
+            </div>
+          </div>
+
         </div>
       </div>
     </Teleport>

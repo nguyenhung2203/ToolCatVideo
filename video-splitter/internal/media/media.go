@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"video-splitter/internal/project"
@@ -180,7 +181,7 @@ func GenerateProxy(ctx context.Context, inputPath string, outputPath string, fps
 		// Thêm tham số giải mã bằng GPU (hardware decode) trước -i để tăng tốc đọc video gốc
 		args = append(args, hwDecodeArgs...)
 		args = append(args, "-i", inputPath)
-		args = append(args, "-vf", fmt.Sprintf("scale=-2:240,fps=%s", fpsStr))
+		args = append(args, "-vf", fmt.Sprintf("scale=320:180,fps=%s", fpsStr))
 		args = append(args, "-c:v", vcodec)
 		args = append(args, extraArgs...)
 		args = append(args,
@@ -195,7 +196,9 @@ func GenerateProxy(ctx context.Context, inputPath string, outputPath string, fps
 	var hwDecodeArgs []string
 	switch hwAccel {
 	case "nvidia":
-		hwDecodeArgs = []string{"-hwaccel", "cuda", "-hwaccel_output_format", "nv12"}
+		// Không dùng -hwaccel_output_format nv12 — filter scale= không xử lý được nv12 từ CUDA
+		// Dùng -hwaccel cuda đơn thuần: decode bằng GPU, tự đổi về CPU memory cho filter
+		hwDecodeArgs = []string{"-hwaccel", "cuda"}
 	case "intel":
 		hwDecodeArgs = []string{"-hwaccel", "qsv"}
 	case "amd":
@@ -289,9 +292,18 @@ func GenerateProxy(ctx context.Context, inputPath string, outputPath string, fps
 		// If fails, we fall back to CPU
 	}
 
-	// CPU encoder fallback
-	cmdArgs := buildCmdArgs("libx264", []string{"-preset", "ultrafast", "-crf", "30"}, nil)
-	return runWithProgress(cmdArgs)
+	// CPU encoder fallback. We still preserve hardware decoding (hwDecodeArgs) if available
+	// to offload decoding to GPU (e.g. cuda/qsv) even if encoding (nvenc) fails.
+	if len(hwDecodeArgs) > 0 {
+		cmdArgs := buildCmdArgs("libx264", []string{"-preset", "ultrafast", "-crf", "30"}, hwDecodeArgs)
+		if err := runWithProgress(cmdArgs); err == nil {
+			return nil
+		}
+	}
+
+	// absolute fallback: CPU decoding and CPU encoding
+	cmdArgsFallback := buildCmdArgs("libx264", []string{"-preset", "ultrafast", "-crf", "30"}, nil)
+	return runWithProgress(cmdArgsFallback)
 }
 
 // parseFFmpegTime chuyển đổi chuỗi thời gian FFmpeg "HH:MM:SS.ms" thành giây.
@@ -359,34 +371,13 @@ func ExtractFrame(ctx context.Context, inputPath string, timeSec float64, output
 	return nil
 }
 
-// FindNearestKeyframe tìm I-frame (keyframe) gần nhất trước hoặc sau timeSec.
-// Dùng ffprobe -read_intervals để quét một cửa sổ ±windowSec quanh timeSec,
-// lọc chỉ lấy key_frame=1, rồi chọn frame có PTS gần nhất.
-//
-// Hữu ích cho stream-copy: cắt tại keyframe tránh artifact (xanh lá, glitch)
-// ở đầu clip mà không cần re-encode.
-//
-// Trả về timestamp keyframe gần nhất. Nếu không tìm được, trả về timeSec gốc.
-func FindNearestKeyframe(filePath string, timeSec float64) float64 {
-	windowSec := 3.0 // quét ±3 giây
-	start := timeSec - windowSec
-	if start < 0 {
-		start = 0
-	}
-	end := timeSec + windowSec
-
-	// ffprobe -read_intervals START%END : quét đoạn [start, end]
-	// -select_streams v:0 : chỉ video stream đầu
-	// -show_frames : liệt kê frame
-	// -show_entries frame=pts_time,key_frame : chỉ lấy 2 trường
-	// -of csv=p=0 : output CSV gọn
-	interval := fmt.Sprintf("%.3f%%%.3f", start, end)
+// LoadAllKeyframes dùng ffprobe để đọc toàn bộ danh sách keyframe pts_time của video.
+func LoadAllKeyframes(filePath string) ([]float64, error) {
 	cmdArgs := []string{
 		"-v", "error",
-		"-read_intervals", interval,
 		"-select_streams", "v:0",
-		"-show_frames",
-		"-show_entries", "frame=pts_time,key_frame",
+		"-skip_frame", "nokey",
+		"-show_entries", "frame=pts_time",
 		"-of", "csv=p=0",
 		filePath,
 	}
@@ -394,43 +385,61 @@ func FindNearestKeyframe(filePath string, timeSec float64) float64 {
 	cmd := exec.Command(utils.GetBinPath("ffprobe"), cmdArgs...)
 	utils.HideCmdWindow(cmd)
 	var out bytes.Buffer
+	var stderr bytes.Buffer
 	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+
 	if err := cmd.Run(); err != nil {
-		return timeSec // fallback: giữ nguyên timestamp
+		return nil, fmt.Errorf("ffprobe error: %v, stderr: %s", err, stderr.String())
 	}
 
-	bestTs := timeSec
-	bestDist := windowSec + 1 // bắt đầu lớn hơn window
-
+	var keyframes []float64
 	scanner := bufio.NewScanner(&out)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
-		// Format: pts_time,key_frame  (VD: "12.345,1")
-		parts := strings.SplitN(line, ",", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		isKey := strings.TrimSpace(parts[1])
-		if isKey != "1" {
-			continue // bỏ qua frame không phải keyframe
-		}
-		pts, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-		if err != nil {
-			continue
-		}
-		dist := pts - timeSec
-		if dist < 0 {
-			dist = -dist
-		}
-		if dist < bestDist {
-			bestDist = dist
-			bestTs = pts
+		pts, err := strconv.ParseFloat(line, 64)
+		if err == nil {
+			keyframes = append(keyframes, pts)
 		}
 	}
 
-	return bestTs
+	return keyframes, nil
+}
+
+// FindNearestKeyframeCached tìm keyframe gần nhất với timeSec từ danh sách keyframe đã load sẵn.
+func FindNearestKeyframeCached(keyframes []float64, timeSec float64) float64 {
+	if len(keyframes) == 0 {
+		return timeSec
+	}
+
+	idx := sort.Search(len(keyframes), func(i int) bool {
+		return keyframes[i] >= timeSec
+	})
+
+	if idx == 0 {
+		return keyframes[0]
+	}
+	if idx == len(keyframes) {
+		return keyframes[len(keyframes)-1]
+	}
+
+	prev := keyframes[idx-1]
+	curr := keyframes[idx]
+	if (timeSec - prev) < (curr - timeSec) {
+		return prev
+	}
+	return curr
+}
+
+// FindNearestKeyframe tìm I-frame (keyframe) gần nhất trước hoặc sau timeSec.
+func FindNearestKeyframe(filePath string, timeSec float64) float64 {
+	kf, err := LoadAllKeyframes(filePath)
+	if err != nil {
+		return timeSec
+	}
+	return FindNearestKeyframeCached(kf, timeSec)
 }
 

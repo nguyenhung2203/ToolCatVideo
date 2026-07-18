@@ -1,279 +1,388 @@
-Bạn là Senior Performance Engineer chuyên tối ưu hệ thống xử lý video, FFmpeg, CPU, GPU, RAM và xử lý song song.
-
-## Mục tiêu
+Kết luận
 
-Tối ưu tốc độ cho tool cắt video hiện tại.
+Code này chưa ổn để đạt mục tiêu “nhanh và chính xác như CapCut”. Nó có ý tưởng tốt, nhưng hiện tại vẫn là pipeline Python + FFmpeg + OpenCV + Librosa, chưa có GStreamer, D3D11, NVDEC, CUDA hay hardware decode thực sự.
 
-Tool đã hoàn thiện chức năng và đang hoạt động đúng. Không xây dựng lại, không thêm tính năng mới, không thay đổi giao diện và không thay đổi kết quả cắt hiện tại.
+Đánh giá tổng thể:
 
-Mục tiêu hiệu năng:
-
-* Video dài 10 phút: xử lý dưới 2 phút.
-* Video dài 30 phút: xử lý dưới 5 phút.
-* Video dài 60 phút: xử lý dưới 10 phút.
-* Không làm giảm đáng kể độ chính xác phát hiện và cắt clip.
-* Không làm thay đổi định dạng đầu ra hiện tại nếu không thật sự cần thiết.
+Cấu trúc code: 7/10
+Khả năng chạy thử: 7/10
+Hiệu năng video dài: 4/10
+Độ chính xác Fast mode: 3/10
+Khả năng production: 4/10
 
-## Nguyên tắc bắt buộc
+Tệp này cũng chỉ chứa phần phân tích điểm cắt, chưa có code xuất/cắt clip nên chưa thể đánh giá tốc độ cắt đầu ra.
 
-1. Đọc toàn bộ luồng xử lý hiện tại trước khi sửa.
-2. Không refactor lớn nếu chưa chứng minh được lợi ích.
-3. Không viết lại kiến trúc hoặc thay framework.
-4. Không thay đổi logic nghiệp vụ.
-5. Không thay đổi thuật toán phát hiện điểm cắt nếu thuật toán đó đang hoạt động đúng, trừ khi thay đổi giúp tăng tốc mà vẫn giữ kết quả tương đương.
-6. Mọi tối ưu phải có số liệu trước và sau.
-7. Ưu tiên sửa bottleneck lớn nhất trước.
-8. Mỗi lần chỉ sửa một nhóm vấn đề để dễ đo hiệu quả và rollback.
+Những phần làm đúng
 
-## Bước 1: Benchmark hiện trạng
+Code đã có một số hướng đúng:
 
-Trước khi sửa code, hãy đo thời gian từng công đoạn:
+Chia thành fast, smart, precise.
+Có proxy path và audio path riêng.
+Có timeout cho FFmpeg.
+Có multiprocessing.freeze_support() cho Windows.
+Phase A chạy scene, black và silence song song.
+Có bước gộp các tín hiệu gần nhau.
+Smart mode có quét sơ bộ rồi tinh chỉnh.
+Không xuất hàng nghìn frame thành file ảnh.
 
-* Đọc metadata.
-* Decode video.
-* Phân tích hình ảnh.
-* Phân tích âm thanh.
-* Phát hiện điểm cắt.
-* Ghép và lọc điểm cắt.
-* Xuất từng clip.
-* Encode hoặc render.
-* Ghi file xuống ổ đĩa.
-* Tổng thời gian xử lý.
+Đây là nền tảng dùng được, nhưng cách triển khai hiện tại vẫn tạo nhiều lần đọc và decode video.
 
-Ghi lại:
+Các vấn đề nghiêm trọng
+1. Fast mode không hề “không decode frame”
 
-* Thời gian từng bước.
-* Phần trăm thời gian của từng bước.
-* CPU sử dụng.
-* RAM sử dụng.
-* GPU sử dụng nếu có.
-* Số lần video bị mở hoặc decode lại.
-* Số tiến trình FFmpeg được tạo.
-* Số frame được phân tích.
-* Tốc độ xử lý so với realtime.
+Phần mô tả ghi:
 
-Không sửa code trước khi xác định được bottleneck chính.
+Không decode frame nào
 
-## Bước 2: Tìm nguyên nhân chậm
+Nhưng _fast_black() chạy:
 
-Kiểm tra kỹ các vấn đề sau:
+ffmpeg -i source -vf scale=320:180,blackdetect ...
 
-* Có decode toàn bộ video nhiều lần không.
-* Có phân tích mọi frame không.
-* Có phân tích video ở độ phân giải gốc không.
-* Có chạy các bước độc lập theo tuần tự không.
-* Có tạo một FFmpeg process cho từng thao tác nhỏ không.
-* Có encode lại clip dù chỉ cần cắt không.
-* Có đọc lại cùng một đoạn video nhiều lần không.
-* Có ghi file tạm quá nhiều không.
-* Có copy dữ liệu lớn trong RAM không.
-* Có vòng lặp xử lý frame không cần thiết không.
-* Có log quá nhiều trong vòng lặp không.
-* Có chờ process theo kiểu blocking không.
-* Có giới hạn worker chưa hợp lý không.
-* Có dùng preset encode quá chậm không.
-* Có sử dụng GPU sai cách khiến phải chuyển dữ liệu CPU–GPU nhiều lần không.
+FFmpeg vẫn phải decode toàn bộ video, sau đó mới scale và chạy blackdetect.
 
-Sau khi kiểm tra, lập bảng:
+Đồng thời Fast mode chạy song song:
 
-| Bottleneck | File liên quan | Nguyên nhân | Mức ảnh hưởng | Cách tối ưu |
-| ---------- | -------------- | ----------- | ------------- | ----------- |
+ffprobe quét tất cả packet
+FFmpeg decode toàn bộ audio
+FFmpeg decode toàn bộ video
 
-## Bước 3: Tối ưu theo thứ tự ưu tiên
+Nghĩa là cùng lúc có ba process đọc cùng một file. Với HDD hoặc SSD chậm, điều này có thể làm tốc độ tệ hơn chạy tuần tự.
 
-### Ưu tiên 1: Giảm số lần decode
+Dòng mô tả:
 
-* Không decode lại cùng một video hoặc cùng một đoạn video nhiều lần.
-* Tái sử dụng metadata và dữ liệu phân tích.
-* Gộp các thao tác FFmpeg nếu có thể.
-* Tránh mở lại file nguồn cho từng bước nhỏ.
-* Nếu hình ảnh và âm thanh đang được phân tích riêng bằng nhiều lần đọc nguồn, xem xét dùng chung một luồng đọc hoặc tạo proxy một lần.
+xong trong 5-20s bất kể độ dài video
 
-### Ưu tiên 2: Giảm lượng frame cần phân tích
+là không thực tế. Video 1 giờ không thể bảo đảm thời gian giống video 5 phút.
 
-* Không phân tích tất cả frame nếu thuật toán không yêu cầu.
-* Sử dụng frame sampling hợp lý.
-* Có thể phân tích thưa trước, sau đó chỉ phân tích chi tiết quanh vùng nghi ngờ có điểm cắt.
-* Sử dụng proxy 360p hoặc 480p cho bước phát hiện.
-* Chỉ dùng video gốc khi cần tinh chỉnh chính xác timestamp.
+2. Fast mode có độ chính xác rất thấp
 
-Không giảm sampling quá mức làm bỏ sót clip.
+Logic hiện tại là:
 
-### Ưu tiên 3: Cắt không encode lại
+if not candidates_map and keyframes:
+    dùng toàn bộ keyframes làm candidates
 
-Nếu clip không có chỉnh sửa hình ảnh:
+Điều này gây hai lỗi đối nghịch.
 
-* Ưu tiên FFmpeg stream copy bằng `-c copy`.
-* Không render lại toàn bộ clip.
-* Nếu cần chính xác từng frame, chỉ re-encode đoạn biên cần thiết.
-* Không re-encode toàn bộ video nguồn chỉ để tạo các clip con.
+Trường hợp có silence hoặc black frame
 
-Nếu tool có bước chỉnh sửa bắt buộc:
+Nếu video có dù chỉ một khoảng lặng, code không sử dụng keyframe nữa. Những điểm chuyển clip bình thường không có màn hình đen hoặc khoảng lặng sẽ bị bỏ sót.
 
-* Chỉ encode các clip đầu ra.
-* Không encode lại các dữ liệu trung gian không cần thiết.
-* Chọn preset encode nhanh phù hợp với yêu cầu chất lượng hiện tại.
+Trường hợp không có silence và black frame
 
-### Ưu tiên 4: Xử lý song song có giới hạn
+Code dùng toàn bộ keyframe làm điểm cắt. Nhưng keyframe không đồng nghĩa với clip mới. Encoder thường đặt keyframe định kỳ, ví dụ mỗi 1–5 giây.
 
-Kiểm tra các bước có thể chạy song song:
+Kết quả có thể là:
 
-* Phân tích hình ảnh.
-* Phân tích âm thanh.
-* Xuất các clip độc lập.
-* Xử lý hậu kỳ từng clip.
+Video 10 phút
+→ hàng trăm keyframe
+→ hàng trăm điểm cắt giả
 
-Yêu cầu:
+Vì vậy không nên ghi Fast mode có “sai số dưới 2 giây”. Vấn đề không chỉ là sai timestamp, mà còn có thể sai hoàn toàn số lượng clip.
 
-* Không tạo worker không giới hạn.
-* Số worker phải dựa trên CPU, RAM, GPU và tốc độ ổ đĩa.
-* Có hàng đợi xử lý.
-* Tránh nhiều FFmpeg process cùng tranh chấp CPU và ổ đĩa.
-* Benchmark nhiều mức worker để chọn cấu hình nhanh nhất.
-* Không mặc định số worker càng nhiều càng tốt.
+3. Smart mode có thể vô tình quét video gốc toàn bộ
 
-### Ưu tiên 5: Tối ưu FFmpeg
+Đoạn này:
 
-Rà soát toàn bộ command FFmpeg hiện tại:
+target = proxy_path if proxy_path else source_path
 
-* Loại bỏ filter không cần thiết.
-* Loại bỏ encode trung gian không cần thiết.
-* Sử dụng `-threads` hợp lý.
-* Sử dụng preset phù hợp.
-* Giảm log FFmpeg nếu log đang ảnh hưởng hiệu năng.
-* Sử dụng `-nostdin` trong xử lý nền nếu phù hợp.
-* Hạn chế tạo file tạm.
-* Ưu tiên pipe khi hiệu quả hơn file trung gian.
-* Không dùng pipe nếu làm tăng RAM hoặc gây deadlock.
-* Kiểm tra timestamp, keyframe và seek để chọn cách cắt nhanh nhất.
+Nếu proxy bị thiếu, lỗi hoặc truyền path rỗng, OpenCV sẽ đọc trực tiếp video nguồn.
 
-### Ưu tiên 6: Tận dụng GPU
+Khi đó:
 
-Nếu máy có GPU, kiểm tra khả năng dùng:
+while True:
+    ok, frame = cap.read()
 
-* NVIDIA NVDEC/NVENC.
-* Intel Quick Sync.
-* AMD AMF.
-* Apple VideoToolbox.
+sẽ decode:
 
-Yêu cầu:
+mọi frame;
+ở FPS gốc;
+ở độ phân giải gốc.
 
-* Tự động phát hiện GPU.
-* Có fallback CPU.
-* Chỉ dùng GPU khi benchmark thực tế nhanh hơn.
-* Không ép GPU nếu video ngắn hoặc dữ liệu truyền CPU–GPU làm chậm hơn.
-* Không làm thay đổi chất lượng đầu ra ngoài ngưỡng cho phép.
+Video 10 phút, 30 FPS có khoảng 18.000 frame. Video 1 giờ có khoảng 108.000 frame. Với video 1080p, đây là nguyên nhân rất rõ khiến tool lâu.
 
-### Ưu tiên 7: Cache
+Không nên âm thầm fallback từ proxy sang source trong Smart mode. Phải:
 
-Nếu người dùng chạy lại cùng một video:
-
-* Tái sử dụng metadata.
-* Tái sử dụng proxy.
-* Tái sử dụng kết quả phân tích hình ảnh.
-* Tái sử dụng kết quả phân tích âm thanh.
-* Tái sử dụng danh sách điểm cắt.
+Proxy hợp lệ → chạy Smart
+Proxy thiếu → tạo proxy
+Tạo proxy lỗi → báo fallback rõ ràng
+4. Pass 2 đang seek lại video quá nhiều lần
 
-Cache phải tự hết hiệu lực khi file nguồn thay đổi.
-
-### Ưu tiên 8: Tối ưu code
+Đoạn này là bottleneck lớn:
 
-Kiểm tra:
+for rough_ts in rough_candidates:
+    cap3.set(cv2.CAP_PROP_POS_FRAMES, sf)
 
-* Vòng lặp xử lý frame.
-* Copy mảng hoặc buffer không cần thiết.
-* Cấp phát bộ nhớ liên tục.
-* Chuyển đổi format nhiều lần.
-* Serialize/deserialize dữ liệu trung gian.
-* Ghi log trong vòng lặp.
-* Polling process quá dày.
-* Chờ tuần tự trong khi có thể dùng async.
-* Đọc và ghi file bằng buffer quá nhỏ.
-* Giữ toàn bộ frame trong RAM khi có thể xử lý streaming.
+Mỗi candidate lại gọi seek một lần. Video nén không thể nhảy thẳng đến mọi frame; decoder thường phải tìm keyframe gần nhất rồi decode tiến tới vị trí cần thiết.
 
-## Bước 4: Thực hiện sửa code
+Nếu Pass 1 tạo 300 candidate:
 
-Sau khi xác định bottleneck:
+300 lần seek
+300 lần decoder quay lại vùng keyframe
+300 vùng bị đọc lại
 
-1. Nêu rõ file cần sửa.
-2. Nêu nguyên nhân chậm.
-3. Nêu giải pháp.
-4. Ước lượng mức cải thiện.
-5. Thực hiện sửa.
-6. Chạy test chức năng.
-7. Chạy benchmark lại.
-8. So sánh trước và sau.
+Fade hoặc chuyển động mạnh còn có thể tạo nhiều candidate liên tiếp trong cùng một vùng.
 
-Không được chỉ đưa đề xuất. Hãy trực tiếp sửa code trong repository.
+Bạn cần gộp candidate trước Pass 2, ví dụ:
 
-## Bước 5: Kiểm tra không làm sai chức năng
+12.00
+12.25
+12.50
+12.75
 
-Sau mỗi tối ưu, kiểm tra:
+phải thành một vùng:
 
-* Số clip phát hiện không thay đổi bất thường.
-* Timestamp đầu và cuối không lệch quá ngưỡng cho phép.
-* Không mất đầu hoặc cuối clip.
-* Không sinh clip rỗng.
-* Không sinh clip quá ngắn do lỗi.
-* Âm thanh và hình ảnh không lệch nhau.
-* Không làm hỏng codec hoặc container.
-* Tên file và cấu trúc thư mục đầu ra vẫn đúng.
-* Chức năng chỉnh sửa video hiện tại vẫn hoạt động.
-* Giao diện và API hiện tại không bị thay đổi.
+12.00–12.75
 
-## Benchmark bắt buộc
+rồi chỉ refine một lần.
 
-Chạy ít nhất các trường hợp:
+Hiện tại code chỉ chống trùng sau khi refine:
 
-* Video 10 phút.
-* Video 30 phút.
-* Video 60 phút.
-* Video có nhiều clip ngắn.
-* Video có chuyển cảnh rõ.
-* Video có fade hoặc chuyển cảnh nhẹ.
-* Video độ phân giải 720p.
-* Video độ phân giải 1080p.
+abs(best_ts - refined[-1]) > 0.3
 
-Báo cáo theo mẫu:
+Lúc đó chi phí seek đã xảy ra rồi.
 
-| Video   | Trước tối ưu | Sau tối ưu | Mức cải thiện | Kết quả cắt |
-| ------- | -----------: | ---------: | ------------: | ----------- |
-| 10 phút |              |            |               |             |
-| 30 phút |              |            |               |             |
-| 60 phút |              |            |               |             |
+5. Layout detector tiếp tục mở và decode video lần nữa
 
-Và báo cáo chi tiết:
+Sau scene detection, code chạy:
 
-| Công đoạn          | Trước | Sau | Cải thiện |
-| ------------------ | ----: | --: | --------: |
-| Decode             |       |     |           |
-| Phân tích hình ảnh |       |     |           |
-| Phân tích âm thanh |       |     |           |
-| Phát hiện điểm cắt |       |     |           |
-| Xuất clip          |       |     |           |
-| Tổng               |       |     |           |
+results['layout'] = _task_layout(...)
 
-## Tiêu chí hoàn thành
+analyze_layout() mở cv2.VideoCapture mới và lại seek quanh từng candidate.
 
-Chỉ được coi là hoàn thành khi:
+Như vậy Smart mode có thể gồm:
 
-* Đã xác định rõ bottleneck.
-* Đã sửa code thực tế.
-* Test chức năng hiện tại vẫn pass.
-* Kết quả cắt không bị sai đáng kể.
-* Có benchmark trước và sau.
-* Video 60 phút tiến gần hoặc đạt mục tiêu dưới 10 phút.
-* Không thêm tính năng mới.
-* Không thay đổi giao diện.
-* Không thay đổi nghiệp vụ.
-* Không để lại code thử nghiệm, log debug hoặc file tạm.
+Lần 1: OpenCV quét scene
+Lần 2: OpenCV refine scene
+Lần 3: OpenCV quét layout
+Lần 4: FFmpeg quét black
+Lần 5: FFmpeg quét audio
 
-Nếu chưa đạt video 60 phút dưới 10 phút, phải chỉ ra chính xác:
+Dù dùng proxy, đây vẫn là nhiều lần mở và đọc dữ liệu không cần thiết.
 
-* Công đoạn còn chậm.
-* Giới hạn nằm ở CPU, GPU, RAM, ổ đĩa hay thuật toán.
-* Mức thời gian thấp nhất đã đạt được.
-* Các tối ưu tiếp theo có thể thực hiện.
-* Rủi ro nếu tiếp tục giảm thời gian.
+Scene score, layout score và black-frame score nên được tính trong cùng một vòng lặp đọc frame.
 
-Bắt đầu bằng việc đọc source code, chạy benchmark hiện trạng và báo cáo bottleneck trước khi sửa.
+6. Chạy song song chưa chắc nhanh hơn
+
+Phase A chạy ba task:
+
+black
+silence
+scenes
+
+Nếu có proxy và WAV riêng thì có thể chấp nhận.
+
+Nhưng nếu thiếu proxy hoặc audio:
+
+black đọc video nguồn;
+scenes cũng đọc video nguồn;
+silence tiếp tục đọc video nguồn.
+
+CPU, ổ đĩa và decoder cùng tranh chấp tài nguyên. Chạy ba task song song trong trường hợp này có thể chậm hơn chạy pipeline hợp nhất.
+
+Ngoài ra, ProcessPoolExecutor trên Windows phải khởi động Python process mới, import module và có thể load OpenCV. Nếu đóng gói bằng PyInstaller thì chi phí còn cao hơn.
+
+7. Precise mode có thể ngốn RAM rất lớn
+
+Đoạn:
+
+y, sr = librosa.load(audio_path, sr=16000, mono=True)
+
+đọc toàn bộ audio vào RAM.
+
+Audio 1 giờ ở 16 kHz có khoảng:
+
+57,6 triệu sample
+
+Chỉ mảng float32 đã khoảng 230 MB, chưa tính:
+
+dữ liệu nguồn;
+MFCC;
+mảng chuẩn hóa;
+diff;
+overhead của Python và NumPy.
+
+Precise mode có thể dùng hàng trăm MB đến hơn 1 GB RAM.
+
+Cần chuyển sang:
+
+xử lý audio theo chunk;
+hoặc FFmpeg astats, silencedetect, ebur128;
+hoặc streaming MFCC theo từng đoạn.
+8. Logic confidence chưa đáng tin
+
+Hiện tại confidence được cộng thẳng:
+
+cand['confidence'] = min(100, cand['confidence'] + conf)
+
+Ví dụ:
+
+silence đơn lẻ = 30
+scene đơn lẻ = 40
+black frame đơn lẻ = 50
+
+Nhưng cuối hàm không có:
+
+confidence tối thiểu;
+thời lượng clip tối thiểu;
+lọc candidate sát đầu/cuối;
+kiểm tra khoảng cách với điểm cắt trước;
+quy tắc bắt buộc nhiều tín hiệu.
+
+Vì vậy mọi khoảng lặng đều có thể trở thành điểm cắt. Một người dừng nói 0,5 giây cũng có thể bị hiểu là video mới.
+
+9. Timestamp sau khi merge có thể bị sai
+
+Ví dụ:
+
+Silence start: 10.00s
+Scene change: 10.35s
+
+Do nằm trong MERGE_WINDOW = 0.4, hai điểm được gộp. Nhưng timestamp vẫn giữ 10.00, vì candidate đầu tiên không được cập nhật.
+
+Kết quả tool có thể cắt trước cảnh thật 0,35 giây.
+
+Nên ưu tiên:
+
+hard cut timestamp
+> black transition midpoint
+> audio boundary
+> silence timestamp
+
+Hoặc tính weighted timestamp thay vì luôn giữ timestamp đầu tiên.
+
+10. MERGE_WINDOW = 0.4 cố định chưa hợp lý
+
+Proxy 4 FPS có khoảng cách frame là:
+
+0,25 giây
+
+Cửa sổ 0,4 giây khá sát. Fade kéo dài 0,5–1 giây có thể vẫn sinh nhiều candidate.
+
+Nên dùng:
+
+Hard cut: 0,3–0,5 giây
+Fade: 0,8–1,5 giây
+Audio/silence: 0,5–1 giây
+
+Tức merge window phụ thuộc loại tín hiệu, không dùng một giá trị cho tất cả.
+
+11. Khoảng lặng đang lấy sai vị trí cắt
+
+Code chỉ lấy:
+
+silence_start
+
+Nhưng tùy trường hợp, điểm chuyển clip phù hợp có thể là:
+
+silence_start;
+silence_end;
+trung điểm khoảng lặng;
+scene cut gần nhất trong khoảng lặng.
+
+Ví dụ người nói xong ở 10 giây, video mới bắt đầu ở 10,8 giây. Cắt tại silence_start có thể để phần im lặng ở đầu clip sau hoặc cắt mất đuôi clip trước.
+
+Nên đọc cả:
+
+silence_start
+silence_end
+silence_duration
+
+rồi ghép với visual candidate.
+
+12. Không có hardware decode thực tế
+
+Trong toàn bộ file không có:
+
+-hwaccel;
+NVDEC;
+D3D11;
+DXVA;
+CUDA;
+GStreamer;
+OpenCV hardware acceleration.
+
+Vì vậy code này chưa phải bản nâng cấp công nghệ mà prompt trước đó yêu cầu. Nó vẫn sử dụng decode mặc định bằng CPU trong phần lớn trường hợp.
+
+Nguyên nhân tool vẫn lâu
+
+Theo code này, ba nguyên nhân lớn nhất là:
+
+1. Video bị đọc và decode nhiều lần
+
+Smart mode có thể decode qua:
+
+scene pass 1
+scene fallback
+scene pass 2
+layout
+blackdetect
+silence
+2. Seek ngẫu nhiên cho từng candidate
+
+CAP_PROP_POS_FRAMES được gọi lặp lại nhiều lần, đặc biệt nghiêm trọng khi có nhiều candidate.
+
+3. Không bảo đảm proxy thật sự được sử dụng
+
+Nếu proxy path trống, hệ thống âm thầm quét video nguồn full FPS/full resolution.
+
+Kiến trúc nên sửa
+Pipeline Smart hợp lý hơn
+Tạo hoặc lấy proxy cache 320×180, 4 FPS
+             ↓
+Một lần đọc tuần tự proxy
+             ↓
+Tính đồng thời:
+- histogram difference
+- mean absolute difference
+- black score
+- layout/edge score
+             ↓
+Cluster candidate ngay lập tức
+             ↓
+Một lần phân tích audio
+             ↓
+Ghép audio và visual
+             ↓
+Chỉ refine các candidate đã cluster
+             ↓
+Lọc theo confidence + min clip duration
+
+Như vậy proxy chỉ bị đọc một lần, thay vì ba hoặc bốn lần.
+
+Những sửa đổi ưu tiên
+P0 — Phải sửa ngay
+Không cho Smart mode âm thầm dùng source nếu thiếu proxy.
+Cluster rough_candidates trước Pass 2.
+Gộp scene, layout và black detection vào một vòng đọc proxy.
+Bổ sung min_clip_duration.
+Bổ sung minimum_confidence.
+Không dùng toàn bộ keyframe làm điểm cắt.
+Không coi silence đơn lẻ là điểm cắt chắc chắn.
+Đo thời gian từng detector.
+P1 — Tối ưu mạnh
+Tạo proxy bằng hardware decode.
+Cache proxy theo hash của video.
+Thay Librosa toàn-file bằng audio streaming.
+Tinh chỉnh timestamp theo batch thay vì seek từng điểm.
+Chọn timestamp visual làm mốc chính khi merge.
+Thêm -hide_banner -nostdin -nostats cho FFmpeg.
+P2 — Production
+Worker chạy lâu dài thay vì khởi động Python mỗi lần.
+Có cancel thực sự.
+Có benchmark 10/30/60 phút.
+Có bộ dữ liệu ground truth để đo precision/recall.
+Tách analyzer ra khỏi protocol in log hiện tại.
+Chốt
+
+Code này là một prototype có cấu trúc tương đối tốt, nhưng chưa phải engine tốc độ cao. Smart mode có tiềm năng nhất, nhưng phải loại bỏ việc đọc lại proxy nhiều lần và seek theo từng candidate.
+
+Fast mode hiện tại nên đổi tên thành:
+
+heuristic mode
+
+và không nên quảng cáo:
+
+sai số dưới 2 giây
+5–20 giây bất kể độ dài
+
+vì logic hiện tại không bảo đảm được hai điều đó.

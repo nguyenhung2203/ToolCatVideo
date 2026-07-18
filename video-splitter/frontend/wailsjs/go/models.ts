@@ -83,6 +83,95 @@ export namespace downloader {
 
 }
 
+export namespace imagedownloader {
+	
+	export class ImageDownloadResult {
+	    id: string;
+	    filePath: string;
+	    title: string;
+	    ok: boolean;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ImageDownloadResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.filePath = source["filePath"];
+	        this.title = source["title"];
+	        this.ok = source["ok"];
+	        this.error = source["error"];
+	    }
+	}
+	export class ImageEntry {
+	    id: string;
+	    url: string;
+	    thumbUrl: string;
+	    title: string;
+	    author: string;
+	    source: string;
+	    width: number;
+	    height: number;
+	    pageUrl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ImageEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.url = source["url"];
+	        this.thumbUrl = source["thumbUrl"];
+	        this.title = source["title"];
+	        this.author = source["author"];
+	        this.source = source["source"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.pageUrl = source["pageUrl"];
+	    }
+	}
+	export class ImageSearchResult {
+	    source: string;
+	    query: string;
+	    total: number;
+	    entries: ImageEntry[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ImageSearchResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.source = source["source"];
+	        this.query = source["query"];
+	        this.total = source["total"];
+	        this.entries = this.convertValues(source["entries"], ImageEntry);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace main {
 	
 	export class ExportResult {

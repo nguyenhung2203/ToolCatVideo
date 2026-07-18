@@ -14,7 +14,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"bufio"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -23,9 +25,11 @@ import (
 	"video-splitter/internal/boundary"
 	"video-splitter/internal/downloader"
 	"video-splitter/internal/exporter"
+	"video-splitter/internal/imagedownloader"
 	"video-splitter/internal/media"
 	"video-splitter/internal/project"
 	"video-splitter/internal/storage"
+	"video-splitter/internal/utils"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"google.golang.org/genai"
@@ -49,10 +53,13 @@ type App struct {
 	streamPort        int
 	streamToken       string
 	store             *storage.Store
-	// Download online
+	// Download online video (yt-dlp)
 	downloadCancelFuncs map[string]context.CancelFunc
 	downloadCancelMu    sync.Mutex
 	isDownloadCancelled bool
+	// Download images
+	imageDownloadCancel context.CancelFunc
+	imageDownloadMu     sync.Mutex
 }
 
 // NewApp creates a new App application struct
@@ -69,6 +76,7 @@ func (a *App) startup(ctx context.Context) {
 	a.isExportCancelled = false
 	a.downloadCancelFuncs = make(map[string]context.CancelFunc)
 	a.isDownloadCancelled = false
+	a.imageDownloadCancel = nil
 
 	// Mở kho lưu trữ SQLite (lưu project/clip/config để mở lại không mất việc).
 	// Lỗi mở db không nên chặn app khởi động — chỉ mất tính năng lưu.
@@ -200,8 +208,10 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 	}()
 
 	// 1. Tạo proxy (và trích xuất audio nếu dùng chế độ precise)
+	// fast mode: KHÔNG tạo proxy — chạy thẳng trên video gốc để tiết kiệm thời gian
+	// smart/precise: tạo proxy 320×180 4fps để phân tích nhanh hơn nhiều
 	needProxy := cfg.Mode != project.ModeFast
-	needAudio := cfg.Mode == project.ModePrecise
+	needAudio := cfg.Mode == project.ModePrecise // WAV chỉ cần cho Librosa (precise mode)
 
 	// Lấy thời lượng video gốc để tính tiến độ thời gian thực cho Bước 1
 	var totalDuration float64
@@ -218,9 +228,9 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 			gpuLabel = strings.ToUpper(gpuLabel)
 		}
 		if needProxy && needAudio {
-			runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 1/3: Đang tối ưu hóa video bằng %s (tạo proxy 240p & trích xuất âm thanh song song)...", gpuLabel))
+			runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 1/3: Đang tối ưu hóa video bằng %s (tạo proxy 320×180 4fps & trích xuất âm thanh song song)...", gpuLabel))
 		} else if needProxy {
-			runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 1/3: Đang tối ưu hóa video bằng %s (tạo proxy 240p)...", gpuLabel))
+			runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 1/3: Đang tối ưu hóa video bằng %s (tạo proxy 320×180 4fps)...", gpuLabel))
 		} else {
 			runtime.EventsEmit(a.ctx, "analyze_log", "Bước 1/3: Đang trích xuất âm thanh...")
 		}
@@ -275,7 +285,13 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 	if needAudio {
 		passedAudioPath = audioPath
 	}
-	clips, err := boundary.AnalyzeVideo(ctx, sourcePath, passedProxyPath, passedAudioPath, "python", cfg, totalDuration)
+	pythonExe := "python"
+	venvPython := filepath.Join(filepath.Dir(utils.GetWorkerScript()), ".venv", "Scripts", "python.exe")
+	if _, err := os.Stat(venvPython); err == nil {
+		pythonExe = venvPython
+	}
+
+	clips, err := boundary.AnalyzeVideo(ctx, sourcePath, passedProxyPath, passedAudioPath, pythonExe, cfg, totalDuration)
 	if err != nil {
 		return nil, fmt.Errorf("lỗi phân tích: %v", err)
 	}
@@ -310,58 +326,88 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 		}
 	}
 
-	type thumbJob struct {
-		index int
-		start bool
+	type pythonThumbJob struct {
+		Index     int     `json:"index"`
+		Timestamp float64 `json:"timestamp"`
+		Path      string  `json:"path"`
+		Type      string  `json:"type"`
 	}
 
-	numJobs := len(clips) * 2
-	jobsChan := make(chan thumbJob, numJobs)
+	var pythonJobs []pythonThumbJob
 	for i := 0; i < len(clips); i++ {
-		jobsChan <- thumbJob{index: i, start: true}
-		jobsChan <- thumbJob{index: i, start: false}
+		thumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumb_%s_%d.jpg", clips[i].ID, i))
+		pythonJobs = append(pythonJobs, pythonThumbJob{
+			Index:     i,
+			Timestamp: clips[i].StartTime,
+			Path:      thumbPath,
+			Type:      "start",
+		})
+
+		endThumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumbend_%s_%d.jpg", clips[i].ID, i))
+		endAt := clips[i].EndTime - 0.1
+		if endAt < clips[i].StartTime {
+			endAt = clips[i].StartTime
+		}
+		pythonJobs = append(pythonJobs, pythonThumbJob{
+			Index:     i,
+			Timestamp: endAt,
+			Path:      endThumbPath,
+			Type:      "end",
+		})
 	}
-	close(jobsChan)
 
-	numWorkers := 8
-	if numWorkers > numJobs {
-		numWorkers = numJobs
+	jobsBytes, err := json.Marshal(pythonJobs)
+	if err != nil {
+		return nil, fmt.Errorf("lỗi serialize thumbnail jobs: %v", err)
 	}
 
-	var wgThumbs sync.WaitGroup
-	var mu sync.Mutex
-	wgThumbs.Add(numWorkers)
+	scriptPath := filepath.Join(filepath.Dir(utils.GetWorkerScript()), "extract_thumbs.py")
 
-	// Theo dõi số job đã hoàn thành cho từng clip (mỗi clip có 2 job: ảnh đầu + ảnh cuối)
-	clipDone := make(map[int]int) // clipDone[i] = số job đã xong cho clip i
+	cmd := exec.CommandContext(ctx, pythonExe, scriptPath, "--video", thumbInputPath)
+	cmd.Env = append(os.Environ(), "PYTHONUTF8=1", "PYTHONIOENCODING=utf-8")
+	utils.HideCmdWindow(cmd)
 
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("lỗi tạo stdin pipe cho thumbnail extractor: %v", err)
+	}
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("lỗi tạo stdout pipe cho thumbnail extractor: %v", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("lỗi chạy thumbnail extractor: %v", err)
+	}
+
+	go func() {
+		defer stdinPipe.Close()
+		_, _ = stdinPipe.Write(jobsBytes)
+	}()
+
+	clipDone := make(map[int]int)
 	var completedJobs int
-	for w := 0; w < numWorkers; w++ {
-		go func() {
-			defer wgThumbs.Done()
-			for job := range jobsChan {
-				i := job.index
-				if job.start {
-					thumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumb_%s_%d.jpg", clips[i].ID, i))
-					_ = media.ExtractFrame(ctx, thumbInputPath, clips[i].StartTime, thumbPath)
-					mu.Lock()
-					clips[i].Thumbnail = thumbPath
-					mu.Unlock()
-				} else {
-					if clips[i].EndTime > clips[i].StartTime {
-						endThumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumbend_%s_%d.jpg", clips[i].ID, i))
-						endAt := clips[i].EndTime - 0.1
-						if endAt < clips[i].StartTime {
-							endAt = clips[i].StartTime
-						}
-						_ = media.ExtractFrame(ctx, thumbInputPath, endAt, endThumbPath)
-						mu.Lock()
-						clips[i].ThumbEnd = endThumbPath
-						mu.Unlock()
-					}
-				}
+	numJobs := len(pythonJobs)
+	var mu sync.Mutex
+
+	scanner := bufio.NewScanner(stdoutPipe)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "DONE:") {
+			parts := strings.Split(strings.TrimPrefix(line, "DONE:"), "|")
+			if len(parts) == 3 {
+				idx, _ := strconv.Atoi(parts[0])
+				jobType := parts[1]
+				path := parts[2]
 
 				mu.Lock()
+				if jobType == "start" {
+					clips[idx].Thumbnail = path
+				} else {
+					clips[idx].ThumbEnd = path
+				}
+
 				completedJobs++
 				prog := 92 + (completedJobs * 7 / numJobs)
 				if prog > 99 {
@@ -369,32 +415,91 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 				}
 				runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": prog})
 
-				// Khi clip hoàn thành cả 2 ảnh (đầu + cuối), gửi event clip_ready
-				// để frontend hiện clip lên ngay lập tức thay vì đợi tất cả xong
-				clipDone[i]++
-				if clipDone[i] >= 2 {
+				clipDone[idx]++
+				if clipDone[idx] >= 2 {
 					doneClips := 0
 					for _, v := range clipDone {
 						if v >= 2 {
 							doneClips++
 						}
 					}
-					totalClips := numJobs / 2
+					totalClips := len(clips)
 					runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("  Bước 3/3: Đã trích xuất ảnh clip %d/%d", doneClips, totalClips))
-					// Gửi cập nhật ảnh xem trước cho clip đã hiện trên giao diện
 					runtime.EventsEmit(a.ctx, "clip_thumb_update", map[string]interface{}{
 						"path":      sourcePath,
-						"clipId":    clips[i].ID,
-						"thumbnail": clips[i].Thumbnail,
-						"thumbEnd":  clips[i].ThumbEnd,
+						"clipId":    clips[idx].ID,
+						"thumbnail": clips[idx].Thumbnail,
+						"thumbEnd":  clips[idx].ThumbEnd,
 					})
 				}
 				mu.Unlock()
 			}
-		}()
+		}
 	}
 
-	wgThumbs.Wait()
+	if err := cmd.Wait(); err != nil {
+		runtime.EventsEmit(a.ctx, "analyze_log", "Cảnh báo: Lỗi batch thumbnail. Đang chạy chế độ fallback bằng ffmpeg...")
+		var wgThumbs sync.WaitGroup
+		sem := make(chan struct{}, 8)
+		var completed int
+		var mu2 sync.Mutex
+
+		for i := 0; i < len(clips); i++ {
+			wgThumbs.Add(1)
+			go func(idx int) {
+				defer wgThumbs.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				thumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumb_%s_%d.jpg", clips[idx].ID, idx))
+				_ = media.ExtractFrame(ctx, thumbInputPath, clips[idx].StartTime, thumbPath)
+
+				mu2.Lock()
+				clips[idx].Thumbnail = thumbPath
+				completed++
+				prog := 92 + (completed * 7 / (len(clips) * 2))
+				if prog > 99 {
+					prog = 99
+				}
+				runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": prog})
+				mu2.Unlock()
+			}(i)
+
+			wgThumbs.Add(1)
+			go func(idx int) {
+				defer wgThumbs.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				endThumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumbend_%s_%d.jpg", clips[idx].ID, idx))
+				endAt := clips[idx].EndTime - 0.1
+				if endAt < clips[idx].StartTime {
+					endAt = clips[idx].StartTime
+				}
+				_ = media.ExtractFrame(ctx, thumbInputPath, endAt, endThumbPath)
+
+				mu2.Lock()
+				clips[idx].ThumbEnd = endThumbPath
+				completed++
+				prog := 92 + (completed * 7 / (len(clips) * 2))
+				if prog > 99 {
+					prog = 99
+				}
+				runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": prog})
+				mu2.Unlock()
+			}(i)
+		}
+		wgThumbs.Wait()
+
+		for idx := range clips {
+			runtime.EventsEmit(a.ctx, "clip_thumb_update", map[string]interface{}{
+				"path":      sourcePath,
+				"clipId":    clips[idx].ID,
+				"thumbnail": clips[idx].Thumbnail,
+				"thumbEnd":  clips[idx].ThumbEnd,
+			})
+		}
+	}
 
 	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Phân tích hoàn tất! Đã tìm thấy %d phân đoạn.", len(clips)))
 	return clips, nil
@@ -1158,32 +1263,61 @@ Return only the final English image prompt without headings, explanations, markd
 	var imgData []byte
 	var imagenErr error
 
-	imagenModels := []string{"imagen-4.0-ultra-generate-001", "imagen-3.0-generate-002"}
-	for _, imgModel := range imagenModels {
-		config := &genai.GenerateImagesConfig{
-			NumberOfImages:   1,
-			AspectRatio:      aspectRatio,
-			OutputMIMEType:   "image/jpeg",
-			PersonGeneration: genai.PersonGenerationAllowAdult,
-		}
-		// Size 2K chỉ hỗ trợ trên model Imagen 4
-		if strings.Contains(imgModel, "imagen-4.0") {
-			config.ImageSize = "2K"
+	// Try the new Gemini Image models (such as gemini-3-pro-image and gemini-3.1-flash-image) first
+	geminiImageModels := []string{"gemini-3-pro-image", "gemini-3.1-flash-image"}
+	for _, imgModel := range geminiImageModels {
+		config := &genai.GenerateContentConfig{
+			ResponseModalities: []string{"IMAGE"},
 		}
 
-		imageResponse, errGen := imageClient.Models.GenerateImages(ctx, imgModel, optimizedPrompt, config)
+		res, errGen := imageClient.Models.GenerateContent(ctx, imgModel, genai.Text(optimizedPrompt), config)
 		if errGen != nil {
 			imagenErr = errGen
 			continue
 		}
 
-		if len(imageResponse.GeneratedImages) > 0 &&
-			imageResponse.GeneratedImages[0] != nil &&
-			imageResponse.GeneratedImages[0].Image != nil &&
-			len(imageResponse.GeneratedImages[0].Image.ImageBytes) > 0 {
-			imgData = imageResponse.GeneratedImages[0].Image.ImageBytes
-			imagenErr = nil
+		if len(res.Candidates) > 0 && res.Candidates[0].Content != nil {
+			for _, part := range res.Candidates[0].Content.Parts {
+				if part.InlineData != nil && len(part.InlineData.Data) > 0 {
+					imgData = part.InlineData.Data
+					imagenErr = nil
+					break
+				}
+			}
+		}
+		if len(imgData) > 0 {
 			break
+		}
+	}
+
+	// Fallback to legacy Imagen models if Gemini image models failed
+	if len(imgData) == 0 {
+		imagenModels := []string{"imagen-4.0-generate-001", "imagen-3.0-generate-002"}
+		for _, imgModel := range imagenModels {
+			config := &genai.GenerateImagesConfig{
+				NumberOfImages:   1,
+				AspectRatio:      aspectRatio,
+				OutputMIMEType:   "image/jpeg",
+				PersonGeneration: genai.PersonGenerationAllowAdult,
+			}
+			if strings.Contains(imgModel, "imagen-4.0") {
+				config.ImageSize = "2K"
+			}
+
+			imageResponse, errGen := imageClient.Models.GenerateImages(ctx, imgModel, optimizedPrompt, config)
+			if errGen != nil {
+				imagenErr = errGen
+				continue
+			}
+
+			if len(imageResponse.GeneratedImages) > 0 &&
+				imageResponse.GeneratedImages[0] != nil &&
+				imageResponse.GeneratedImages[0].Image != nil &&
+				len(imageResponse.GeneratedImages[0].Image.ImageBytes) > 0 {
+				imgData = imageResponse.GeneratedImages[0].Image.ImageBytes
+				imagenErr = nil
+				break
+			}
 		}
 	}
 
@@ -1382,4 +1516,101 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return out.Sync()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// IMAGE DOWNLOADER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// SearchImages tìm kiếm ảnh theo chủ đề từ nguồn được chỉ định.
+// source: "duckduckgo" | "pixabay" | "unsplash" | "pexels"
+// apiKey: bỏ trống nếu nguồn không cần key (DuckDuckGo)
+// maxCount: số ảnh tối đa cần tìm (0 = dùng mặc định 50)
+func (a *App) SearchImages(query string, source string, apiKey string, maxCount int) (*imagedownloader.ImageSearchResult, error) {
+	runtime.EventsEmit(a.ctx, "image_search_log", fmt.Sprintf("Đang tìm ảnh '%s' từ %s...", query, source))
+	result, err := imagedownloader.SearchImages(a.ctx, query, source, apiKey, maxCount)
+	if err != nil {
+		runtime.EventsEmit(a.ctx, "image_search_log", fmt.Sprintf("Lỗi tìm ảnh: %v", err))
+		return nil, err
+	}
+	runtime.EventsEmit(a.ctx, "image_search_log", fmt.Sprintf("Tìm thấy %d ảnh từ %s!", len(result.Entries), result.Source))
+	return result, nil
+}
+
+// DownloadImages tải danh sách ảnh về thư mục outputDir (song song 4 luồng).
+func (a *App) DownloadImages(entries []imagedownloader.ImageEntry, outputDir string) ([]imagedownloader.ImageDownloadResult, error) {
+	if outputDir == "" {
+		outputDir = a.GetDefaultImageDownloadDir()
+	}
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return nil, fmt.Errorf("không tạo được thư mục: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.imageDownloadMu.Lock()
+	if a.imageDownloadCancel != nil {
+		a.imageDownloadCancel() // hủy lần tải trước nếu còn
+	}
+	a.imageDownloadCancel = cancel
+	a.imageDownloadMu.Unlock()
+
+	defer func() {
+		a.imageDownloadMu.Lock()
+		a.imageDownloadCancel = nil
+		a.imageDownloadMu.Unlock()
+		cancel()
+	}()
+
+	runtime.EventsEmit(a.ctx, "image_search_log", fmt.Sprintf("Bắt đầu tải %d ảnh...", len(entries)))
+
+	results, err := imagedownloader.DownloadImages(ctx, entries, outputDir,
+		func(p imagedownloader.ImageDownloadProgress) {
+			runtime.EventsEmit(a.ctx, "image_download_progress", map[string]interface{}{
+				"id":      p.ID,
+				"title":   p.Title,
+				"percent": p.Percent,
+				"done":    p.Done,
+				"total":   p.Total,
+			})
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	okCount := 0
+	for _, r := range results {
+		if r.OK {
+			okCount++
+		}
+	}
+	runtime.EventsEmit(a.ctx, "image_search_log", fmt.Sprintf("Hoàn tất: %d/%d ảnh tải thành công → %s", okCount, len(results), outputDir))
+	runtime.EventsEmit(a.ctx, "image_download_done", map[string]interface{}{
+		"ok":        okCount,
+		"total":     len(results),
+		"outputDir": outputDir,
+	})
+	return results, nil
+}
+
+// CancelImageDownload hủy tải ảnh đang chạy.
+func (a *App) CancelImageDownload() {
+	a.imageDownloadMu.Lock()
+	defer a.imageDownloadMu.Unlock()
+	if a.imageDownloadCancel != nil {
+		a.imageDownloadCancel()
+		a.imageDownloadCancel = nil
+	}
+	runtime.EventsEmit(a.ctx, "image_search_log", "Đã hủy tải ảnh!")
+}
+
+// GetDefaultImageDownloadDir trả về thư mục mặc định lưu ảnh tải về.
+func (a *App) GetDefaultImageDownloadDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.TempDir()
+	}
+	dir := filepath.Join(home, "Pictures", "VideoSplitter_Images")
+	_ = os.MkdirAll(dir, 0755)
+	return dir
 }

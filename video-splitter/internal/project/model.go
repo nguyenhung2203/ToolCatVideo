@@ -161,7 +161,7 @@ type AnalyzerConfig struct {
 	ReviewMinScore   int           `json:"reviewMinScore"`   // Ngưỡng điểm tối thiểu để cần duyệt — mặc định 60
 	SilenceThreshold float64       `json:"silenceThreshold"` // Ngưỡng dB cho silence — mặc định -30
 	SilenceDuration  float64       `json:"silenceDuration"`  // Thời lượng tối thiểu silence (giây) — mặc định 0.5
-	ProxyFPS         int           `json:"proxyFPS"`         // FPS proxy video — mặc định 15
+	ProxyFPS         int           `json:"proxyFPS"`         // FPS proxy video — mặc định 4
 	Weights          SignalWeights `json:"weights"`          // Trọng số từng tín hiệu
 	ExportPreset     string        `json:"exportPreset"`     // FFmpeg preset (ultrafast/fast/medium) — mặc định "fast"
 	ExportCRF        int           `json:"exportCRF"`        // Chất lượng xuất (0-51, thấp = tốt hơn) — mặc định 23
@@ -196,12 +196,12 @@ func DefaultConfig() AnalyzerConfig {
 		Mode:             ModeSmart,
 		SceneThreshold:   26.0,
 		MinClipDuration:  5.0,
-		MaxClipDuration:  30.0,
+		MaxClipDuration:  60.0,
 		AutoAcceptScore:  60, // visual-only scene change (45 - 10 = 35) sẽ được xếp vào review candidate, không bị auto-accept tràn lan
 		ReviewMinScore:   35,
 		SilenceThreshold: -30,
 		SilenceDuration:  0.5,
-		ProxyFPS:         10,
+		ProxyFPS:         4,
 		Weights:          DefaultWeights(),
 		ExportPreset:     "fast",
 		ExportCRF:        23,

@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"video-splitter/internal/media"
 	"video-splitter/internal/project"
 	"video-splitter/internal/utils"
@@ -115,6 +114,7 @@ func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, 
 	// CommandContext để có thể hủy; Cancel kill cả cây tiến trình (worker + ffmpeg con)
 	cmd := exec.CommandContext(ctx, exePath, cmdArgs...)
 	utils.HideCmdWindow(cmd)
+	cmd.Env = append(os.Environ(), "PYTHONUTF8=1", "PYTHONIOENCODING=utf-8")
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil
@@ -303,26 +303,36 @@ func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, tot
 	})
 
 	// === BƯỚC 1.5: Snap boundary sang keyframe gần nhất (nếu biết sourcePath) ===
-	// Điều này đảm bảo điểm cắt nằm tại I-frame, giúp stream-copy không bị artifact
-	// (xanh lá, glitch) ở đầu clip. Chỉ snap khi lệch < 1s để giữ ý định phân tích.
-	if sourcePath != "" {
-		// Song song hóa keyframe snapping: chạy tối đa 8 lệnh ffprobe đồng thời
-		// thay vì tuần tự, giúp tăng tốc 5-8 lần cho video dài có nhiều điểm cắt.
-		var wg sync.WaitGroup
-		sem := make(chan struct{}, 8) // giới hạn 8 goroutine đồng thời
-		for i := range scored {
-			wg.Add(1)
-			go func(idx int) {
-				defer wg.Done()
-				sem <- struct{}{}        // lấy vé vào
-				defer func() { <-sem }() // trả vé ra
-				snapped := media.FindNearestKeyframe(sourcePath, scored[idx].timestamp)
-				if abs(snapped-scored[idx].timestamp) < 1.0 {
-					scored[idx].timestamp = snapped
+	// Mục đích: đảm bảo điểm cắt nằm tại I-frame để stream-copy không bị artifact.
+	// Quy tắc snap theo mode:
+	//   - fast:    snap tối đa 2.0s (độ chính xác thấp hơn, ưu tiên tốc độ xuất)
+	//   - smart:   snap tối đa 1.0s
+	//   - precise: KHÔNG snap — AI đã phát hiện chính xác đến mili-giây, giữ nguyên
+	snapLimit := 1.0
+	switch cfg.Mode {
+	case project.ModeFast:
+		snapLimit = 2.0
+	case project.ModePrecise:
+		snapLimit = 0.0 // tắt snap hoàn toàn cho precise
+	}
+
+	if sourcePath != "" && snapLimit > 0 {
+		if kf, err := media.LoadAllKeyframes(sourcePath); err == nil && len(kf) > 0 {
+			for i := range scored {
+				snapped := media.FindNearestKeyframeCached(kf, scored[i].timestamp)
+				if abs(snapped-scored[i].timestamp) < snapLimit {
+					scored[i].timestamp = snapped
 				}
-			}(i)
+			}
+		} else {
+			// Fallback nếu LoadAllKeyframes bị lỗi: dùng FindNearestKeyframe từng cái như cũ
+			for i := range scored {
+				snapped := media.FindNearestKeyframe(sourcePath, scored[i].timestamp)
+				if abs(snapped-scored[i].timestamp) < snapLimit {
+					scored[i].timestamp = snapped
+				}
+			}
 		}
-		wg.Wait()
 	}
 
 	// Lọc bỏ ranh giới quá gần đầu hoặc cuối video sau khi đã snap

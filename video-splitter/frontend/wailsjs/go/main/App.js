@@ -18,8 +18,16 @@ export function CancelExport() {
   return window['go']['main']['App']['CancelExport']();
 }
 
+export function CancelImageDownload() {
+  return window['go']['main']['App']['CancelImageDownload']();
+}
+
 export function DeleteProject(arg1) {
   return window['go']['main']['App']['DeleteProject'](arg1);
+}
+
+export function DownloadImages(arg1, arg2) {
+  return window['go']['main']['App']['DownloadImages'](arg1, arg2);
 }
 
 export function DownloadOnlineVideo(arg1, arg2, arg3, arg4, arg5) {
@@ -52,6 +60,10 @@ export function GetDefaultConfig() {
 
 export function GetDefaultDownloadDir() {
   return window['go']['main']['App']['GetDefaultDownloadDir']();
+}
+
+export function GetDefaultImageDownloadDir() {
+  return window['go']['main']['App']['GetDefaultImageDownloadDir']();
 }
 
 export function GetGlobalSettings() {
@@ -88,6 +100,10 @@ export function SaveGlobalSettings(arg1) {
 
 export function SaveProject(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveProject'](arg1, arg2, arg3);
+}
+
+export function SearchImages(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SearchImages'](arg1, arg2, arg3, arg4);
 }
 
 export function SelectAudioFile() {
