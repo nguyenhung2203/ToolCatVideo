@@ -169,7 +169,7 @@ const failedThumbs = ref<Set<string>>(new Set())
           <Loader2 v-if="isProbing" :size="14" class="spin-hourglass" />
           <Link2 v-else-if="downloadMode === 'link'" :size="14" />
           <Search v-else :size="14" />
-          {{ isProbing ? (downloadMode === 'link' ? 'Đang dò...' : 'Đang tìm...') : (downloadMode === 'link' ? 'Dò link' : 'Tìm kiếm') }}
+          {{ isProbing ? (downloadMode === 'link' ? 'Đang dò...' : 'Đang tìm...') : (downloadMode === 'link' ? 'Tìm Video' : 'Tìm kiếm') }}
         </button>
       </div>
     </div>
