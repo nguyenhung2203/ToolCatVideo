@@ -242,6 +242,11 @@ func runYtDlpProbe(ctx context.Context, rawURL string, cookieBrowser string, max
 			entryURL = rawURL
 		}
 
+		thumbnailURL := raw.Thumbnail
+		if thumbnailURL == "" && platform == "youtube" && raw.ID != "" {
+			thumbnailURL = fmt.Sprintf("https://i.ytimg.com/vi/%s/hqdefault.jpg", raw.ID)
+		}
+
 		entry := VideoEntry{
 			ID:         raw.ID,
 			URL:        entryURL,
@@ -250,7 +255,7 @@ func runYtDlpProbe(ctx context.Context, rawURL string, cookieBrowser string, max
 			ViewCount:  raw.ViewCount,
 			LikeCount:  raw.LikeCount,
 			UploadDate: raw.UploadDate,
-			Thumbnail:  raw.Thumbnail,
+			Thumbnail:  thumbnailURL,
 			Platform:   platform,
 		}
 		entries = append(entries, entry)

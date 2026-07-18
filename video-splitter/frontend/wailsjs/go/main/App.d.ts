@@ -28,6 +28,8 @@ export function ExportClips(arg1:string,arg2:string,arg3:Array<project.Clip>,arg
 
 export function ExtractClipFrames(arg1:string,arg2:number,arg3:number):Promise<Array<string>>;
 
+export function FetchImageAsBase64(arg1:string):Promise<string>;
+
 export function GenerateAIThumbnail(arg1:string,arg2:string,arg3:Array<string>,arg4:string,arg5:number,arg6:string,arg7:string):Promise<string>;
 
 export function GenerateThumbnail(arg1:string,arg2:number):Promise<string>;

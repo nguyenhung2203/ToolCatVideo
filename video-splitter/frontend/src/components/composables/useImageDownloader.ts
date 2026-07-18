@@ -199,7 +199,17 @@ export function useImageDownloader(
     } catch (_) { }
   }
 
-  // === Event Listeners ===
+  // === Remove selected images from results ===
+  function removeSelectedImages() {
+    if (!searchResult.value || selectedImageIds.value.size === 0) return
+    const toRemove = new Set(selectedImageIds.value)
+    searchResult.value = {
+      ...searchResult.value,
+      entries: searchResult.value.entries.filter(e => !toRemove.has(e.id)),
+    }
+    selectedImageIds.value = new Set()
+  }
+
   const initImageEvents = () => {
     EventsOn('image_search_log', (msg: string) => {
       addLog(msg)
@@ -262,5 +272,6 @@ export function useImageDownloader(
     cancelImageDl,
     pickImageDir,
     initImageEvents,
+    removeSelectedImages,
   }
 }

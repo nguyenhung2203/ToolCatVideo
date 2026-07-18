@@ -7,6 +7,16 @@ import { useTheme } from '../ui-system/composables/useTheme'
 import BaseDropdown from './common/BaseDropdown.vue'
 import VideoDownloader from './VideoDownloader.vue'
 import ImageDownloader from './ImageDownloader.vue'
+import {
+  Video, Scissors, Download, Settings, Sun, Moon, History, Save,
+  Plus, Trash2, Trash, RefreshCw, X, Check, ChevronDown, ChevronUp,
+  Play, Square, Pause, RotateCcw, Copy, FolderOpen, Music,
+  Image as ImageIcon, Type, Layers, Zap, AlertTriangle, Info,
+  Clock, Film, Monitor, Loader2, ArrowRight, Upload, BarChart2,
+  Sparkles, Tag, FileVideo, ListVideo, LayoutGrid, SlidersHorizontal,
+  Cpu, FlipHorizontal2, Timer, Volume2, VolumeX, Repeat,
+  Star, Pencil, Move
+} from 'lucide-vue-next'
 
 const { isDark, toggleColorScheme } = useTheme()
 
@@ -2310,7 +2320,7 @@ const formatSize = (bytes: number) => {
     <!-- Navbar / Header trên cùng -->
     <header class="header">
       <div class="header-left">
-        <svg class="header-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+        <Video class="header-icon" :size="26" />
         <h1>Smart Splitter</h1>
         
         <!-- Bảng chọn dự án -->
@@ -2319,12 +2329,12 @@ const formatSize = (bytes: number) => {
           <select :disabled="isAnalyzing || isExporting" :value="activeProjectId" @change="e => loadProject((e.target as HTMLSelectElement).value)" class="project-dropdown">
             <option v-for="p in namedProjects" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
-          <button :disabled="isAnalyzing || isExporting" @click="openCreateProject" class="btn-create-proj-mini flex-center" title="Tạo dự án mới" style="display:inline-flex; align-items:center; gap:3px;">
-            <svg viewBox="0 0 24 24" width="11" height="11"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          <button :disabled="isAnalyzing || isExporting" @click="openCreateProject" class="btn-create-proj-mini flex-center" title="Tạo dự án mới">
+            <Plus :size="11" />
             Mới
           </button>
-          <button :disabled="isAnalyzing || isExporting" @click="openManageProjects" class="btn-manage-proj-mini flex-center" title="Quản lý dự án" style="display:inline-flex; align-items:center; gap:3px;">
-            <svg viewBox="0 0 24 24" width="11" height="11"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+          <button :disabled="isAnalyzing || isExporting" @click="openManageProjects" class="btn-manage-proj-mini flex-center" title="Quản lý dự án">
+            <Settings :size="11" />
             Quản lý
           </button>
         </div>
@@ -2333,36 +2343,36 @@ const formatSize = (bytes: number) => {
         <!-- Menu chọn chức năng chính (Segmented tabs cực đẹp) -->
         <div class="nav-segmented-control">
           <button class="nav-segment-btn" :class="{ active: activeView === 'split' }" @click="activeView = 'split'">
-            🎬 Cắt Video
+            <Scissors :size="13" /> Cắt Video
           </button>
           <button class="nav-segment-btn" :class="{ active: activeView === 'download-video' }" @click="activeView = 'download-video'">
-            📥 Tải Video
+            <Download :size="13" /> Tải Video
           </button>
           <button class="nav-segment-btn" :class="{ active: activeView === 'download-image' }" @click="activeView = 'download-image'">
-            🖼️ Tải Ảnh
+            <ImageIcon :size="13" /> Tải Ảnh
           </button>
         </div>
 
  
         <!-- Mở dự án gần đây -->
         <button :disabled="isAnalyzing || isExporting" @click="openRecentProjects" class="icon-btn-circle" title="Project đã lưu">
-          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.97 8.97 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
+          <History :size="20" />
         </button>
- 
+
         <!-- Lưu dự án -->
         <button :disabled="isAnalyzing || isExporting" @click="saveProject" class="icon-btn-circle" title="Lưu phiên làm việc" v-if="activeClips.length > 0">
-          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
+          <Save :size="20" />
         </button>
  
         <!-- Nút chuyển chế độ Sáng/Tối -->
         <button @click="toggleColorScheme" class="icon-btn-circle theme-toggle-btn" :title="isDark ? 'Chuyển sang giao diện Sáng' : 'Chuyển sang giao diện Tối'">
-          <svg v-if="isDark" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--wx-brand-accent);"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-          <svg v-else viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--wx-brand-primary);"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+          <Sun v-if="isDark" :size="20" style="color: var(--wx-brand-accent);" />
+          <Moon v-else :size="20" style="color: var(--wx-brand-primary);" />
         </button>
- 
+
         <!-- Nút Cài đặt chung -->
         <button :disabled="isAnalyzing || isExporting" @click="showSettings = true" class="icon-btn-circle" title="Cài đặt chung">
-          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+          <Settings :size="20" />
         </button>
 
       </div>
@@ -2396,23 +2406,23 @@ const formatSize = (bytes: number) => {
 
           <div class="title-right-actions" style="display: flex; align-items: center; gap: 8px;">
             <!-- Nút chọn video gốc (bên phải) -->
-            <button :disabled="isAnalyzing || isExporting" @click="handleSelectFiles" class="btn select-btn flex-center" style="padding: 5px 12px; font-size: 11px; font-weight: 700; gap: 4px; border-radius: 6px; border: 1px solid var(--accent-color); background: rgba(6,182,212,0.06); color: var(--accent-color); cursor: pointer; transition: all 0.2s; height: 28px; box-sizing: border-box;">
-              <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+            <button :disabled="isAnalyzing || isExporting" @click="handleSelectFiles" class="btn select-btn flex-center">
+              <Plus :size="12" />
               Chọn Video Gốc
             </button>
 
             <!-- Nút Bắt Đầu Cắt Tự Động / Dừng Ngay (bên phải) -->
-            <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0 || isExporting" @click="analyzeAll" class="btn start-btn flex-center font-bold" style="padding: 5px 14px; font-size: 11px; font-weight: 700; gap: 4px; border-radius: 6px; border: none; background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color: white; cursor: pointer; transition: all 0.2s; height: 28px; box-sizing: border-box; box-shadow: 0 2px 6px rgba(2, 132, 199, 0.2); display: inline-flex; align-items: center; justify-content: center;">
+            <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0 || isExporting" @click="analyzeAll" class="btn btn-analyze flex-center font-bold">
               <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
               Cắt Video
             </button>
-            <button v-else @click="cancelCurrentAnalysis" class="btn stop-analyze-btn flex-center font-bold" style="padding: 5px 14px; font-size: 11px; font-weight: 700; gap: 4px; border-radius: 6px; border: none; background: #ef4444; color: white; cursor: pointer; transition: all 0.2s; height: 28px; box-sizing: border-box; box-shadow: 0 2px 6px rgba(239, 68, 68, 0.25); display: inline-flex; align-items: center; justify-content: center;">
+            <button v-else @click="cancelCurrentAnalysis" class="btn stop-analyze-btn flex-center font-bold">
               <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
               Dừng Ngay ({{ processedVideosCount }}/{{ totalVideosCount }})
             </button>
 
             <!-- Nút Chỉ Xuất Video Gốc (Không Cắt) -->
-            <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0 || isExporting" @click="exportWithoutSplitting" class="btn export-direct-btn flex-center font-bold" style="padding: 5px 14px; font-size: 11px; font-weight: 700; gap: 4px; border-radius: 6px; border: none; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; cursor: pointer; transition: all 0.2s; height: 28px; box-sizing: border-box; box-shadow: 0 2px 6px rgba(16, 185, 129, 0.2); display: inline-flex; align-items: center; justify-content: center;" title="Xuất trực tiếp các video gốc đang chọn (áp dụng cấu hình hiệu ứng/tốc độ ở bên trái, không cắt nhỏ)">
+            <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0 || isExporting" @click="exportWithoutSplitting" class="btn btn-export-direct flex-center font-bold" title="Xuất trực tiếp các video gốc đang chọn (áp dụng cấu hình hiệu ứng/tốc độ ở bên trái, không cắt nhỏ)">
               <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2v9.67z"/></svg>
               Xuất Video
             </button>
@@ -2432,20 +2442,17 @@ const formatSize = (bytes: number) => {
               </label>
               
               <div class="video-card-icon">
-                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+                <FileVideo :size="16" />
               </div>
               
               <span class="video-card-name">{{ path.split('\\').pop() }}</span>
               
-              <span class="status-badge-compact done" v-if="clipsMap[path] && clipsMap[path].length > 0" :title="`Đã quét ${clipsMap[path].length} clip`">
-                <svg viewBox="0 0 24 24" width="10" height="10" style="display:inline-block; vertical-align:middle; margin-right:2px;"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-                {{ clipsMap[path].length }}
-              </span>
-              <span class="status-badge-compact pending" v-else title="Chờ quét phân đoạn">
-                <svg viewBox="0 0 24 24" width="10" height="10" class="spin-hourglass" style="display:inline-block; vertical-align:middle;"><path fill="currentColor" d="M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5l-4-4V4h8v3.5l-4 4z"/></svg>
-              </span>
+              <span class="status-dot dot-green" v-if="clipsMap[path] && clipsMap[path].length > 0" :title="`Đã cắt ${clipsMap[path].length} clip`"></span>
+              <span class="status-dot dot-red" v-else title="Chưa cắt"></span>
 
-              <button class="btn-remove-video" @click.stop="removeVideo(index)" title="Xóa video khỏi dự án" :disabled="isAnalyzing || isExporting" :style="isAnalyzing || isExporting ? { opacity: 0.4, pointerEvents: 'none' } : {}">✕</button>
+              <button class="btn-remove-video" @click.stop="removeVideo(index)" title="Xóa video khỏi dự án" :disabled="isAnalyzing || isExporting" :style="isAnalyzing || isExporting ? { opacity: 0.4, pointerEvents: 'none' } : {}">
+                <X :size="10" />
+              </button>
             </div>
 
             <!-- Tiến trình quét -->
@@ -2459,9 +2466,9 @@ const formatSize = (bytes: number) => {
         </div>
         <div class="empty-videos-placeholder" v-else>
           <div class="placeholder-content" style="display:flex; flex-direction:column; align-items:center; gap:10px; padding: 30px; text-align:center;">
-            <svg viewBox="0 0 24 24" width="36" height="36" style="opacity: 0.3; color: var(--accent-color);"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+            <FileVideo :size="36" style="opacity: 0.3; color: var(--accent-color);" />
             <span style="font-size: 13px; color: var(--l-text-muted);">Chưa có video gốc nào trong dự án.</span>
-            <button @click="handleSelectFiles" class="btn select-btn flex-center" style="padding: 8px 18px; font-size: 12.5px; font-weight: 700; border-radius: 8px; border: 1px solid var(--accent-color); background: rgba(6,182,212,0.1); color: var(--accent-color); cursor: pointer; transition: all 0.2s;">
+            <button @click="handleSelectFiles" class="btn select-btn flex-center">
               Chọn Video Gốc
             </button>
           </div>
@@ -2472,9 +2479,9 @@ const formatSize = (bytes: number) => {
       <section class="section-middle-workspace">
         <!-- Bên Trái: Bảng Cấu Hình Dự Án (Cắt & Sửa) -->
         <div class="project-settings-panel" :class="{ 'panel-disabled': isAnalyzing || isExporting }">
-          <div class="settings-section-header" style="margin-bottom: 6px; display:flex; align-items:center; gap:6px;">
-            <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--accent-color);"><path fill="currentColor" d="M19.07 4.93l-1.41 1.41 1.41 1.41c1.17 1.17 1.17 3.07 0 4.24s-3.07 1.17-4.24 0L12 9.17l-2.83 2.83c-1.17 1.17-3.07 1.17-4.24 0s-1.17-3.07 0-4.24l1.41-1.41-1.41-1.41c-2.34 2.34-2.34 6.14 0 8.49L7.76 16l-2.83 2.83c-1.17 1.17-1.17 3.07 0 4.24s3.07 1.17 4.24 0L12 20.24l2.83 2.83c1.17 1.17 3.07 1.17 4.24 0s1.17-3.07 0-4.24L16.24 16l2.83-2.83c2.34-2.34 2.34-6.14 0-8.49z"/></svg>
-            <h3 style="margin: 0; font-size: 13.5px; font-weight: 800; color: var(--accent-color); text-transform: uppercase;">Cấu hình cắt</h3>
+          <div class="settings-section-header" style="margin-bottom: 6px;">
+            <Scissors :size="14" style="color:var(--accent-color);" />
+            <h3>Cấu hình cắt</h3>
           </div>
           
           <div class="compact-settings-group-list">
@@ -2549,9 +2556,9 @@ const formatSize = (bytes: number) => {
           <div style="border-bottom: 1px solid var(--border-color); margin: 6px 0;"></div>
 
           <!-- Phần 2: Cấu hình chỉnh sửa -->
-          <div class="settings-section-header" style="margin-bottom: 6px; display:flex; align-items:center; gap:6px;">
-            <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--accent-color);"><path fill="currentColor" d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-2z"/></svg>
-            <h3 style="margin: 0; font-size: 13.5px; font-weight: 800; color: var(--accent-color); text-transform: uppercase;">Cấu hình sửa</h3>
+          <div class="settings-section-header" style="margin-bottom: 6px;">
+            <Film :size="14" style="color:var(--accent-color);" />
+            <h3>Cấu hình sửa</h3>
           </div>
 
           <div class="remix-options-grid-compact">
@@ -2730,20 +2737,6 @@ const formatSize = (bytes: number) => {
               <span>Chọn một video để xem trước</span>
             </div>
 
-            <!-- Lớp phủ khi đang phân tích AI -->
-            <div class="analysis-overlay" v-if="activeAnalyzingPaths.has(activeVideoPath)">
-              <div class="overlay-card">
-                <div class="spinner"></div>
-                <h4>Đang tự động cắt: <span class="processing-name-tag">{{ activeProcessingVideoName }}</span></h4>
-                <div class="progress-label flex-between" style="width: 100%;">
-                  <span>Tiến trình: <strong style="color: var(--accent-color); margin-left: 4px;">{{ getAnalyzeETA(activeVideoPath) }}</strong></span>
-                  <span>{{ Math.round(displayProgressMap[activeVideoPath] || 0) }}%</span>
-                </div>
-                <div class="progress-container">
-                  <div class="progress-bar" :style="{ width: (displayProgressMap[activeVideoPath] || 0) + '%' }"></div>
-                </div>
-              </div>
-            </div>
           </div>
 
           <!-- Timeline phân đoạn -->
@@ -2778,8 +2771,8 @@ const formatSize = (bytes: number) => {
           </div>
 
           <!-- Trình ghép nhạc nền & Lặp nhạc (Tối ưu hóa không gian) -->
-          <div class="music-merging-panel" v-if="videoPaths.length > 0" :class="{ 'panel-disabled': isAnalyzing || isExporting }" style="margin-top: 15px; background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255,255,255,0.06); padding: 16px; border-radius: 12px; backdrop-filter: blur(8px);">
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+          <div class="music-merging-panel" v-if="videoPaths.length > 0" :class="{ 'panel-disabled': isAnalyzing || isExporting }" style="margin-top: 8px; background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255,255,255,0.06); padding: 10px 14px; border-radius: 10px; backdrop-filter: blur(8px);">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
               <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
                 <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--wx-brand-accent); display: flex; align-items: center; gap: 8px;">
                   🎵 Trình Ghép Nhạc Nền & Lặp Nhạc (Áp dụng hàng loạt)
@@ -3011,14 +3004,11 @@ const formatSize = (bytes: number) => {
       </template>
 
       <!-- BỐ CỤC CHO PHẦN TẢI VIDEO ONLINE INLINE -->
-      <template v-else-if="activeView === 'download-video'">
-        <VideoDownloader :video-paths="videoPaths" :show-toast="showToast" @back="activeView = 'split'" />
-      </template>
+      <VideoDownloader v-show="activeView === 'download-video'" :video-paths="videoPaths" :show-toast="showToast" @back="activeView = 'split'" />
 
       <!-- BỐ CỤC CHO PHẦN TẢI ẢNH CHỦ ĐỀ INLINE -->
-      <template v-else-if="activeView === 'download-image'">
-        <ImageDownloader :show-toast="showToast" @back="activeView = 'split'" />
-      </template>
+      <ImageDownloader v-show="activeView === 'download-image'" :show-toast="showToast" @back="activeView = 'split'" />
+
     </div>
 
     <!-- Thanh trạng thái CapCut-style dưới đáy -->

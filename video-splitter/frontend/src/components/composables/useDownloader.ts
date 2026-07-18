@@ -1,4 +1,4 @@
-import { ref, computed, type Ref } from 'vue'
+import { ref, computed, watch, type Ref } from 'vue'
 import { ProbeOnlineURL, DownloadOnlineVideos, CancelDownload, GetDefaultDownloadDir, SelectFolder } from '../../../wailsjs/go/main/App'
 import { downloader } from '../../../wailsjs/go/models'
 import { EventsOn } from '../../../wailsjs/runtime/runtime'
@@ -35,6 +35,17 @@ export function useDownloader(
   const isDownloading = ref(false)
   const probeResult = ref<downloader.URLProbeResult | null>(null)
   const downloadDir = ref('')
+
+  // Tự động nhận diện loại downloadMode từ nội dung input
+  watch(downloadUrl, (newVal) => {
+    const val = newVal.trim()
+    if (!val) {
+      downloadMode.value = 'link'
+      return
+    }
+    const isUrl = val.startsWith('http://') || val.startsWith('https://') || val.includes('.') && !val.includes(' ')
+    downloadMode.value = isUrl ? 'link' : 'search'
+  })
   const cookieBrowser = ref('')
   const dlSelectedIds = ref<Set<string>>(new Set())
   const dlSortBy = ref<'views' | 'likes' | 'date' | 'duration'>('views')
@@ -277,6 +288,17 @@ export function useDownloader(
     })
   }
 
+  // === Remove selected entries from results ===
+  function removeSelectedEntries() {
+    if (!probeResult.value || dlSelectedIds.value.size === 0) return
+    const toRemove = new Set(dlSelectedIds.value)
+    probeResult.value = {
+      ...probeResult.value,
+      entries: probeResult.value.entries.filter((e: any) => !toRemove.has(e.id)),
+    }
+    dlSelectedIds.value = new Set()
+  }
+
   return {
     // State
     showDownloadPanel,
@@ -316,5 +338,6 @@ export function useDownloader(
     addDownloadedToProject,
     initDownloadEvents,
     copyToClipboard,
+    removeSelectedEntries,
   }
 }

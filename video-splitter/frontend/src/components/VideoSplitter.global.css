@@ -15,24 +15,24 @@
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 18, 30, 0.35);
+  background: var(--wx-surface-overlay, color-mix(in srgb, #0f121e 35%, transparent));
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 9000;
-  animation: fadeIn 0.2s ease;
+  z-index: var(--wx-z-modal, 9000);
+  animation: fadeIn var(--wx-d-fast, 150ms) var(--wx-ease-decelerate, ease);
 }
 .settings-modal {
   background: var(--l-bg);
   border: 1px solid var(--l-border);
-  border-radius: 16px;
+  border-radius: var(--wx-radius-xl, 16px);
   width: 560px;
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 24px 60px rgba(15, 18, 30, 0.25);
-  animation: modalSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: var(--wx-shadow-2xl);
+  animation: modalSlideIn var(--wx-d-normal, 250ms) var(--wx-ease-decelerate, cubic-bezier(0.16, 1, 0.3, 1));
   color: var(--l-text);
 }
 .modal-header {
@@ -56,11 +56,11 @@
   cursor: pointer;
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--wx-radius-md, 8px);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s;
+  transition: all var(--wx-d-fast, 150ms) var(--wx-ease-standard, ease);
 }
 .modal-close:hover {
   background: var(--l-bg-sunken);
@@ -89,9 +89,9 @@
 }
 .mode-name em {
   font-style: normal;
-  font-weight: 600;
-  font-size: 10.5px;
-  color: #6366f1;
+  font-weight: var(--wx-fw-semibold, 600);
+  font-size: var(--wx-fs-12, 10.5px);
+  color: var(--wx-brand-primary);
 }
 .group-title {
   font-size: 13px;
@@ -116,20 +116,20 @@
 .mode-option {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
+  gap: var(--wx-space-2, 10px);
+  padding: var(--wx-space-3, 12px) var(--wx-space-3, 14px);
   border: 1px solid var(--l-border);
-  border-radius: 10px;
+  border-radius: var(--wx-radius-lg, 10px);
   cursor: pointer;
   background: var(--l-bg-soft);
-  transition: all 0.2s;
+  transition: all var(--wx-d-fast, 150ms) var(--wx-ease-standard, ease);
 }
 .mode-option:hover {
-  border-color: #b9bdc9;
+  border-color: var(--wx-border-subtle);
 }
 .mode-option.active {
   border-color: var(--l-accent);
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--wx-brand-primary) 8%, transparent);
 }
 .mode-option input[type="radio"] {
   accent-color: var(--l-accent);
@@ -186,7 +186,7 @@
 .input-with-unit input:focus {
   border-color: var(--l-accent);
   outline: none;
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--wx-brand-primary) 15%, transparent);
 }
 .unit {
   font-size: 11px;
@@ -212,59 +212,59 @@
   background: transparent;
   border: 1px solid var(--l-border);
   color: var(--l-text-muted);
-  padding: 8px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
+  padding: var(--wx-space-2, 8px) var(--wx-space-4, 16px);
+  border-radius: var(--wx-radius-md, 8px);
+  font-size: var(--wx-fs-13, 13px);
+  font-weight: var(--wx-fw-semibold, 600);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--wx-d-fast, 150ms) var(--wx-ease-standard, ease);
 }
 .reset-btn:hover {
   background: var(--l-bg-sunken);
-  border-color: #b9bdc9;
+  border-color: var(--wx-border-subtle);
   color: var(--l-text);
 }
 .save-btn {
-  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  background: var(--wx-gradient-button, var(--wx-brand-primary));
   border: none;
-  color: white;
-  padding: 8px 24px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
+  color: var(--wx-text-inverse, white);
+  padding: var(--wx-space-2, 8px) var(--wx-space-5, 24px);
+  border-radius: var(--wx-radius-md, 8px);
+  font-size: var(--wx-fs-13, 13px);
+  font-weight: var(--wx-fw-semibold, 600);
   cursor: pointer;
-  transition: all 0.2s;
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
+  transition: all var(--wx-d-fast, 150ms) var(--wx-ease-standard, ease);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--wx-brand-primary) 25%, transparent);
 }
 .save-btn:hover {
-  background: linear-gradient(135deg, #818cf8, #6366f1);
+  filter: brightness(1.1);
 }
 .settings-btn {
   background: transparent !important;
-  border: 1px solid #d1d5db !important;
-  padding: 8px !important;
-  border-radius: 8px !important;
-  color: #6b7280 !important;
+  border: 1px solid var(--wx-border-default) !important;
+  padding: var(--wx-space-2, 8px) !important;
+  border-radius: var(--wx-radius-md, 8px) !important;
+  color: var(--wx-text-muted) !important;
   cursor: pointer !important;
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
   box-shadow: none !important;
-  transition: all 0.2s !important;
+  transition: all var(--wx-d-fast, 150ms) var(--wx-ease-standard, ease) !important;
 }
 .settings-btn:hover {
-  border-color: #6366f1 !important;
-  color: #6366f1 !important;
-  background: rgba(99, 102, 241, 0.06) !important;
+  border-color: var(--wx-brand-primary) !important;
+  color: var(--wx-brand-primary) !important;
+  background: color-mix(in srgb, var(--wx-brand-primary) 6%, transparent) !important;
 }
 
 @keyframes fadeIn {
   from { opacity: 0; }
-  to { opacity: 1; }
+  to   { opacity: 1; }
 }
 @keyframes modalSlideIn {
-  from { opacity: 0; transform: scale(0.95) translateY(10px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
+  from { opacity: 0; transform: scale(0.94) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 /* Recent Projects Modal */
@@ -296,15 +296,15 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: var(--wx-space-3, 12px);
+  padding: var(--wx-space-3, 12px) var(--wx-space-3, 14px);
   background: var(--l-bg-soft);
   border: 1px solid var(--l-border);
-  border-radius: 10px;
-  transition: border-color 0.2s;
+  border-radius: var(--wx-radius-lg, 10px);
+  transition: border-color var(--wx-d-fast, 150ms) var(--wx-ease-standard, ease);
 }
 .recent-item:hover {
-  border-color: #b9bdc9;
+  border-color: var(--wx-border-subtle);
 }
 .recent-info {
   flex: 1;
@@ -333,27 +333,27 @@
 }
 .btn-mini {
   border: none;
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
+  border-radius: var(--wx-radius-md, 6px);
+  padding: var(--wx-space-1, 6px) var(--wx-space-3, 12px);
+  font-size: var(--wx-fs-12, 12px);
+  font-weight: var(--wx-fw-semibold, 600);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--wx-d-fast, 150ms) var(--wx-ease-standard, ease);
 }
 .btn-mini.open {
-  background: #6366f1;
-  color: #fff;
+  background: var(--wx-brand-primary);
+  color: var(--wx-text-inverse);
 }
 .btn-mini.open:hover {
-  background: #4f46e5;
+  filter: brightness(1.1);
 }
 .btn-mini.del {
-  background: var(--l-bg-sunken);
-  color: #ef4444;
+  background: var(--wx-danger-bg);
+  color: var(--wx-danger-text);
 }
 .btn-mini.del:hover {
-  background: #ef4444;
-  color: #fff;
+  background: var(--wx-danger-solid);
+  color: var(--wx-text-inverse);
 }
 
 /* Edit clip modal */
@@ -373,7 +373,7 @@
 .toggle-row input {
   width: 16px;
   height: 16px;
-  accent-color: #6366f1;
+  accent-color: var(--wx-brand-primary);
   cursor: pointer;
 }
 .toggle-row.inline {
@@ -497,13 +497,13 @@
   margin-top: 8px;
 }
 .summary-chip {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 3px 10px;
-  border-radius: 12px;
-  background: rgba(99, 102, 241, 0.1);
-  color: #4f46e5;
-  border: 1px solid rgba(99, 102, 241, 0.25);
+  font-size: var(--wx-fs-12, 11px);
+  font-weight: var(--wx-fw-bold, 700);
+  padding: 3px var(--wx-space-2, 10px);
+  border-radius: var(--wx-radius-full, 12px);
+  background: color-mix(in srgb, var(--wx-brand-primary) 10%, transparent);
+  color: var(--wx-brand-primary);
+  border: 1px solid color-mix(in srgb, var(--wx-brand-primary) 25%, transparent);
 }
 .summary-empty {
   font-size: 12px;
@@ -531,33 +531,34 @@
   margin: 0;
 }
 .mini-add-btn {
-  background: rgba(99, 102, 241, 0.1);
-  color: #4f46e5;
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
+  background: color-mix(in srgb, var(--wx-brand-primary) 10%, transparent);
+  color: var(--wx-brand-primary);
+  border: 1px solid color-mix(in srgb, var(--wx-brand-primary) 30%, transparent);
+  border-radius: var(--wx-radius-md, 6px);
+  padding: var(--wx-space-1, 6px) var(--wx-space-3, 12px);
+  font-size: var(--wx-fs-12, 12px);
+  font-weight: var(--wx-fw-semibold, 600);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--wx-d-fast, 150ms) var(--wx-ease-standard, ease);
 }
 .mini-add-btn:hover {
-  background: rgba(99, 102, 241, 0.18);
+  background: color-mix(in srgb, var(--wx-brand-primary) 18%, transparent);
 }
 .mini-del-btn {
-  background: var(--l-bg-sunken);
-  color: #ef4444;
+  background: var(--wx-danger-bg);
+  color: var(--wx-danger-text);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--wx-radius-md, 6px);
   width: 26px;
   height: 26px;
-  font-size: 13px;
+  font-size: var(--wx-fs-13, 13px);
   cursor: pointer;
   flex-shrink: 0;
+  transition: all var(--wx-d-fast, 150ms) var(--wx-ease-standard, ease);
 }
 .mini-del-btn:hover {
-  background: #ef4444;
-  color: #fff;
+  background: var(--wx-danger-solid);
+  color: var(--wx-text-inverse);
 }
 .group-empty {
   font-size: 12px;
@@ -614,12 +615,12 @@
 
 /* ====== DOWNLOAD ONLINE VIDEO MODAL ====== */
 .dl-online-btn {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+  background: var(--wx-gradient-button, var(--wx-brand-primary)) !important;
   border: none !important;
 }
 .dl-online-btn:hover {
-  background: linear-gradient(135deg, #818cf8, #a78bfa) !important;
-  box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4) !important;
+  filter: brightness(1.1) !important;
+  box-shadow: 0 4px 15px color-mix(in srgb, var(--wx-brand-primary) 40%, transparent) !important;
 }
 
 .dl-modal {
@@ -649,19 +650,19 @@
   box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
 }
 .dl-probe-btn {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
-  color: white !important;
+  background: var(--wx-gradient-button, var(--wx-brand-primary)) !important;
+  color: var(--wx-text-inverse, white) !important;
   border: none !important;
-  padding: 8px 18px;
-  border-radius: 8px;
-  font-weight: 600;
-  font-size: 13px;
+  padding: var(--wx-space-2, 8px) var(--wx-space-4, 18px);
+  border-radius: var(--wx-radius-md, 8px);
+  font-weight: var(--wx-fw-semibold, 600);
+  font-size: var(--wx-fs-13, 13px);
   cursor: pointer;
   white-space: nowrap;
-  transition: all 0.2s;
+  transition: all var(--wx-d-fast, 150ms) var(--wx-ease-standard, ease);
 }
 .dl-probe-btn:hover:not(:disabled) {
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--wx-brand-primary) 40%, transparent);
   transform: translateY(-1px);
 }
 .dl-probe-btn:disabled {
