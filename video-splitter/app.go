@@ -97,16 +97,25 @@ func (a *App) startup(ctx context.Context) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err == nil {
 		a.streamPort = listener.Addr().(*net.TCPAddr).Port
+		fmt.Printf("[Stream Server] Khởi chạy thành công trên cổng: %d | Token: %s\n", a.streamPort, a.streamToken)
 		go func() {
 			mux := http.NewServeMux()
 			mux.HandleFunc("/stream", func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Access-Control-Allow-Origin", "*")
-				if r.URL.Query().Get("token") != a.streamToken {
+				reqToken := r.URL.Query().Get("token")
+				filePath := r.URL.Query().Get("path")
+				fmt.Printf("[Stream Server] Nhận yêu cầu: path=%s | token=%s (Server Token=%s)\n", filePath, reqToken, a.streamToken)
+				if reqToken != a.streamToken {
+					fmt.Println("[Stream Server] LỖI: Token bảo mật không khớp!")
 					http.Error(w, "forbidden", http.StatusForbidden)
 					return
 				}
-				filePath := r.URL.Query().Get("path")
 				if filePath != "" {
+					if _, errStat := os.Stat(filePath); errStat != nil {
+						fmt.Printf("[Stream Server] LỖI: File không tồn tại hoặc không đọc được: %v\n", errStat)
+					} else {
+						fmt.Println("[Stream Server] Phục vụ file thành công.")
+					}
 					http.ServeFile(w, r, filePath)
 				}
 			})
