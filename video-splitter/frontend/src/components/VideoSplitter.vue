@@ -2733,7 +2733,9 @@ const formatSize = (bytes: number) => {
             
             <video v-if="activeVideoSrc" ref="videoPlayer" :src="computedVideoSrc" controls class="video-player-mini" @timeupdate="onVideoTimeUpdate"></video>
             <div class="empty-player-screen" v-else>
-              <div class="player-emoji">📺</div>
+              <div class="player-emoji">
+                <Monitor :size="40" style="color: var(--text-muted);" />
+              </div>
               <span>Chọn một video để xem trước</span>
             </div>
 
@@ -2774,24 +2776,29 @@ const formatSize = (bytes: number) => {
           <div class="music-merging-panel" v-if="videoPaths.length > 0" :class="{ 'panel-disabled': isAnalyzing || isExporting }" style="margin-top: 8px; background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255,255,255,0.06); padding: 10px 14px; border-radius: 10px; backdrop-filter: blur(8px);">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
               <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-                <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--wx-brand-accent); display: flex; align-items: center; gap: 8px;">
-                  🎵 Trình Ghép Nhạc Nền & Lặp Nhạc (Áp dụng hàng loạt)
+                <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--wx-brand-accent); display: flex; align-items: center; gap: 6px;">
+                  <Music :size="15" />
+                  Trình Ghép Nhạc Nền & Lặp Nhạc (Áp dụng hàng loạt)
                 </h3>
                 <button @click="pickGlobalMusic" class="btn active-btn" style="font-size: 11.5px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; cursor: pointer; border: none; font-weight: 600;">
-                  ➕ Thêm nhạc nền
+                  <Plus :size="13" />
+                  Thêm nhạc nền
                 </button>
-                <button v-if="globalRemix.musicTracks && globalRemix.musicTracks.length > 0" @click="clearGlobalMusic" class="btn cancel-btn" style="font-size: 11.5px; padding: 5px 12px; border-radius: 6px; cursor: pointer; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); color: var(--l-text-muted);">
-                  ✕ Xóa tất cả
+                <button v-if="globalRemix.musicTracks && globalRemix.musicTracks.length > 0" @click="clearGlobalMusic" class="btn cancel-btn" style="font-size: 11.5px; padding: 5px 12px; border-radius: 6px; cursor: pointer; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); color: var(--l-text-muted); display: inline-flex; align-items: center; gap: 4px;">
+                  <X :size="12" />
+                  Xóa tất cả
                 </button>
               </div>
               <div style="display: flex; gap: 16px; font-size: 12.5px; align-items: center;">
                 <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--l-text);">
                   <input type="checkbox" v-model="globalRemix.muteOriginal" style="width: 15px; height: 15px; border-radius: 4px;" />
-                  <span>🔇 Tắt tiếng gốc</span>
+                  <VolumeX :size="14" style="color: var(--text-muted);" />
+                  <span>Tắt tiếng gốc</span>
                 </label>
                 <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--l-text);">
                   <input type="checkbox" v-model="globalRemix.musicLoop" style="width: 15px; height: 15px; border-radius: 4px;" />
-                  <span>🔁 Tự động lặp lại nhạc</span>
+                  <Repeat :size="14" style="color: var(--wx-brand-accent);" />
+                  <span>Tự động lặp lại nhạc</span>
                 </label>
               </div>
             </div>
@@ -2831,7 +2838,10 @@ const formatSize = (bytes: number) => {
       <section class="section-bottom-clips" :class="{ 'panel-disabled': isAnalyzing || isExporting }" :style="{ paddingBottom: selectedClips.size > 0 ? '100px' : '16px' }">
         <div class="section-title-bar-clips">
           <div class="title-left-clips">
-            <h2>✂️ Danh sách Video Đã Cắt</h2>
+            <h2 style="display: flex; align-items: center; gap: 6px;">
+              <Scissors :size="18" style="color: var(--wx-brand-accent);" />
+              Danh sách Video Đã Cắt
+            </h2>
             <span class="clips-counter" v-if="displayClipsCount > 0">
               ({{ displayClipsCount }} đoạn tìm thấy<template v-if="isMultiVideoDisplay"> từ {{ selectedVideos.size }} video</template>)
             </span>
@@ -2863,19 +2873,25 @@ const formatSize = (bytes: number) => {
                   <span class="status-dot done" v-if="clip.status === 'completed'" title="Đã xuất"></span>
                   <span class="status-dot pending" v-else title="Chờ xuất"></span>
                 </div>
-                <span class="clip-duration-tag">⏱ {{ formatTime(clip.endTime - clip.startTime) }}</span>
+                <span class="clip-duration-tag" style="display: inline-flex; align-items: center; gap: 4px;">
+                  <Clock :size="12" />
+                  {{ formatTime(clip.endTime - clip.startTime) }}
+                </span>
               </div>
 
               <!-- Tên video nguồn — chỉ hiện khi đang xem nhiều video -->
-              <div class="clip-source-video-tag" v-if="isMultiVideoDisplay && clip._videoName" :title="clip._videoPath">
-                📹 {{ clip._videoName.length > 30 ? clip._videoName.substring(0, 30) + '...' : clip._videoName }}
+              <div class="clip-source-video-tag" v-if="isMultiVideoDisplay && clip._videoName" :title="clip._videoPath" style="display: flex; align-items: center; gap: 4px;">
+                <Video :size="12" />
+                {{ clip._videoName.length > 30 ? clip._videoName.substring(0, 30) + '...' : clip._videoName }}
               </div>
 
               <!-- Hình đại diện của clip ngắn -->
               <div class="clip-thumbs-section" v-if="clip.thumbnail">
                 <div class="thumb-box-single" @click="jumpToTime(clip.startTime)" title="Bấm để phát thử clip này">
                   <img :src="getThumbUrl(clip.thumbnail)" />
-                  <div class="play-overlay">▶</div>
+                  <div class="play-overlay">
+                    <Play :size="18" fill="currentColor" />
+                  </div>
                 </div>
               </div>
 
@@ -2895,8 +2911,9 @@ const formatSize = (bytes: number) => {
                 <!-- <button v-if="!isExporting" @click="openEdit(idx)" class="mini-act-btn btn-edit" title="Chỉnh sửa (Chèn chữ, watermark...)">
                   ✏️ Sửa
                 </button> -->
-                <button v-if="!isExporting" @click="removeClip(idx)" class="mini-act-btn btn-delete" title="Xóa clip">
-                  🗑️ Xóa
+                <button v-if="!isExporting" @click="removeClip(idx)" class="mini-act-btn btn-delete flex-center" title="Xóa clip" style="display: inline-flex; align-items: center; gap: 4px;">
+                  <Trash2 :size="12" />
+                  Xóa
                 </button>
               </div>
 
@@ -2910,17 +2927,23 @@ const formatSize = (bytes: number) => {
 
           <div class="empty-clips-panel" v-else>
             <template v-if="activeVideoPath && activeAnalyzingPaths.has(activeVideoPath)">
-              <div class="empty-emoji">⏳</div>
+              <div class="empty-emoji">
+                <Loader2 :size="40" class="spin-hourglass" style="color: var(--wx-brand-accent);" />
+              </div>
               <h3>Đang phân tích video này...</h3>
               <p>Vui lòng chờ hoàn tất, các phân đoạn sẽ hiện ở đây.</p>
             </template>
             <template v-else-if="activeVideoPath">
-              <div class="empty-emoji">🎬</div>
+              <div class="empty-emoji">
+                <Scissors :size="40" style="color: var(--wx-brand-primary);" />
+              </div>
               <h3>Video này chưa được cắt</h3>
               <p>Bấm nút <strong>"Bắt Đầu Cắt Tự Động"</strong> ở trên hoặc nút bên dưới để cắt video này.</p>
             </template>
             <template v-else>
-              <div class="empty-emoji">🎬</div>
+              <div class="empty-emoji">
+                <Film :size="40" style="color: var(--text-muted);" />
+              </div>
               <h3>Chưa có video đã cắt nào ở đây</h3>
               <p>Chọn các video gốc phía trên rồi bấm nút <strong>"Bắt Đầu Cắt Tự Động"</strong> để hệ thống tự động cắt cảnh thông minh.</p>
             </template>
@@ -3021,15 +3044,15 @@ const formatSize = (bytes: number) => {
     <Teleport to="body">
       <div class="toast-container">
         <TransitionGroup name="toast-slide">
-          <div v-for="t in toasts" :key="t.id" class="toast-item" :class="t.type">
+          <div class="toast-item" :class="t.type" v-for="t in toasts" :key="t.id">
             <div class="toast-icon-wrap">
-              <span v-if="t.type === 'success'" class="toast-icon">✔️</span>
-              <span v-else-if="t.type === 'error'" class="toast-icon">❌</span>
-              <span v-else-if="t.type === 'warning'" class="toast-icon">⚠️</span>
-              <span v-else class="toast-icon">ℹ️</span>
+              <Check v-if="t.type === 'success'" :size="16" class="toast-icon" />
+              <X v-else-if="t.type === 'error'" :size="16" class="toast-icon" />
+              <AlertTriangle v-else-if="t.type === 'warning'" :size="16" class="toast-icon" />
+              <Info v-else :size="16" class="toast-icon" />
             </div>
             <div class="toast-content">{{ t.message }}</div>
-            <button class="toast-close-btn" @click="toasts = toasts.filter(item => item.id !== t.id)">✕</button>
+            <button class="toast-close-btn" @click="toasts = toasts.filter(item => item.id !== t.id)"><X :size="14" /></button>
           </div>
         </TransitionGroup>
       </div>
@@ -3040,17 +3063,22 @@ const formatSize = (bytes: number) => {
       <div class="modal-overlay" v-if="confirmDialogState.show" @click.self="handleConfirmResolve(false)" style="z-index: 99999;">
         <div class="settings-modal recent-modal confirm-dialog-modal" style="width: 420px; max-width: 90%;">
           <div class="modal-header" style="padding: 16px 20px; border-bottom: 1px solid var(--l-border);">
-            <h2 style="font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; color: var(--wx-danger-solid, #ef4444);">
-              ⚠️ Xác nhận
+            <h2 style="font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 6px; color: var(--wx-danger-solid, #ef4444);">
+              <AlertTriangle :size="18" />
+              Xác nhận
             </h2>
-            <button class="modal-close" @click="handleConfirmResolve(false)">✕</button>
+            <button class="modal-close" @click="handleConfirmResolve(false)"><X :size="16" /></button>
           </div>
           <div class="modal-body" style="padding: 20px; font-size: 13.5px; line-height: 1.5; font-weight: 600;">
             {{ confirmDialogState.message }}
           </div>
           <div class="modal-footer-buttons" style="display: flex; gap: 10px; justify-content: flex-end; padding: 12px 20px; border-top: 1px solid var(--l-border); background: var(--l-bg-sunken); border-bottom-left-radius: 16px; border-bottom-right-radius: 16px;">
-            <button @click="handleConfirmResolve(false)" class="btn cancel-btn" style="background-color: var(--l-bg-soft); color: var(--l-text); border: 1px solid var(--l-border); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700;">Hủy</button>
-            <button @click="handleConfirmResolve(true)" class="btn confirm-btn" style="background-color: #ef4444; color: #fff; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; box-shadow: 0 4px 10px rgba(239, 68, 68, 0.2);">Đồng ý</button>
+            <button @click="handleConfirmResolve(false)" class="btn cancel-btn flex-center" style="background-color: var(--l-bg-soft); color: var(--l-text); border: 1px solid var(--l-border); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">
+              <X :size="13" /> Hủy
+            </button>
+            <button @click="handleConfirmResolve(true)" class="btn confirm-btn flex-center" style="background-color: #ef4444; color: #fff; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; box-shadow: 0 4px 10px rgba(239, 68, 68, 0.2); display: inline-flex; align-items: center; gap: 4px;">
+              <Check :size="13" /> Đồng ý
+            </button>
           </div>
         </div>
       </div>
@@ -3061,12 +3089,17 @@ const formatSize = (bytes: number) => {
       <div class="modal-overlay" v-if="showRecent" @click.self="showRecent = false">
         <div class="settings-modal recent-modal">
           <div class="modal-header">
-            <h2>🗂️ Project đã lưu</h2>
-            <button class="modal-close" @click="showRecent = false">✕</button>
+            <h2 style="display: flex; align-items: center; gap: 6px;">
+              <FolderOpen :size="18" style="color: var(--wx-brand-accent);" />
+              Project đã lưu
+            </h2>
+            <button class="modal-close" @click="showRecent = false"><X :size="16" /></button>
           </div>
           <div class="modal-body">
             <div v-if="recentProjects.length === 0" class="empty-recent">
-              <div class="empty-graphic">🗂️</div>
+              <div class="empty-graphic">
+                <FolderOpen :size="40" style="color: var(--wx-brand-accent); margin-bottom: 8px;" />
+              </div>
               <p>Chưa có project nào được lưu. Phân tích một video rồi bấm "Lưu" để lưu phiên làm việc.</p>
             </div>
             <ul v-else class="recent-list">
@@ -3076,8 +3109,12 @@ const formatSize = (bytes: number) => {
                   <span class="recent-meta">{{ proj.clipCount }} clip · {{ formatTime(proj.duration) }} · {{ proj.status }}</span>
                 </div>
                 <div class="recent-actions">
-                  <button @click="restoreProject(proj)" class="btn-mini open" title="Mở lại">Mở</button>
-                  <button @click="deleteProject(proj)" class="btn-mini del" title="Xóa khỏi lịch sử">✕</button>
+                  <button @click="restoreProject(proj)" class="btn-mini open flex-center" title="Mở lại" style="display: inline-flex; align-items: center; gap: 4px;">
+                    <FolderOpen :size="12" /> Mở
+                  </button>
+                  <button @click="deleteProject(proj)" class="btn-mini del flex-center" title="Xóa khỏi lịch sử" style="display: inline-flex; align-items: center; gap: 4px;">
+                    <Trash2 :size="12" />
+                  </button>
                 </div>
               </li>
             </ul>
@@ -3091,8 +3128,11 @@ const formatSize = (bytes: number) => {
       <div class="modal-overlay" v-if="showProjectModal" @click.self="showProjectModal = false">
         <div class="settings-modal recent-modal">
           <div class="modal-header">
-            <h2>➕ Tạo dự án mới</h2>
-            <button class="modal-close" @click="showProjectModal = false">✕</button>
+            <h2 style="display: flex; align-items: center; gap: 6px;">
+              <Plus :size="18" style="color: var(--wx-brand-accent);" />
+              Tạo dự án mới
+            </h2>
+            <button class="modal-close" @click="showProjectModal = false"><X :size="16" /></button>
           </div>
           <div class="modal-body">
             <div class="setting-item" style="display: flex; flex-direction: column; gap: 8px;">
@@ -3100,8 +3140,9 @@ const formatSize = (bytes: number) => {
               <input type="text" v-model="newProjectName" class="file-path-input" style="padding: 10px; border-radius: 8px; border: 1px solid var(--l-border); background: var(--l-bg); color: var(--l-text); outline: none;" placeholder="Ví dụ: Kênh Tiktok Review Phim" @keyup.enter="createProject" />
             </div>
             <div class="modal-footer-buttons" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;">
-              <button @click="showProjectModal = false" class="btn cancel-btn" style="background-color: var(--l-bg-sunken); color: var(--l-text); border: 1px solid var(--l-border); padding: 8px 16px; border-radius: 6px; cursor: pointer;">Hủy</button>
-              <button @click="createProject" class="btn confirm-btn" :disabled="!newProjectName.trim()" style="background-color: #6366f1; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">Tạo dự án</button>
+              <button @click="createProject" class="btn confirm-btn flex-center" :disabled="!newProjectName.trim()" style="background-color: #6366f1; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                <Plus :size="14" /> Tạo dự án
+              </button>
             </div>
           </div>
         </div>
@@ -3113,8 +3154,11 @@ const formatSize = (bytes: number) => {
       <div class="modal-overlay" v-if="showManageProjectsModal" @click.self="showManageProjectsModal = false">
         <div class="settings-modal recent-modal">
           <div class="modal-header">
-            <h2>⚙️ Quản lý các dự án</h2>
-            <button class="modal-close" @click="showManageProjectsModal = false">✕</button>
+            <h2 style="display: flex; align-items: center; gap: 6px;">
+              <Settings :size="18" style="color: var(--wx-brand-accent);" />
+              Quản lý các dự án
+            </h2>
+            <button class="modal-close" @click="showManageProjectsModal = false"><X :size="16" /></button>
           </div>
           <div class="modal-body">
             <ul class="recent-list">
@@ -3126,8 +3170,12 @@ const formatSize = (bytes: number) => {
                   </span>
                 </div>
                 <div class="recent-actions">
-                  <button @click="loadProject(proj.id); showManageProjectsModal = false" class="btn-mini open">Mở</button>
-                  <button @click="deleteNamedProject(proj.id)" :disabled="namedProjects.length <= 1" class="btn-mini del" title="Xóa dự án">✕</button>
+                  <button @click="loadProject(proj.id); showManageProjectsModal = false" class="btn-mini open flex-center" style="display: inline-flex; align-items: center; gap: 4px;">
+                    <FolderOpen :size="12" /> Mở
+                  </button>
+                  <button @click="deleteNamedProject(proj.id)" :disabled="namedProjects.length <= 1" class="btn-mini del flex-center" title="Xóa dự án" style="display: inline-flex; align-items: center; gap: 4px;">
+                    <Trash2 :size="12" />
+                  </button>
                 </div>
               </li>
             </ul>
@@ -3146,15 +3194,25 @@ const formatSize = (bytes: number) => {
               <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z"/></svg>
               Quay lại
             </button>
-            <h2>✂️ Chỉnh sửa Clip #{{ editingClip.index }}
+            <h2 style="display: flex; align-items: center; gap: 6px;">
+              <Scissors :size="18" style="color: var(--wx-brand-accent);" />
+              Chỉnh sửa Clip #{{ editingClip.index }}
               <span class="edit-time-sub">{{ formatTime(editingClip.startTime) }} → {{ formatTime(editingClip.endTime) }}</span>
             </h2>
           </div>
           <div class="edit-header-right">
-            <button @click="resetEdit" class="btn reset-btn">🔄 Đặt lại</button>
-            <button @click="applyEditToAll" class="btn reset-btn" title="Áp bộ chỉnh sửa này cho mọi clip của video hiện tại">📋 Áp cho video này</button>
-            <button @click="applyEditToSelectedVideos" class="btn reset-btn" :title="selectedVideos.size > 0 ? `Áp cho mọi clip của ${selectedVideos.size} video đã tick` : 'Áp cho mọi clip của tất cả video đã phân tích'">📦 {{ selectedVideos.size > 0 ? `Áp cho ${selectedVideos.size} video đã chọn` : 'Áp cho tất cả video' }}</button>
-            <button @click="showEdit = false" class="btn save-btn">✅ Xong</button>
+            <button @click="resetEdit" class="btn reset-btn" style="display: inline-flex; align-items: center; gap: 4px;">
+              <RotateCcw :size="14" /> Đặt lại
+            </button>
+            <button @click="applyEditToAll" class="btn reset-btn" title="Áp bộ chỉnh sửa này cho mọi clip của video hiện tại" style="display: inline-flex; align-items: center; gap: 4px;">
+              <Copy :size="14" /> Áp cho video này
+            </button>
+            <button @click="applyEditToSelectedVideos" class="btn reset-btn" :title="selectedVideos.size > 0 ? `Áp cho mọi clip của ${selectedVideos.size} video đã tick` : 'Áp cho mọi clip của tất cả video đã phân tích'" style="display: inline-flex; align-items: center; gap: 4px;">
+              <Layers :size="14" /> {{ selectedVideos.size > 0 ? `Áp cho ${selectedVideos.size} video đã chọn` : 'Áp cho tất cả video' }}
+            </button>
+            <button @click="showEdit = false" class="btn save-btn" style="display: inline-flex; align-items: center; gap: 4px;">
+              <Check :size="14" /> Xong
+            </button>
           </div>
         </header>
 
@@ -3178,7 +3236,10 @@ const formatSize = (bytes: number) => {
           <div class="edit-controls">
             <!-- Tỉ lệ khung -->
             <div class="settings-group">
-              <h3 class="group-title">📐 Tỉ lệ khung hình</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <Monitor :size="15" />
+                Tỉ lệ khung hình
+              </h3>
               <label class="toggle-row">
                 <input type="checkbox" v-model="editingClip.edit.aspect.enabled" />
                 Đổi tỉ lệ khung (cho Reels / TikTok / Shorts)
@@ -3207,7 +3268,10 @@ const formatSize = (bytes: number) => {
 
             <!-- Màu sắc -->
             <div class="settings-group">
-              <h3 class="group-title">🎨 Màu sắc</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <SlidersHorizontal :size="15" />
+                Màu sắc
+              </h3>
               <label class="toggle-row">
                 <input type="checkbox" v-model="editingClip.edit.color.enabled" />
                 Bật chỉnh màu
@@ -3243,7 +3307,10 @@ const formatSize = (bytes: number) => {
 
             <!-- Tốc độ -->
             <div class="settings-group">
-              <h3 class="group-title">⏩ Tốc độ phát</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <Timer :size="15" />
+                Tốc độ phát
+              </h3>
               <div class="settings-grid">
                 <div class="setting-item">
                   <label>Hệ số tốc độ
@@ -3260,14 +3327,21 @@ const formatSize = (bytes: number) => {
             <!-- Chữ / phụ đề (GĐ6) -->
             <div class="settings-group">
               <div class="group-title-row">
-                <h3 class="group-title">🅰️ Chữ / Phụ đề</h3>
-                <button class="mini-add-btn" @click="addText">+ Thêm dòng chữ</button>
+                <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                  <Type :size="15" />
+                  Chữ / Phụ đề
+                </h3>
+                <button class="mini-add-btn flex-center" @click="addText" style="display: inline-flex; align-items: center; gap: 4px;">
+                  <Plus :size="12" /> Thêm dòng chữ
+                </button>
               </div>
               <div v-if="editingClip.edit.texts.length === 0" class="group-empty">Chưa có chữ. Bấm "Thêm dòng chữ" để chèn tiêu đề / caption.</div>
               <div v-for="(t, ti) in editingClip.edit.texts" :key="ti" class="text-item-card">
                 <div class="text-item-head">
                   <span class="text-item-idx">Dòng #{{ ti + 1 }}</span>
-                  <button class="mini-del-btn" @click="removeText(ti)" title="Xóa dòng chữ">✕</button>
+                  <button class="mini-del-btn flex-center" @click="removeText(ti)" title="Xóa dòng chữ" style="display: inline-flex; align-items: center; gap: 4px;">
+                    <X :size="12" />
+                  </button>
                 </div>
                 <input type="text" class="text-content-input" v-model="t.content" placeholder="Nhập nội dung chữ (hỗ trợ tiếng Việt)" />
                 <div class="settings-grid">
@@ -3311,7 +3385,10 @@ const formatSize = (bytes: number) => {
 
             <!-- Watermark / logo (GĐ6) -->
             <div class="settings-group">
-              <h3 class="group-title">🖼️ Watermark / Logo</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <Layers :size="15" />
+                Watermark / Logo
+              </h3>
               <label class="toggle-row">
                 <input type="checkbox" v-model="editingClip.edit.watermark.enabled" />
                 Chèn ảnh watermark / logo
@@ -3319,7 +3396,9 @@ const formatSize = (bytes: number) => {
               <div v-if="editingClip.edit.watermark.enabled">
                 <div class="file-picker-row">
                   <input type="text" class="file-path-input" v-model="editingClip.edit.watermark.imgPath" placeholder="Đường dẫn ảnh PNG/JPG" readonly />
-                  <button class="mini-add-btn" @click="pickWatermark">📁 Chọn ảnh</button>
+                  <button class="mini-add-btn flex-center" @click="pickWatermark" style="display: inline-flex; align-items: center; gap: 4px;">
+                    <FolderOpen :size="12" /> Chọn ảnh
+                  </button>
                 </div>
                 <div class="settings-grid">
                   <div class="setting-item">
@@ -3349,7 +3428,10 @@ const formatSize = (bytes: number) => {
 
             <!-- Âm thanh + nhạc nền (GĐ6) -->
             <div class="settings-group">
-              <h3 class="group-title">🎵 Âm thanh & Nhạc nền</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <Music :size="15" />
+                Âm thanh & Nhạc nền
+              </h3>
               <div class="settings-grid">
                 <div class="setting-item">
                   <label>Âm lượng gốc <span class="hint">1 = giữ nguyên</span></label>
@@ -3370,8 +3452,12 @@ const formatSize = (bytes: number) => {
               </div>
               <div class="file-picker-row" style="margin-top: 12px;">
                 <input type="text" class="file-path-input" v-model="editingClip.edit.audio.musicPath" placeholder="Nhạc nền (mp3/wav) — trộn với tiếng gốc" readonly />
-                <button class="mini-add-btn" @click="pickMusic">🎵 Chọn nhạc</button>
-                <button v-if="editingClip.edit.audio.musicPath" class="mini-del-btn" @click="editingClip.edit.audio.musicPath = ''" title="Bỏ nhạc nền">✕</button>
+                <button class="mini-add-btn flex-center" @click="pickMusic" style="display: inline-flex; align-items: center; gap: 4px;">
+                  <Music :size="12" /> Chọn nhạc
+                </button>
+                <button v-if="editingClip.edit.audio.musicPath" class="mini-del-btn flex-center" @click="editingClip.edit.audio.musicPath = ''" title="Bỏ nhạc nền" style="display: inline-flex; align-items: center; gap: 4px;">
+                  <X :size="12" />
+                </button>
               </div>
               <div class="settings-grid" v-if="editingClip.edit.audio.musicPath">
                 <div class="setting-item">
@@ -3383,7 +3469,10 @@ const formatSize = (bytes: number) => {
 
             <!-- Transition (GĐ7 — dùng khi ghép) -->
             <div class="settings-group">
-              <h3 class="group-title">🔀 Chuyển cảnh (khi ghép thành 1 video)</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <Move :size="15" />
+                Chuyển cảnh (khi ghép thành 1 video)
+              </h3>
               <div class="settings-grid">
                 <div class="setting-item">
                   <label>Kiểu chuyển cảnh
@@ -3413,10 +3502,14 @@ const formatSize = (bytes: number) => {
 
             <!-- 🎨 Ảnh Thumbnail AI -->
             <div class="settings-group">
-              <h3 class="group-title">🎨 Ảnh Thumbnail AI (Gemini + Imagen 4)</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <Sparkles :size="15" />
+                Ảnh Thumbnail AI (Gemini + Imagen 4)
+              </h3>
               
-              <div v-if="!geminiAPIKey" class="group-empty" style="padding: 10px; font-size: 12px; color: var(--wx-brand-accent);">
-                ⚠️ Vui lòng cấu hình <strong>Google Gemini API Key</strong> trong phần <strong>Cài đặt chung</strong> ở Header trước để kích hoạt tính năng này.
+              <div v-if="!geminiAPIKey" class="group-empty" style="padding: 10px; font-size: 12px; color: var(--wx-brand-accent); display: flex; align-items: center; gap: 4px;">
+                <AlertTriangle :size="14" />
+                Vui lòng cấu hình <strong>Google Gemini API Key</strong> trong phần <strong>Cài đặt chung</strong> ở Header trước để kích hoạt tính năng này.
               </div>
               <div v-else>
                 <div style="margin-bottom: 12px;">
@@ -3492,14 +3585,17 @@ const formatSize = (bytes: number) => {
         <div class="settings-modal" style="width: 520px; max-height: 85vh;">
           <div class="modal-header">
             <h2 style="display:flex; align-items:center; gap:6px;">
-              <svg viewBox="0 0 24 24" width="18" height="18" style="color:var(--l-accent);"><path fill="currentColor" d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/></svg>
+              <Settings :size="18" style="color:var(--wx-brand-accent);" />
               Cài đặt chung
             </h2>
-            <button class="modal-close" @click="showSettings = false">✕</button>
+            <button class="modal-close" @click="showSettings = false"><X :size="16" /></button>
           </div>
           <div class="modal-body" style="overflow-y: auto;">
             <div class="settings-group" style="margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid var(--l-border);">
-              <h4 style="margin-top: 0; margin-bottom: 10px; color: var(--wx-brand-accent); font-size: 13.5px; font-weight: 700;">🔑 Cấu hình AI Thumbnail (Google Gemini)</h4>
+              <h4 style="margin-top: 0; margin-bottom: 10px; color: var(--wx-brand-accent); font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                <Key :size="15" />
+                Cấu hình AI Thumbnail (Google Gemini)
+              </h4>
               <div class="setting-item" style="margin-bottom: 8px;">
                 <label style="font-size: 12.5px; font-weight: 600;">Google Gemini API Key:</label>
                 <input type="password" v-model="geminiAPIKey" class="text-content-input" placeholder="Dán Gemini API Key của bạn..." style="margin-bottom: 0;" />
@@ -3508,7 +3604,10 @@ const formatSize = (bytes: number) => {
             </div>
             
             <div class="settings-group">
-              <h4 style="margin-top: 0; margin-bottom: 15px; color: var(--wx-brand-primary); font-size: 13.5px; font-weight: 700;">💻 Cấu hình hiệu năng & hệ thống</h4>
+              <h4 style="margin-top: 0; margin-bottom: 15px; color: var(--wx-brand-primary); font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                <Cpu :size="15" />
+                Cấu hình hiệu năng & hệ thống
+              </h4>
               <div class="settings-grid" style="grid-template-columns: 1fr; gap: 15px; margin-bottom: 15px;">
                 <!-- Checkbox tự động tạo thư mục con -->
                 <div class="setting-item" style="margin-bottom: 5px;">
@@ -3525,7 +3624,10 @@ const formatSize = (bytes: number) => {
                   </label>
                   <div class="file-picker-row">
                     <input type="text" v-model="outDir" class="file-path-input" style="flex: 1;" readonly />
-                    <button class="mini-add-btn" @click="chooseOutDir" style="padding: 7px 14px; white-space: nowrap; cursor: pointer;">📁 Chọn thư mục</button>
+                    <button class="mini-add-btn flex-center" @click="chooseOutDir" style="padding: 7px 14px; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                      <FolderOpen :size="14" />
+                      Chọn thư mục
+                    </button>
                   </div>
                 </div>
 
@@ -3534,13 +3636,19 @@ const formatSize = (bytes: number) => {
                   <label style="font-size: 12.5px; font-weight: 600;">Thư mục lưu ảnh (Thumbnail) xuất:</label>
                   <div class="file-picker-row">
                     <input type="text" v-model="outImageDir" class="file-path-input" style="flex: 1;" readonly />
-                    <button class="mini-add-btn" @click="chooseOutImageDir" style="padding: 7px 14px; white-space: nowrap; cursor: pointer;">📁 Chọn thư mục</button>
+                    <button class="mini-add-btn flex-center" @click="chooseOutImageDir" style="padding: 7px 14px; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                      <FolderOpen :size="14" />
+                      Chọn thư mục
+                    </button>
                   </div>
                 </div>
 
                 <!-- Gợi ý đường dẫn con -->
                 <div v-else style="background: var(--l-bg-soft); border: 1px dashed var(--l-border); padding: 8px 12px; border-radius: 8px; font-size: 11.5px; color: var(--l-text-muted); line-height: 1.4;">
-                  💡 <strong>Quy tắc tự chia thư mục con:</strong><br />
+                  <span style="display: inline-flex; align-items: center; gap: 4px; margin-bottom: 4px; font-weight: 700; color: var(--l-text);">
+                    <Info :size="13" />
+                    Quy tắc tự chia thư mục con:
+                  </span><br />
                   - Video sẽ lưu tại: <code style="color: var(--l-accent);">{{ outDir }}\video</code><br />
                   - Ảnh bìa sẽ lưu tại: <code style="color: var(--wx-brand-accent);">{{ outDir }}\image</code>
                 </div>
@@ -3571,7 +3679,9 @@ const formatSize = (bytes: number) => {
             </div>
           </div>
           <div class="modal-footer" style="justify-content: flex-end;">
-            <button class="btn save-btn" @click="showSettings = false">✅ Hoàn tất</button>
+            <button class="btn save-btn flex-center" @click="showSettings = false" style="display: inline-flex; align-items: center; gap: 4px;">
+              <Check :size="15" /> Hoàn tất
+            </button>
           </div>
         </div>
       </div>

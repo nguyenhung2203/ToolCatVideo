@@ -3,7 +3,7 @@ import { onMounted, toRef, ref, reactive } from 'vue'
 import { useDownloader } from './composables/useDownloader'
 import {
   Globe, Link2, Search, Download, Square, FolderOpen,
-  Check, X, Eye, Heart, Clock, Calendar, Copy, Loader2, Trash2
+  Check, X, Eye, Heart, Clock, Calendar, Copy, Loader2, Trash2, Film
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -271,8 +271,21 @@ const failedThumbs = ref<Set<string>>(new Set())
       <span class="dl-selected-count">Đã chọn: {{ dlSelectedCount }}/{{ filteredDlEntries.length }}</span>
     </div>
 
+    <!-- ── Empty state ── -->
+    <div v-if="!probeResult && !isProbing" class="dl-empty-state">
+      <Film :size="56" class="dl-empty-icon" />
+      <p class="dl-empty-title">Nhập từ khóa / đường dẫn → nhấn <span class="dl-accent">Dò link</span> hoặc <span class="dl-accent">Tìm kiếm</span> để bắt đầu</p>
+      <p class="dl-empty-sub">Hỗ trợ tải từ YouTube, TikTok, Facebook, Douyin và nhiều nền tảng khác</p>
+    </div>
+
+    <!-- ── Loading state ── -->
+    <div v-if="isProbing" class="dl-loading-state">
+      <Loader2 :size="40" class="spin-hourglass dl-loading-icon" style="color: var(--wx-brand-primary);" />
+      <p class="dl-loading-text">Đang tìm kiếm / dò tìm nguồn video...</p>
+    </div>
+
     <!-- ── Entry list ──────────────────────────────── -->
-    <div class="dl-entries-list" v-if="probeResult"
+    <div class="dl-entries-list" v-if="probeResult && !isProbing"
       ref="listRef"
       style="position: relative;"
       @mousedown="onListMouseDown"
@@ -294,7 +307,7 @@ const failedThumbs = ref<Set<string>>(new Set())
             alt="" 
             referrerpolicy="no-referrer"
             @error="failedThumbs.add(entry.id)" />
-          <span v-else>🎬</span>
+          <Film v-else :size="20" style="opacity: 0.5;" />
         </div>
         <div class="dl-entry-info">
           <div class="dl-entry-title">{{ entry.title || 'Không rõ tên' }}</div>
@@ -313,8 +326,8 @@ const failedThumbs = ref<Set<string>>(new Set())
             </span>
             
             <div class="dl-meta-actions">
-              <a v-if="entry.url" :href="entry.url" target="_blank" @click.stop class="dl-meta-link" title="Xem video gốc">
-                🔗 Xem
+              <a v-if="entry.url" :href="entry.url" target="_blank" @click.stop class="dl-meta-link" title="Xem video gốc" style="display: inline-flex; align-items: center; gap: 3px;">
+                <Link2 :size="11" /> Xem
               </a>
               <button v-if="entry.url" type="button" @click.stop="copyToClipboard(entry.url)" class="dl-meta-link" title="Sao chép link">
                 <Copy :size="11" /> Copy
@@ -874,6 +887,52 @@ const failedThumbs = ref<Set<string>>(new Set())
   padding: var(--wx-space-5);
   color: var(--wx-text-muted);
   font-size: var(--wx-fs-13);
+}
+
+/* Empty state */
+.dl-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--wx-space-3);
+  height: 250px;
+  color: var(--wx-text-muted);
+  text-align: center;
+}
+
+.dl-empty-icon { opacity: 0.2; }
+
+.dl-empty-title {
+  font-size: var(--wx-fs-14);
+  font-weight: var(--wx-fw-semibold);
+  margin: 0;
+  color: var(--wx-text-primary);
+}
+
+.dl-empty-sub {
+  font-size: var(--wx-fs-12);
+  opacity: 0.55;
+  margin: 0;
+}
+
+.dl-accent { color: var(--wx-brand-primary); }
+
+/* Loading state */
+.dl-loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--wx-space-4);
+  height: 250px;
+  color: var(--wx-text-muted);
+}
+
+.dl-loading-text {
+  font-size: var(--wx-fs-14);
+  font-weight: var(--wx-fw-semibold);
+  margin: 0;
 }
 
 /* ── Download progress section ───────────────────────────────── */

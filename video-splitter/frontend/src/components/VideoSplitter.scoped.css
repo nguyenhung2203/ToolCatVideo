@@ -1821,17 +1821,29 @@
 .toast-item.success {
   border-left: 4px solid var(--success-color);
 }
+.toast-item.success .toast-icon {
+  color: var(--success-color);
+}
 
 .toast-item.error {
   border-left: 4px solid var(--danger-color);
+}
+.toast-item.error .toast-icon {
+  color: var(--danger-color);
 }
 
 .toast-item.warning {
   border-left: 4px solid var(--wx-warning-solid);
 }
+.toast-item.warning .toast-icon {
+  color: var(--wx-warning-solid);
+}
 
 .toast-item.info {
   border-left: 4px solid var(--accent-color);
+}
+.toast-item.info .toast-icon {
+  color: var(--accent-color);
 }
 
 .toast-icon-wrap {

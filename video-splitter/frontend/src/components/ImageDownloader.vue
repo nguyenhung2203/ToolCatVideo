@@ -3,7 +3,7 @@ import { onMounted, ref, reactive } from 'vue'
 import { useImageDownloader, IMAGE_SOURCES } from './composables/useImageDownloader'
 import {
   Image as ImageIcon, Search, Download, Square,
-  FolderOpen, Check, Key, Loader2, Trash2
+  FolderOpen, Check, Key, Loader2, Trash2, Globe, Palette, Camera
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -194,7 +194,11 @@ function updateSelectionFromDrag() {
             :class="{ active: imageSource === src.value }"
             @click="imageSource = src.value"
           >
-            {{ src.icon }} {{ src.label }}
+            <Globe v-if="src.value === 'duckduckgo'" :size="12" />
+            <Palette v-else-if="src.value === 'pixabay'" :size="12" />
+            <Camera v-else-if="src.value === 'unsplash'" :size="12" />
+            <ImageIcon v-else-if="src.value === 'pexels'" :size="12" />
+            {{ src.label }}
             <span v-if="src.needsKey" class="img-key-badge">Key</span>
           </button>
         </div>
@@ -226,7 +230,10 @@ function updateSelectionFromDrag() {
           class="img-text-input img-apikey-input"
           :placeholder="`Nhập ${imageSelectedSource?.label} API Key...`"
         />
-        <span v-if="imageHasEnvKey" class="img-env-badge">✅ .env</span>
+        <span v-if="imageHasEnvKey" class="img-env-badge" style="display: inline-flex; align-items: center; gap: 3px;">
+          <Check :size="11" />
+          .env
+        </span>
       </div>
       <a
         :href="imageSource==='pixabay'?'https://pixabay.com/api/docs/':imageSource==='unsplash'?'https://unsplash.com/developers':'https://www.pexels.com/api/'"
