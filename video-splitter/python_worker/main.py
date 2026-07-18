@@ -15,6 +15,7 @@ P0 đã fix:
 """
 
 import sys
+import io
 import json
 import argparse
 import subprocess
@@ -24,6 +25,19 @@ import multiprocessing
 import os
 import ctypes
 from concurrent.futures import ThreadPoolExecutor
+
+# Force stdout/stderr to use UTF-8 encoding to prevent charmap codec errors on Windows with Vietnamese characters
+if sys.stdout and sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+if sys.stderr and sys.stderr.encoding != 'utf-8':
+    try:
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 
 # ──────────────────────────────────────────────────────────
@@ -472,12 +486,29 @@ def _fast_black_ffmpeg(source_path, ffmpeg_path):
 # Finalize — lọc theo confidence, loại bỏ duplicate
 # ──────────────────────────────────────────────────────────
 def _finalize_candidates(candidates_map, min_confidence=MIN_CONFIDENCE):
-    """Lọc candidates: bỏ confidence thấp, loại bỏ metadata nội bộ."""
+    """Lọc candidates: bỏ confidence thấp, loại bỏ metadata nội bộ, chuẩn hóa key tín hiệu khớp với Go struct."""
     result = []
+    # Map Python internal keys to Go struct JSON keys
+    key_mapping = {
+        'scene': 'visual_change',
+        'black': 'black_frame',
+        'silence': 'silence',
+        'layout': 'layout_change',
+        'audio': 'audio_change'
+    }
+    
     for cand in candidates_map.values():
         if cand['confidence'] < min_confidence:
             continue
         clean = {k: v for k, v in cand.items() if not k.startswith('_')}
+        
+        # Map signal keys to match Go's expectations
+        if 'signals' in clean:
+            mapped_signals = {}
+            for pk, gk in key_mapping.items():
+                mapped_signals[gk] = clean['signals'].get(pk, 0)
+            clean['signals'] = mapped_signals
+            
         result.append(clean)
     result.sort(key=lambda x: x['timestamp'])
     return result
@@ -591,9 +622,9 @@ def analyze_video(proxy_path, audio_path, source_path=None, ffmpeg_path="ffmpeg"
     result = _finalize_candidates(candidates_map)
 
     # Detector done summary
-    print(f"DETECTOR_DONE:Chuyển cảnh|{len([c for c in result if c['signals'].get('scene',0)>0])}", flush=True)
+    print(f"DETECTOR_DONE:Chuyển cảnh|{len([c for c in result if c['signals'].get('visual_change',0)>0])}", flush=True)
     print(f"DETECTOR_DONE:Khoảng lặng|{len(silence_regions)}", flush=True)
-    print(f"DETECTOR_DONE:Màn hình đen|{len([c for c in result if c['signals'].get('black',0)>0])}", flush=True)
+    print(f"DETECTOR_DONE:Màn hình đen|{len([c for c in result if c['signals'].get('black_frame',0)>0])}", flush=True)
 
     print("PROGRESS:95", flush=True)
     _log_time("TOTAL smart/precise", t_total)

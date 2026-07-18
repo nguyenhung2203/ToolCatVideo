@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -139,6 +140,8 @@ func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, 
 
 	var jsonOutput strings.Builder
 	scanner := bufio.NewScanner(stdout)
+	// Tăng kích thước buffer của scanner lên tối đa 10MB để tránh bị sập/ deadlock khi nhận chuỗi JSON kết quả rất dài từ video lớn
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "PROGRESS:") {
@@ -171,6 +174,10 @@ func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, 
 
 	var result AnalyzerResult
 	unmarshalErr := json.Unmarshal([]byte(jsonOutput.String()), &result)
+
+	// Ghi debug log để theo dõi kết quả thô từ Python worker
+	_ = os.WriteFile(filepath.Join(os.TempDir(), "video-splitter-debug-json.log"), []byte(jsonOutput.String()), 0644)
+	_ = os.WriteFile(filepath.Join(os.TempDir(), "video-splitter-debug-stderr.log"), stderrBuf.Bytes(), 0644)
 
 	// Nếu Python có thông điệp lỗi tự cấu trúc thành công, ưu tiên hiển thị lỗi này
 	if unmarshalErr == nil && result.Status == "error" && result.Message != "" {

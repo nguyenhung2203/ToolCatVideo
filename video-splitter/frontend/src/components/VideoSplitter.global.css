@@ -77,6 +77,7 @@
   justify-content: space-between;
   padding: 16px 24px;
   border-top: 1px solid var(--l-border);
+  flex-shrink: 0;
 }
 
 /* Settings Groups */

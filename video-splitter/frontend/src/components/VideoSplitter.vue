@@ -1062,6 +1062,9 @@ const analyzeSingle = async (path: string): Promise<boolean> => {
     delete analyzeETAMap.value[path]
     analyzeStartTimes.value[path] = Date.now()
     
+    // Clear old clips to ensure the new analysis results completely overwrite the old ones
+    clipsMap.value[path] = []
+    
     // Fetch video info to pre-calculate ETA duration
     try {
       const info = await GetVideoInfo(path)
@@ -1171,9 +1174,16 @@ const analyzeAll = async () => {
   const allTargets = videosForBatch()
   if (allTargets.length === 0) return
 
-  // Lọc bỏ video đã cắt rồi (đã có clips) — tự động bỏ qua
-  const alreadyCut = allTargets.filter(p => clipsMap.value[p] && clipsMap.value[p].length > 0)
-  const targets = allTargets.filter(p => !clipsMap.value[p] || clipsMap.value[p].length === 0)
+  // If the user checked/selected specific videos, always re-analyze them.
+  // Only skip already-analyzed videos if doing bulk processing (no checkboxes ticked).
+  const isBatchAll = selectedVideos.value.size === 0
+  const targets = allTargets.filter(p => {
+    if (isBatchAll) {
+      return !clipsMap.value[p] || clipsMap.value[p].length === 0
+    }
+    return true // Ticked -> force re-analyze
+  })
+  const alreadyCut = allTargets.filter(p => !targets.includes(p))
 
   if (targets.length === 0) {
     showToast(`Tất cả ${alreadyCut.length} video đã được cắt rồi! Không cần cắt lại.`, 'info')
@@ -2411,7 +2421,7 @@ const formatSize = (bytes: number) => {
               
               <span class="video-card-name">{{ path.split('\\').pop() }}</span>
               
-              <span class="status-badge-compact done" v-if="clipsMap[path]" :title="`Đã quét ${clipsMap[path].length} clip`">
+              <span class="status-badge-compact done" v-if="clipsMap[path] && clipsMap[path].length > 0" :title="`Đã quét ${clipsMap[path].length} clip`">
                 <svg viewBox="0 0 24 24" width="10" height="10" style="display:inline-block; vertical-align:middle; margin-right:2px;"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
                 {{ clipsMap[path].length }}
               </span>
@@ -2419,7 +2429,7 @@ const formatSize = (bytes: number) => {
                 <svg viewBox="0 0 24 24" width="10" height="10" class="spin-hourglass" style="display:inline-block; vertical-align:middle;"><path fill="currentColor" d="M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5l-4-4V4h8v3.5l-4 4z"/></svg>
               </span>
 
-              <button class="btn-whole-video" @click.stop="addWholeVideoAsClip(path)" title="Thêm nguyên video làm clip (để chỉnh sửa, không cắt)" v-if="!clipsMap[path]" :disabled="isAnalyzing || isExporting" :style="isAnalyzing || isExporting ? { opacity: 0.4, pointerEvents: 'none' } : {}">
+              <button class="btn-whole-video" @click.stop="addWholeVideoAsClip(path)" title="Thêm nguyên video làm clip (để chỉnh sửa, không cắt)" v-if="!clipsMap[path] || clipsMap[path].length === 0" :disabled="isAnalyzing || isExporting" :style="isAnalyzing || isExporting ? { opacity: 0.4, pointerEvents: 'none' } : {}">
                 <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 12c-2.21 0-4-1.79-4-4s1.79-4 4-4 4 1.79 4 4-1.79 4-4 4z"/></svg>
               </button>
               <button class="btn-remove-video" @click.stop="removeVideo(index)" title="Xóa video khỏi dự án" :disabled="isAnalyzing || isExporting" :style="isAnalyzing || isExporting ? { opacity: 0.4, pointerEvents: 'none' } : {}">✕</button>
@@ -3985,7 +3995,7 @@ const formatSize = (bytes: number) => {
           </div>
 
           <!-- Log strip -->
-          <div v-if="imageSearchLog.length > 0" style="padding:7px 20px;background:rgba(0,0,0,.2);border-top:1px solid rgba(255,255,255,.05);font-size:11px;color:var(--l-text-muted);font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+          <div v-if="imageSearchLog.length > 0" style="padding:7px 20px;background:rgba(0,0,0,.2);border-top:1px solid rgba(255,255,255,.05);font-size:11px;line-height:1.4;color:var(--l-text-muted);font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;">
             {{ imageSearchLog[0] }}
           </div>
 

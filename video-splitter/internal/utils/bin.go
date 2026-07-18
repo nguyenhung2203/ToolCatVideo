@@ -3,6 +3,7 @@ package utils
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // GetBinPath trả về đường dẫn tới file thực thi. 
@@ -45,6 +46,15 @@ func GetWorkerScript() string {
 	ex, err := os.Executable()
 	if err == nil {
 		appDir := filepath.Dir(ex)
+		
+		// Trong chế độ phát triển (Wails dev), exe thường chứa "-dev".
+		// Ta luôn ưu tiên chạy trực tiếp script trong workspace gốc (Cwd) để dev/test tức thì
+		if strings.Contains(strings.ToLower(filepath.Base(ex)), "-dev") {
+			if _, err := os.Stat(rel); err == nil {
+				return rel
+			}
+		}
+
 		localPath := filepath.Join(appDir, "python_worker", "main.py")
 		if _, err := os.Stat(localPath); err == nil {
 			return localPath
