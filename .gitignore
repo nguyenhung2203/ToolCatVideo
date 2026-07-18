@@ -28,3 +28,7 @@ videodacat/
 Thumbs.db
 .claude/
 .gemini/
+
+# Temp folders
+wemakeui_temp/
+

@@ -1,3 +1,88 @@
+export namespace downloader {
+	
+	export class DownloadResult {
+	    filePath: string;
+	    title: string;
+	    duration: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DownloadResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filePath = source["filePath"];
+	        this.title = source["title"];
+	        this.duration = source["duration"];
+	    }
+	}
+	export class VideoEntry {
+	    id: string;
+	    url: string;
+	    title: string;
+	    duration: number;
+	    viewCount: number;
+	    likeCount: number;
+	    uploadDate: string;
+	    thumbnail: string;
+	    platform: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new VideoEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.url = source["url"];
+	        this.title = source["title"];
+	        this.duration = source["duration"];
+	        this.viewCount = source["viewCount"];
+	        this.likeCount = source["likeCount"];
+	        this.uploadDate = source["uploadDate"];
+	        this.thumbnail = source["thumbnail"];
+	        this.platform = source["platform"];
+	    }
+	}
+	export class URLProbeResult {
+	    type: string;
+	    platform: string;
+	    title: string;
+	    entries: VideoEntry[];
+	
+	    static createFrom(source: any = {}) {
+	        return new URLProbeResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.type = source["type"];
+	        this.platform = source["platform"];
+	        this.title = source["title"];
+	        this.entries = this.convertValues(source["entries"], VideoEntry);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace main {
 	
 	export class ExportResult {
@@ -62,6 +147,8 @@ export namespace project {
 	    weights: SignalWeights;
 	    exportPreset: string;
 	    exportCRF: number;
+	    hardwareAccel: string;
+	    prompt: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AnalyzerConfig(source);
@@ -81,6 +168,8 @@ export namespace project {
 	        this.weights = this.convertValues(source["weights"], SignalWeights);
 	        this.exportPreset = source["exportPreset"];
 	        this.exportCRF = source["exportCRF"];
+	        this.hardwareAccel = source["hardwareAccel"];
+	        this.prompt = source["prompt"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -124,6 +213,8 @@ export namespace project {
 	    musicVolume: number;
 	    fadeIn: number;
 	    fadeOut: number;
+	    musicLoop: boolean;
+	    musicTracks: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new AudioOp(source);
@@ -137,6 +228,8 @@ export namespace project {
 	        this.musicVolume = source["musicVolume"];
 	        this.fadeIn = source["fadeIn"];
 	        this.fadeOut = source["fadeOut"];
+	        this.musicLoop = source["musicLoop"];
+	        this.musicTracks = source["musicTracks"];
 	    }
 	}
 	export class TransitionOp {
@@ -279,6 +372,7 @@ export namespace project {
 	    reason: string;
 	    signals: string[];
 	    edit: EditOps;
+	    exportedPath: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Clip(source);
@@ -299,6 +393,7 @@ export namespace project {
 	        this.reason = source["reason"];
 	        this.signals = source["signals"];
 	        this.edit = this.convertValues(source["edit"], EditOps);
+	        this.exportedPath = source["exportedPath"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

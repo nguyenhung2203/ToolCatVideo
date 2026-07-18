@@ -107,3 +107,9 @@ func GetWorkerExe() string {
 	}
 	return ""
 }
+
+// GetYtDlpPath trả về đường dẫn tới yt-dlp.exe dùng để tải video online.
+// Ưu tiên portable (cạnh executable / bin/), sau đó fallback sang %PATH%.
+func GetYtDlpPath() string {
+	return GetBinPath("yt-dlp")
+}

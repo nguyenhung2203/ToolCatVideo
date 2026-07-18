@@ -3,11 +3,13 @@ import json
 import argparse
 import subprocess
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 def analyze_silence(audio_path, source_path=None, ffmpeg_path="ffmpeg", silence_db=-30, silence_duration=0.5):
     """Tìm điểm im lặng — ưu tiên file audio WAV, fallback sang video gốc trực tiếp (chỉ decode audio)."""
+    print("STATUS_LOG:Phát hiện khoảng lặng: Đang phân tích phổ âm thanh bằng ffmpeg...", flush=True)
     target = audio_path if audio_path else source_path
     if not target:
         return []
@@ -19,7 +21,7 @@ def analyze_silence(audio_path, source_path=None, ffmpeg_path="ffmpeg", silence_
     ]
     silence_starts = []
     try:
-        result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True, timeout=300)
+        result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True, timeout=1800)
         matches = re.finditer(r'silence_start:\s+([\d\.]+)', result.stderr)
         for match in matches:
             silence_starts.append(float(match.group(1)))
@@ -30,6 +32,7 @@ def analyze_silence(audio_path, source_path=None, ffmpeg_path="ffmpeg", silence_
 
 def analyze_black(proxy_path, ffmpeg_path="ffmpeg", black_duration=0.05):
     """Phát hiện màn hình đen — chạy trên proxy video 240p (rất nhanh)."""
+    print("STATUS_LOG:Phát hiện màn hình đen: Đang tìm các khoảng đen bằng ffmpeg...", flush=True)
     cmd = [
         ffmpeg_path, '-i', proxy_path,
         '-vf', f'blackdetect=d={black_duration}:pic_th=0.98',
@@ -37,7 +40,7 @@ def analyze_black(proxy_path, ffmpeg_path="ffmpeg", black_duration=0.05):
     ]
     black_starts = []
     try:
-        result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True, timeout=300)
+        result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True, timeout=1800)
         matches = re.finditer(r'black_start:([\d\.]+)', result.stderr)
         for match in matches:
             black_starts.append(float(match.group(1)))
@@ -49,13 +52,15 @@ def analyze_black(proxy_path, ffmpeg_path="ffmpeg", black_duration=0.05):
 def analyze_scenes(proxy_path, scene_threshold=20.0):
     """Chuyển cảnh nội dung — PySceneDetect chạy trên proxy video 240p.
     Vì proxy chỉ có 240p và 10-15fps, số frame và pixel cực kỳ nhỏ nên xử lý chỉ mất vài giây!"""
+    print("STATUS_LOG:Phát hiện chuyển cảnh: Đang quét video proxy bằng PySceneDetect...", flush=True)
     from scenedetect import detect, ContentDetector
     scene_list = detect(proxy_path, ContentDetector(threshold=scene_threshold))
     return [s[0].get_seconds() for s in scene_list]
 
 
-def analyze_layout(proxy_path, sample_fps=1.0):
+def analyze_layout(proxy_path, sample_fps=0.5):
     """Phát hiện thay đổi bố cục — chạy trên proxy 240p."""
+    print("STATUS_LOG:Bố cục hình ảnh: Khởi tạo OpenCV phân tích layout...", flush=True)
     try:
         import cv2
         import numpy as np
@@ -68,12 +73,17 @@ def analyze_layout(proxy_path, sample_fps=1.0):
         return []
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 15.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps
     step = max(1, int(round(fps / sample_fps)))
 
     changes = []
     prev_hist = None
     prev_edge = None
     idx = 0
+    
+    print(f"STATUS_LOG:Bố cục hình ảnh: Bắt đầu phân tích {total_frames} khung hình (độ dài video: {duration:.1f}s)...", flush=True)
+    
     while True:
         ret = cap.grab()
         if not ret:
@@ -96,14 +106,21 @@ def analyze_layout(proxy_path, sample_fps=1.0):
 
                 prev_hist = hist
                 prev_edge = col_energy
+                
+                # In tiến trình quét mỗi 15 giây video
+                curr_sec = idx / fps
+                if int(curr_sec) % 15 == 0:
+                    print(f"STATUS_LOG:Bố cục hình ảnh: Đang quét tại {curr_sec:.1f}s / {duration:.1f}s...", flush=True)
         idx += 1
 
     cap.release()
+    print("STATUS_LOG:Bố cục hình ảnh: Hoàn thành quét OpenCV.", flush=True)
     return changes
 
 
 def analyze_audio_spectral(audio_path, sr=16000, hop=8000, delta_threshold=0.55):
     """Phát hiện thay đổi phổ âm thanh — chạy trên WAV file."""
+    print("STATUS_LOG:Phổ âm thanh: Khởi tạo đặc trưng phổ Librosa...", flush=True)
     try:
         import librosa
         import numpy as np
@@ -120,6 +137,7 @@ def analyze_audio_spectral(audio_path, sr=16000, hop=8000, delta_threshold=0.55)
     if y is None or len(y) == 0:
         return []
 
+    print("STATUS_LOG:Phổ âm thanh: Đang trích xuất đặc trưng MFCC...", flush=True)
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, hop_length=hop)
     if mfcc.shape[1] < 3:
         return []
@@ -135,6 +153,8 @@ def analyze_audio_spectral(audio_path, sr=16000, hop=8000, delta_threshold=0.55)
     for i, d in enumerate(diffs):
         if d > delta_threshold:
             changes.append((i + 1) * frame_time)
+            
+    print("STATUS_LOG:Phổ âm thanh: Hoàn thành phân tích Librosa.", flush=True)
     return changes
 
 
@@ -176,46 +196,63 @@ def add_signal(candidates_map, timestamp, conf, signal_key, signal_val, reason_s
     candidates_map[timestamp]['signals'][signal_key] = signal_val
 
 
+def run_black_task(proxy_path, source_path, ffmpeg_path):
+    target = proxy_path if proxy_path else source_path
+    if not target:
+        return []
+    return analyze_black(target, ffmpeg_path=ffmpeg_path)
+
+def run_silence_task(audio_path, source_path, ffmpeg_path, silence_db, silence_duration):
+    return analyze_silence(audio_path, source_path=source_path, ffmpeg_path=ffmpeg_path,
+                           silence_db=silence_db, silence_duration=silence_duration)
+
+def run_scenes_task(proxy_path, source_path, scene_threshold):
+    target = proxy_path if proxy_path else source_path
+    if not target:
+        return []
+    return analyze_scenes(target, scene_threshold=scene_threshold)
+
+def run_layout_task(proxy_path, source_path):
+    target = proxy_path if proxy_path else source_path
+    if not target:
+        return []
+    return analyze_layout(target)
+
+def run_audio_spectral_task(audio_path):
+    if audio_path:
+        return analyze_audio_spectral(audio_path)
+    return []
+
+
 def analyze_video(proxy_path, audio_path, source_path=None, ffmpeg_path="ffmpeg", mode="smart",
                   scene_threshold=20.0, silence_db=-30, silence_duration=0.5):
     """Chạy các detector trên proxy video (240p) và audio WAV (hoặc fallback video gốc)."""
     candidates_map = {}
     results = {}
 
-    def run_black():
-        return analyze_black(proxy_path, ffmpeg_path=ffmpeg_path)
-
-    def run_silence():
-        return analyze_silence(audio_path, source_path=source_path, ffmpeg_path=ffmpeg_path,
-                               silence_db=silence_db, silence_duration=silence_duration)
-
-    def run_scenes():
-        return analyze_scenes(proxy_path, scene_threshold=scene_threshold)
-
-    def run_layout():
-        return analyze_layout(proxy_path)
-
-    def run_audio_spectral():
-        if audio_path:
-            return analyze_audio_spectral(audio_path)
-        return []
-
     # === Xác định detector cần chạy theo mode ===
     tasks = {
-        'black': run_black,
-        'silence': run_silence,
+        'black': (run_black_task, (proxy_path, source_path, ffmpeg_path)),
+        'silence': (run_silence_task, (audio_path, source_path, ffmpeg_path, silence_db, silence_duration)),
     }
     if mode in ("smart", "precise"):
-        tasks['scenes'] = run_scenes
-        tasks['layout'] = run_layout
+        tasks['scenes'] = (run_scenes_task, (proxy_path, source_path, scene_threshold))
+        tasks['layout'] = (run_layout_task, (proxy_path, source_path))
     if mode == "precise" and audio_path:
-        tasks['audio_spectral'] = run_audio_spectral
+        tasks['audio_spectral'] = (run_audio_spectral_task, (audio_path,))
 
-    # === Chạy song song tất cả detector ===
+    # === Chạy song song tất cả detector sử dụng ProcessPoolExecutor (tránh nghẽn GIL) ===
     print("PROGRESS:10", flush=True)
+    detector_labels = {
+        'black': 'Màn hình đen',
+        'silence': 'Khoảng lặng',
+        'scenes': 'Chuyển cảnh',
+        'layout': 'Bố cục hình ảnh',
+        'audio_spectral': 'Phổ âm thanh',
+    }
 
-    with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
-        futures = {executor.submit(fn): name for name, fn in tasks.items()}
+    with ProcessPoolExecutor(max_workers=len(tasks)) as executor:
+        futures = {executor.submit(fn, *args): name for name, (fn, args) in tasks.items()}
         completed = 0
         for future in as_completed(futures):
             name = futures[future]
@@ -225,6 +262,10 @@ def analyze_video(proxy_path, audio_path, source_path=None, ffmpeg_path="ffmpeg"
             except Exception as e:
                 print(f"Detector '{name}' loi: {e}", file=sys.stderr)
                 results[name] = []
+
+            count = len(results[name])
+            label = detector_labels.get(name, name)
+            print(f"DETECTOR_DONE:{label}|{count}", flush=True)
 
             prog = 10 + int(completed / len(tasks) * 80)
             print(f"PROGRESS:{prog}", flush=True)
@@ -257,8 +298,9 @@ def analyze_video(proxy_path, audio_path, source_path=None, ffmpeg_path="ffmpeg"
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     parser = argparse.ArgumentParser(description="Media Analyzer Worker")
-    parser.add_argument("--proxy", type=str, required=True, help="Path to proxy video")
+    parser.add_argument("--proxy", type=str, default="", help="Path to proxy video (optional)")
     parser.add_argument("--audio", type=str, default="", help="Path to audio file (optional)")
     parser.add_argument("--source", type=str, default="", help="Path to original source video")
     parser.add_argument("--ffmpeg", type=str, default="ffmpeg", help="Path to ffmpeg executable")
@@ -284,3 +326,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(json.dumps({"status": "error", "message": str(e)}))
         sys.exit(1)
+

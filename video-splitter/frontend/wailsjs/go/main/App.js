@@ -10,6 +10,10 @@ export function CancelAnalysis() {
   return window['go']['main']['App']['CancelAnalysis']();
 }
 
+export function CancelDownload() {
+  return window['go']['main']['App']['CancelDownload']();
+}
+
 export function CancelExport() {
   return window['go']['main']['App']['CancelExport']();
 }
@@ -18,8 +22,24 @@ export function DeleteProject(arg1) {
   return window['go']['main']['App']['DeleteProject'](arg1);
 }
 
-export function ExportClips(arg1, arg2, arg3, arg4, arg5, arg6) {
-  return window['go']['main']['App']['ExportClips'](arg1, arg2, arg3, arg4, arg5, arg6);
+export function DownloadOnlineVideo(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['DownloadOnlineVideo'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function DownloadOnlineVideos(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DownloadOnlineVideos'](arg1, arg2, arg3);
+}
+
+export function ExportClips(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['ExportClips'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
+export function ExtractClipFrames(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ExtractClipFrames'](arg1, arg2, arg3);
+}
+
+export function GenerateAIThumbnail(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['GenerateAIThumbnail'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
 export function GenerateThumbnail(arg1, arg2) {
@@ -28,6 +48,10 @@ export function GenerateThumbnail(arg1, arg2) {
 
 export function GetDefaultConfig() {
   return window['go']['main']['App']['GetDefaultConfig']();
+}
+
+export function GetDefaultDownloadDir() {
+  return window['go']['main']['App']['GetDefaultDownloadDir']();
 }
 
 export function GetGlobalSettings() {
@@ -52,6 +76,10 @@ export function LoadProjectBySource(arg1) {
 
 export function MergeClips(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['MergeClips'](arg1, arg2, arg3, arg4);
+}
+
+export function ProbeOnlineURL(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['ProbeOnlineURL'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function SaveGlobalSettings(arg1) {
