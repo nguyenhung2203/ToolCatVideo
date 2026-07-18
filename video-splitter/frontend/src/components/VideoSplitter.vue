@@ -1186,14 +1186,9 @@ const analyzeAll = async () => {
   const allTargets = videosForBatch()
   if (allTargets.length === 0) return
 
-  // If the user checked/selected specific videos, always re-analyze them.
-  // Only skip already-analyzed videos if doing bulk processing (no checkboxes ticked).
-  const isBatchAll = selectedVideos.value.size === 0
+  // Tự động bỏ qua các video đã được cắt và có phân đoạn (clips) hiển thị.
   const targets = allTargets.filter(p => {
-    if (isBatchAll) {
-      return !clipsMap.value[p] || clipsMap.value[p].length === 0
-    }
-    return true // Ticked -> force re-analyze
+    return !clipsMap.value[p] || clipsMap.value[p].length === 0
   })
   const alreadyCut = allTargets.filter(p => !targets.includes(p))
 
