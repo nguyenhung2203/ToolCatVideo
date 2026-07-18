@@ -1,4 +1,4 @@
-import { ref, computed, type Ref } from 'vue'
+import { ref, computed, watch, type Ref } from 'vue'
 import { SearchImages, DownloadImages, CancelImageDownload, GetDefaultImageDownloadDir, SelectFolder } from '../../../wailsjs/go/main/App'
 import { imagedownloader } from '../../../wailsjs/go/models'
 import { EventsOn } from '../../../wailsjs/runtime/runtime'
@@ -84,15 +84,19 @@ export function useImageDownloader(
   })
 
   const getEnvKeyForSource = (src: ImageSource): string => {
-    if (src === 'pixabay') return (import.meta.env.VITE_PIXABAY_API_KEY as string) || ''
-    if (src === 'unsplash') return (import.meta.env.VITE_UNSPLASH_ACCESS_KEY as string) || (import.meta.env.VITE_UNSPLASH_API_KEY as string) || ''
-    if (src === 'pexels') return (import.meta.env.VITE_PEXELS_API_KEY as string) || ''
+    if (src === 'pixabay') return (import.meta.env.VITE_PIXABAY_API_KEY as string) || (import.meta.env.VITE_PIXABAY_KEY as string) || ''
+    if (src === 'unsplash') return (import.meta.env.VITE_UNSPLASH_ACCESS_KEY as string) || (import.meta.env.VITE_UNSPLASH_API_KEY as string) || (import.meta.env.VITE_UNSPLASH_KEY as string) || ''
+    if (src === 'pexels') return (import.meta.env.VITE_PEXELS_API_KEY as string) || (import.meta.env.VITE_PEXELS_KEY as string) || ''
     return ''
   }
 
   const hasEnvKey = computed(() => {
     return !!getEnvKeyForSource(imageSource.value)
   })
+
+  watch(imageSource, (newSource) => {
+    imageApiKey.value = getEnvKeyForSource(newSource)
+  }, { immediate: true })
 
   // === Helpers ===
   const addLog = (msg: string) => {

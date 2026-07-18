@@ -329,8 +329,8 @@ const globalSettingsConfig = ref<any>(null)
 
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
-  sceneThreshold: 26.0,
-  minClipDuration: 5.0,
+  sceneThreshold: 20.0,
+  minClipDuration: 1.0,
   maxClipDuration: 60.0,
   autoAcceptScore: 60,
   reviewMinScore: 35,
@@ -1536,8 +1536,8 @@ const loadProject = async (projId: string) => {
       Object.assign(analyzerConfig, JSON.parse(JSON.stringify(globalSettingsConfig.value)))
     } else {
       analyzerConfig.mode = 'smart'
-      analyzerConfig.sceneThreshold = 26.0
-      analyzerConfig.minClipDuration = 5.0
+      analyzerConfig.sceneThreshold = 20.0
+      analyzerConfig.minClipDuration = 1.0
       analyzerConfig.maxClipDuration = 30.0
       analyzerConfig.autoAcceptScore = 60
       analyzerConfig.reviewMinScore = 35
@@ -2329,12 +2329,12 @@ const formatSize = (bytes: number) => {
       </div>
       <div class="header-actions">
         <!-- Nút chọn video -->
-        <button :disabled="isAnalyzing || isExporting" @click="handleSelectFiles" class="btn select-btn flex-center">
+        <button @click="handleSelectFiles" class="btn select-btn flex-center">
           <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           Chọn Video Gốc
         </button>
         <!-- Nút tải video online -->
-        <button :disabled="isAnalyzing || isExporting" @click="openDownloadPanel" class="btn select-btn flex-center">
+        <button @click="openDownloadPanel" class="btn select-btn flex-center">
           <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M5 20h14v-2H5v2zM12 2L4 10h5v6h6v-6h5L12 2z"/></svg>
           Tải Video Online
         </button>
@@ -2526,7 +2526,6 @@ const formatSize = (bytes: number) => {
                   <option value="amd">AMD (Card rời AMD)</option>
                   <option value="none">❌ Không tăng tốc (chỉ dùng CPU)</option>
                 </select>
-                <span style="font-size: 9px; opacity: 0.55; margin-top: 2px; display: block;">Bật GPU giúp phân tích & xuất video nhanh hơn 3-5 lần</span>
               </div>
             </div>
           </div>
@@ -2918,81 +2917,81 @@ const formatSize = (bytes: number) => {
             </template>
           </div>
         </div>
-
-        <!-- PANEL XUẤN BẢN CỐ ĐỊNH Ở CUỐI GÓC DƯỚI CLIPS -->
-        <div class="clips-export-publisher-bar" v-if="selectedClips.size > 0" :class="{ 'panel-disabled': isAnalyzing }">
-          <div class="pub-left" style="display: flex; align-items: center; flex: none; flex-shrink: 0;">
-            <label class="toggle-row inline" style="cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 8px; margin-bottom: 0; user-select: none; font-weight: 600; color: var(--l-text); white-space: nowrap; flex-shrink: 0;">
-              <input type="checkbox" v-model="exportWithThumbnails" style="width: 16px; height: 16px; accent-color: var(--wx-brand-primary);" />
-              Xuất kèm ảnh Thumbnail
-            </label>
-          </div>
-
-          <div class="pub-right" style="display: flex; align-items: center; gap: 16px; flex: 1; justify-content: flex-end;">
-            <!-- Tiến trình xuất -->
-            <div v-if="isExporting && exportProgress.total > 0" class="pub-progress-box" 
-                 :style="{
-                   display: 'flex', 
-                   flexDirection: 'row',
-                   flexWrap: 'nowrap',
-                   alignItems: 'center', 
-                   gap: '12px', 
-                   flex: 1, 
-                   minWidth: '580px', 
-                   padding: '6px 12px', 
-                   userSelect: 'none', 
-                   fontSize: '12.5px',
-                   borderRadius: '8px',
-                   border: '1px solid rgba(255, 255, 255, 0.06)',
-                   background: `linear-gradient(to right, rgba(16, 185, 129, 0.12) 0%, rgba(16, 185, 129, 0.12) ${exportProgress.done / exportProgress.total * 100}%, rgba(255, 255, 255, 0.01) ${exportProgress.done / exportProgress.total * 100}%)`
-                 }">
-              <!-- Tổng tiến độ Video -->
-              <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
-                🎬 Cắt Video: <strong style="color: var(--success-color);">{{ videoDoneCount }}/{{ exportProgress.total }}</strong>
-              </span>
-              
-              <span style="color: rgba(255,255,255,0.15)">|</span>
-              
-              <!-- Tổng tiến độ Thumbnail -->
-              <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
-                🎨 Ảnh bìa AI: 
-                <template v-if="exportWithThumbnails">
-                  <strong style="color: #38bdf8;">{{ thumbDoneCount }}/{{ exportProgress.total }}</strong>
-                </template>
-                <span v-else style="color: var(--text-muted); font-size: 11px; font-weight: normal; font-style: italic;">(Tắt)</span>
-              </span>
-              
-              <span style="color: rgba(255,255,255,0.15)">|</span>
-
-              <!-- Tên Video đang xử lý -->
-              <div style="color: var(--l-text-muted); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; text-align: left;" :title="exportStatusText">
-                {{ formatExportStatusMsg(exportStatusText) }}
-              </div>
-              
-              <span style="color: rgba(255,255,255,0.15)">|</span>
-              
-              <!-- ETA -->
-              <span class="eta-badge" style="font-size: 11px; font-weight: bold; color: var(--accent-color); padding: 2px 6px; background: rgba(99, 102, 241, 0.1); border-radius: 4px; white-space: nowrap;">
-                {{ getExportETA() }}
-              </span>
-            </div>
-
-            <button v-if="!isExporting" @click="removeSelectedClips" class="btn delete-selected-btn-bar flex-center" title="Xóa các clip đã chọn">
-              🗑️ Xóa {{ selectedClips.size }} Clip
-            </button>
-            <button v-if="isExporting" @click="stopExport" class="btn big-export-btn stop-export-btn flex-center">
-              <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><rect x="6" y="6" width="12" height="12" fill="currentColor"/></svg>
-              <span class="font-bold">Dừng Xuất</span>
-            </button>
-            <button v-else @click="exportClips" class="btn big-export-btn flex-center">
-              <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
-              <span class="font-bold">
-                {{ selectedClips.size > 0 ? `Xuất ${selectedClips.size} Clip Đã Chọn` : `Xuất Toàn Bộ ${displayClipsCount} Clip` }}
-              </span>
-            </button>
-          </div>
-        </div>
       </section>
+
+      <!-- PANEL XUẤN BẢN CỐ ĐỊNH Ở CUỐI GÓC DƯỚI CLIPS -->
+      <div class="clips-export-publisher-bar" v-if="selectedClips.size > 0" :class="{ 'panel-disabled': isAnalyzing }">
+        <div class="pub-left" style="display: flex; align-items: center; flex: none; flex-shrink: 0;">
+          <label class="toggle-row inline" style="cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 8px; margin-bottom: 0; user-select: none; font-weight: 600; color: var(--l-text); white-space: nowrap; flex-shrink: 0;">
+            <input type="checkbox" v-model="exportWithThumbnails" style="width: 16px; height: 16px; accent-color: var(--wx-brand-primary);" />
+            Xuất kèm ảnh Thumbnail
+          </label>
+        </div>
+
+        <div class="pub-right" style="display: flex; align-items: center; gap: 16px; flex: 1; justify-content: flex-end;">
+          <!-- Tiến trình xuất -->
+          <div v-if="isExporting && exportProgress.total > 0" class="pub-progress-box" 
+               :style="{
+                 display: 'flex', 
+                 flexDirection: 'row',
+                 flexWrap: 'nowrap',
+                 alignItems: 'center', 
+                 gap: '12px', 
+                 flex: 1, 
+                 minWidth: '580px', 
+                 padding: '6px 12px', 
+                 userSelect: 'none', 
+                 fontSize: '12.5px',
+                 borderRadius: '8px',
+                 border: '1px solid rgba(255, 255, 255, 0.06)',
+                 background: `linear-gradient(to right, rgba(16, 185, 129, 0.12) 0%, rgba(16, 185, 129, 0.12) ${exportProgress.done / exportProgress.total * 100}%, rgba(255, 255, 255, 0.01) ${exportProgress.done / exportProgress.total * 100}%)`
+               }">
+            <!-- Tổng tiến độ Video -->
+            <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
+              🎬 Cắt Video: <strong style="color: var(--success-color);">{{ videoDoneCount }}/{{ exportProgress.total }}</strong>
+            </span>
+            
+            <span style="color: rgba(255,255,255,0.15)">|</span>
+            
+            <!-- Tổng tiến độ Thumbnail -->
+            <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
+              🎨 Ảnh bìa AI: 
+              <template v-if="exportWithThumbnails">
+                <strong style="color: #38bdf8;">{{ thumbDoneCount }}/{{ exportProgress.total }}</strong>
+              </template>
+              <span v-else style="color: var(--text-muted); font-size: 11px; font-weight: normal; font-style: italic;">(Tắt)</span>
+            </span>
+            
+            <span style="color: rgba(255,255,255,0.15)">|</span>
+
+            <!-- Tên Video đang xử lý -->
+            <div style="color: var(--l-text-muted); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; text-align: left;" :title="exportStatusText">
+              {{ formatExportStatusMsg(exportStatusText) }}
+            </div>
+            
+            <span style="color: rgba(255,255,255,0.15)">|</span>
+            
+            <!-- ETA -->
+            <span class="eta-badge" style="font-size: 11px; font-weight: bold; color: var(--accent-color); padding: 2px 6px; background: rgba(99, 102, 241, 0.1); border-radius: 4px; white-space: nowrap;">
+              {{ getExportETA() }}
+            </span>
+          </div>
+
+          <button v-if="!isExporting" @click="removeSelectedClips" class="btn delete-selected-btn-bar flex-center" title="Xóa các clip đã chọn">
+            🗑️ Xóa {{ selectedClips.size }} Clip
+          </button>
+          <button v-if="isExporting" @click="stopExport" class="btn big-export-btn stop-export-btn flex-center">
+            <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><rect x="6" y="6" width="12" height="12" fill="currentColor"/></svg>
+            <span class="font-bold">Dừng Xuất</span>
+          </button>
+          <button v-else @click="exportClips" class="btn big-export-btn flex-center">
+            <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
+            <span class="font-bold">
+              {{ selectedClips.size > 0 ? `Xuất ${selectedClips.size} Clip Đã Chọn` : `Xuất Toàn Bộ ${displayClipsCount} Clip` }}
+            </span>
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- Thanh trạng thái CapCut-style dưới đáy -->
@@ -3932,13 +3931,6 @@ const formatSize = (bytes: number) => {
                 <!-- Badge: key từ .env -->
                 <span v-if="imageHasEnvKey" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;background:rgba(16,185,129,.15);color:#10b981;border:1px solid rgba(16,185,129,.3);pointer-events:none;">✅ .env</span>
               </div>
-              <!-- Hint khi chưa có key -->
-              <span v-if="!imageApiKey" style="font-size:11px;color:#fbbf24;flex-basis:100%;margin-top:2px;">
-                ⚠️ Chưa có key. Nhập vào đây hoặc thêm vào file <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:3px;">frontend/.env.local</code> để dùng mặc định.
-              </span>
-              <span v-else-if="imageHasEnvKey" style="font-size:11px;color:#10b981;flex-basis:100%;margin-top:2px;">
-                ✅ Đang dùng key từ file <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:3px;">frontend/.env.local</code>
-              </span>
               <a :href="imageSource==='pixabay'?'https://pixabay.com/api/docs/':imageSource==='unsplash'?'https://unsplash.com/developers':'https://www.pexels.com/api/'" target="_blank" style="font-size:12px;font-weight:600;color:#06b6d4;text-decoration:none;white-space:nowrap;flex-shrink:0;">Lấy key miễn phí →</a>
             </div>
           </div>

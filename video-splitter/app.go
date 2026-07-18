@@ -640,7 +640,7 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 				threads = 2 // Giới hạn 2 threads mỗi clip để chạy song song mượt mà
 			}
 			runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Đang cắt video...", filepath.Base(sourcePath), clip.Index))
-			err := exporter.CutVideo(clipCtx, sourcePath, clip, outPath, cfg.ExportPreset, cfg.ExportCRF, threads, cfg.HardwareAccel)
+			err := exporter.CutVideo(clipCtx, sourcePath, clip, outPath, cfg.ExportPreset, cfg.ExportCRF, threads, cfg.HardwareAccel, cfg.Mode)
 			if err != nil {
 				if clipCtx.Err() != nil {
 					res.Error = "Tiến trình bị dừng"
@@ -792,7 +792,7 @@ func (a *App) MergeClips(sourcePath string, clips []project.Clip, outPath string
 	for i, clip := range clips {
 		runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Ghép: đang chuẩn bị phân đoạn %d/%d...", i+1, len(clips)))
 		p := filepath.Join(tmpDir, fmt.Sprintf("part_%03d.mp4", i))
-		if err := exporter.CutVideo(context.Background(), sourcePath, clip, p, cfg.ExportPreset, cfg.ExportCRF, 0, cfg.HardwareAccel); err != nil {
+		if err := exporter.CutVideo(context.Background(), sourcePath, clip, p, cfg.ExportPreset, cfg.ExportCRF, 0, cfg.HardwareAccel, cfg.Mode); err != nil {
 			return "", fmt.Errorf("lỗi chuẩn bị clip #%d: %v", clip.Index, err)
 		}
 		parts = append(parts, p)
