@@ -464,6 +464,12 @@ const computedVideoSrc = computed(() => {
   return activeVideoSrc.value
 })
 
+watch(computedVideoSrc, () => {
+  if (videoPlayer.value) {
+    videoPlayer.value.load()
+  }
+})
+
 // === QUẢN LÝ PROMPT THUMBNAIL MẪU (PRESETS) ===
 interface PromptPreset {
   id: string
