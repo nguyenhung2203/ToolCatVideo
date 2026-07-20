@@ -3098,8 +3098,8 @@ const formatSize = (bytes: number) => {
         </div>
 
         <!-- Thư mục xuất chung mặc định (chỉ hiện khi chưa xuất) -->
-        <div v-if="!isExporting" style="display: flex; align-items: center; gap: 8px; flex: 1; margin: 0 16px; min-width: 0; align-self: center;">
-          <span style="font-size: 13px; font-weight: 600; color: var(--l-text); white-space: nowrap; line-height: 1; display: inline-flex; align-items: center;">
+        <div v-if="!isExporting" style="display: flex; align-items: center; gap: var(--wx-space-2); flex: 1; margin: 0 var(--wx-space-4); min-width: 0; align-self: center;">
+          <span style="font-size: var(--wx-fs-13); font-weight: var(--wx-fw-semibold); color: var(--wx-text-primary); white-space: nowrap; line-height: 1; display: inline-flex; align-items: center;">
             Lưu vào:
           </span>
           <input type="text" v-model="outDir" class="file-path-input dl-pub-dir-input" readonly :title="outDir" />

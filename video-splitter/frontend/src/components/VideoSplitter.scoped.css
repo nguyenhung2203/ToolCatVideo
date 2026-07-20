@@ -2120,7 +2120,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all 150ms ease;
+  transition: all var(--wx-d-fast) var(--wx-ease-standard);
   flex-shrink: 0;
   box-sizing: border-box;
 }
