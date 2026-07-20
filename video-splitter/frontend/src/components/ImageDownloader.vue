@@ -3,7 +3,7 @@ import { onMounted, ref, reactive } from 'vue'
 import { useImageDownloader, IMAGE_SOURCES } from './composables/useImageDownloader'
 import {
   Image as ImageIcon, Search, Download, Square,
-  FolderOpen, Check, Key, Loader2, Trash2, Globe, Palette, Camera
+  FolderOpen, Check, Key, Loader2, Trash2, Globe, Palette, Camera, SlidersHorizontal
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -25,6 +25,8 @@ const {
   searchImages, startImageDownload, cancelImageDl, pickImageDir, initImageEvents,
   removeSelectedImages,
 } = useImageDownloader(props.showToast)
+
+const showFilters = ref(false)
 
 onMounted(async () => {
   await openImagePanel()
@@ -176,66 +178,79 @@ function updateSelectionFromDrag() {
           <Search v-else :size="14" />
           {{ isImageSearching ? 'Đang tìm...' : 'Tìm Ảnh' }}
         </button>
+        <button
+          type="button"
+          @click="showFilters = !showFilters"
+          class="btn img-filter-toggle-btn"
+          :class="{ active: showFilters }"
+          title="Bộ lọc nâng cao"
+        >
+          <SlidersHorizontal :size="14" />
+          <span>Bộ lọc</span>
+        </button>
       </div>
     </div>
 
-    <!-- ── Source & Count row ─────────────────────────── -->
-    <div class="img-config-row">
-      <!-- Source pills -->
-      <div class="img-sources-col">
-        <label class="img-label">Nguồn ảnh:</label>
-        <div class="img-source-pills">
-          <button
-            v-for="src in IMAGE_SOURCES"
-            :key="src.value"
-            type="button"
-            :title="src.hint"
-            class="img-source-pill"
-            :class="{ active: imageSource === src.value }"
-            @click="imageSource = src.value"
-          >
-            {{ src.label }}
-            <span v-if="src.needsKey" class="img-key-badge">Key</span>
-          </button>
+    <!-- ── Advanced settings collapsible ────────────────── -->
+    <div v-show="showFilters" class="img-advanced-settings">
+      <!-- ── Source & Count row ─────────────────────────── -->
+      <div class="img-config-row">
+        <!-- Source pills -->
+        <div class="img-sources-col">
+          <label class="img-label">Nguồn ảnh:</label>
+          <div class="img-source-pills">
+            <button
+              v-for="src in IMAGE_SOURCES"
+              :key="src.value"
+              type="button"
+              :title="src.hint"
+              class="img-source-pill"
+              :class="{ active: imageSource === src.value }"
+              @click="imageSource = src.value"
+            >
+              {{ src.label }}
+              <span v-if="src.needsKey" class="img-key-badge">Key</span>
+            </button>
+          </div>
+          <p v-if="imageSelectedSource" class="img-source-hint">{{ imageSelectedSource.hint }}</p>
         </div>
-        <p v-if="imageSelectedSource" class="img-source-hint">{{ imageSelectedSource.hint }}</p>
+
+        <!-- Count select -->
+        <div class="img-count-col">
+          <label class="img-label">Số lượng:</label>
+          <select v-model="imageMaxCount" class="img-select">
+            <option :value="20">20 ảnh</option>
+            <option :value="50">50 ảnh</option>
+            <option :value="100">100 ảnh</option>
+            <option :value="200">200 ảnh</option>
+            <option :value="500">500 ảnh</option>
+            <option :value="1000">1000 ảnh</option>
+          </select>
+        </div>
       </div>
 
-      <!-- Count select -->
-      <div class="img-count-col">
-        <label class="img-label">Số lượng:</label>
-        <select v-model="imageMaxCount" class="img-select">
-          <option :value="20">20 ảnh</option>
-          <option :value="50">50 ảnh</option>
-          <option :value="100">100 ảnh</option>
-          <option :value="200">200 ảnh</option>
-          <option :value="500">500 ảnh</option>
-          <option :value="1000">1000 ảnh</option>
-        </select>
+      <!-- ── API Key row ─────────────────────────────────── -->
+      <div class="img-apikey-row" v-if="sourceNeedsKey">
+        <Key :size="14" class="img-key-icon" />
+        <label class="img-apikey-label">{{ imageSelectedSource?.label }} API Key:</label>
+        <div class="img-apikey-input-wrap">
+          <input
+            v-model="imageApiKey"
+            type="password"
+            class="img-text-input img-apikey-input"
+            :placeholder="`Nhập ${imageSelectedSource?.label} API Key...`"
+          />
+          <span v-if="imageHasEnvKey" class="img-env-badge" style="display: inline-flex; align-items: center; gap: 3px;">
+            <Check :size="11" />
+            .env
+          </span>
+        </div>
+        <a
+          :href="imageSource==='pixabay'?'https://pixabay.com/api/docs/':imageSource==='unsplash'?'https://unsplash.com/developers':'https://www.pexels.com/api/'"
+          target="_blank"
+          class="img-getkey-link"
+        >Lấy key miễn phí →</a>
       </div>
-    </div>
-
-    <!-- ── API Key row ─────────────────────────────────── -->
-    <div class="img-apikey-row" v-if="sourceNeedsKey">
-      <Key :size="14" class="img-key-icon" />
-      <label class="img-apikey-label">{{ imageSelectedSource?.label }} API Key:</label>
-      <div class="img-apikey-input-wrap">
-        <input
-          v-model="imageApiKey"
-          type="password"
-          class="img-text-input img-apikey-input"
-          :placeholder="`Nhập ${imageSelectedSource?.label} API Key...`"
-        />
-        <span v-if="imageHasEnvKey" class="img-env-badge" style="display: inline-flex; align-items: center; gap: 3px;">
-          <Check :size="11" />
-          .env
-        </span>
-      </div>
-      <a
-        :href="imageSource==='pixabay'?'https://pixabay.com/api/docs/':imageSource==='unsplash'?'https://unsplash.com/developers':'https://www.pexels.com/api/'"
-        target="_blank"
-        class="img-getkey-link"
-      >Lấy key miễn phí →</a>
     </div>
 
     <!-- ── Results area ───────────────────────────────── -->
@@ -304,11 +319,6 @@ function updateSelectionFromDrag() {
         </div>
 
       </template>
-    </div>
-
-    <!-- ── Log strip ──────────────────────────────────── -->
-    <div v-if="imageSearchLog.length > 0" class="img-log-strip">
-      {{ imageSearchLog[0] }}
     </div>
 
     </div> <!-- end img-body -->
@@ -458,7 +468,7 @@ function updateSelectionFromDrag() {
 
 /* ── Common text input ─────────────────────────────────────── */
 .img-text-input {
-  background: var(--wx-surface-sunken, #0d1929);
+  background: var(--wx-surface-sunken);
   border: 1.5px solid var(--wx-border-default);
   border-radius: var(--wx-radius-md);
   color: var(--wx-text-primary);
@@ -508,6 +518,42 @@ function updateSelectionFromDrag() {
 
 .img-search-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
+.img-filter-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--wx-space-1);
+  white-space: nowrap;
+  height: 38px;
+  box-sizing: border-box;
+  padding: 0 var(--wx-space-3);
+  font-size: var(--wx-fs-13);
+  font-weight: var(--wx-fw-semibold);
+  background: var(--wx-surface-sunken);
+  border: 1.5px solid var(--wx-border-default);
+  color: var(--wx-text-secondary);
+  border-radius: var(--wx-radius-md);
+  transition: all 150ms ease;
+  cursor: pointer;
+}
+
+.img-filter-toggle-btn:hover {
+  background: var(--wx-hover-bg);
+  color: var(--wx-text-primary);
+  border-color: var(--wx-border-active);
+}
+
+.img-filter-toggle-btn.active {
+  background: color-mix(in srgb, var(--wx-brand-primary) 12%, transparent);
+  border-color: var(--wx-brand-primary);
+  color: var(--wx-brand-primary);
+}
+
+.img-advanced-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wx-space-3);
+}
+
 /* ── Config row ────────────────────────────────────────────── */
 .img-config-row {
   display: flex;
@@ -553,10 +599,10 @@ function updateSelectionFromDrag() {
 .img-key-badge {
   font-size: 9px;
   padding: 1px 5px;
-  background: color-mix(in srgb, #f59e0b 20%, transparent);
-  color: #fbbf24;
+  background: color-mix(in srgb, var(--wx-warning-solid) 20%, transparent);
+  color: var(--wx-warning-text);
   border-radius: var(--wx-radius-sm);
-  border: 1px solid color-mix(in srgb, #f59e0b 35%, transparent);
+  border: 1px solid color-mix(in srgb, var(--wx-warning-solid) 35%, transparent);
 }
 
 .img-source-hint {
@@ -591,12 +637,12 @@ function updateSelectionFromDrag() {
   gap: var(--wx-space-2);
   flex-wrap: wrap;
   padding: var(--wx-space-2) var(--wx-space-3);
-  background: color-mix(in srgb, #f59e0b 5%, transparent);
-  border: 1px solid color-mix(in srgb, #f59e0b 20%, transparent);
+  background: color-mix(in srgb, var(--wx-warning-solid) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--wx-warning-solid) 20%, transparent);
   border-radius: var(--wx-radius-md);
 }
 
-.img-key-icon { color: #fbbf24; flex-shrink: 0; }
+.img-key-icon { color: var(--wx-warning-text); flex-shrink: 0; }
 
 .img-apikey-label {
   font-size: var(--wx-fs-12);
@@ -629,9 +675,9 @@ function updateSelectionFromDrag() {
   font-weight: var(--wx-fw-bold);
   padding: 2px var(--wx-space-2);
   border-radius: var(--wx-radius-sm);
-  background: color-mix(in srgb, #10b981 15%, transparent);
-  color: #10b981;
-  border: 1px solid color-mix(in srgb, #10b981 30%, transparent);
+  background: color-mix(in srgb, var(--wx-success-solid) 15%, transparent);
+  color: var(--wx-success-text);
+  border: 1px solid color-mix(in srgb, var(--wx-success-solid) 30%, transparent);
   pointer-events: none;
 }
 
@@ -650,7 +696,9 @@ function updateSelectionFromDrag() {
 /* ── Results area ───────────────────────────────────────────── */
 .img-results-area {
   flex: 1;
-  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 /* Empty state */
@@ -771,7 +819,8 @@ function updateSelectionFromDrag() {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
   gap: var(--wx-space-2);
-  max-height: 400px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 4px;
 }
@@ -850,19 +899,6 @@ function updateSelectionFromDrag() {
   text-overflow: ellipsis;
 }
 
-/* ── Log strip ─────────────────────────────────────────────── */
-.img-log-strip {
-  padding: var(--wx-space-1) 0;
-  border-top: 1px solid var(--wx-border-default);
-  font-size: var(--wx-fs-12);
-  line-height: 1.4;
-  color: var(--wx-text-muted);
-  font-family: var(--wx-font-mono, monospace);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex-shrink: 0;
-}
 
 /* ── Footer ─────────────────────────────────────────────────── */
 .img-footer {

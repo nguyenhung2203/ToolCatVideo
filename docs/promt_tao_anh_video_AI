@@ -1,0 +1,782 @@
+Kết luận
+
+Chưa đủ ổn định để dùng lâu dài hoặc phát hành chính thức.
+
+Bản hiện tại có thể chạy thử trên đúng máy, đúng tài khoản và đúng giao diện Google mà bạn vừa test, nhưng vẫn mang tính prototype/demo automation. Chỉ cần Google đổi DOM, đổi ngôn ngữ, thay vị trí nút hoặc thêm một popup là luồng có thể tải nhầm kết quả, gửi prompt lặp hoặc treo.
+
+Đánh giá:
+
+Kiến trúc nền: 7/10
+Khả năng chạy demo hiện tại: 6/10
+Độ ổn định dài hạn: 3/10
+Mức sẵn sàng phát hành: chưa đạt
+
+Tôi đã kiểm tra cả 10 file. Tất cả đều parse được bằng gofmt; riêng flow.go còn một số lỗi định dạng khoảng trắng. Tôi chưa thể xác nhận go test ./... hoặc wails build vì các file được gửi rời, không có toàn bộ repository, go.mod, internal/media, internal/utils và frontend.
+
+Những phần đã làm đúng
+
+Kiến trúc đã có nền khá tốt:
+
+Tách BrowserSession, Service, TaskManager, selector, Gemini, Flow và download.
+Dùng Chrome profile riêng thay vì profile cá nhân.
+Không dùng các hàm Must* trong luồng production.
+Có context, timeout, cancel và Wails event.
+Chỉ cho phép một tác vụ hoạt động tại một thời điểm.
+Có kiểm tra file video bằng ffprobe.
+Có đổi tên file, tránh ghi đè và hỗ trợ copy khi khác ổ đĩa.
+Có state rõ như launching, generating, downloading, completed.
+
+Đó là nền đúng, nhưng phần automation thực tế còn nhiều lỗi nghiêm trọng.
+
+Các lỗi bắt buộc sửa trước khi dùng thật
+1. Không được để phần né phát hiện automation
+
+Trong browser.go có:
+
+l.Delete("enable-automation")
+l.Delete("disable-extensions")
+l.Set("disable-blink-features", "AutomationControlled")
+
+Kèm comment:
+
+// bypass Google anti-bot login block
+
+Đây không phải cách làm ổn định. Nó có thể:
+
+Bị Chrome hoặc Google vô hiệu hóa sau một bản cập nhật.
+Làm hành vi đăng nhập không nhất quán.
+Kích hoạt xác minh tài khoản.
+Tạo rủi ro về điều khoản sử dụng.
+
+Google không cấm toàn bộ browser automation trong mọi trường hợp, nhưng điều khoản có giới hạn việc dùng phương tiện tự động trái với chỉ dẫn máy đọc được và việc che giấu hoặc xuyên tạc danh tính để vi phạm điều khoản. Vì vậy không nên thiết kế tính năng theo hướng “né anti-bot”.
+
+Đoạn này cần xóa:
+
+l.Delete("enable-automation")
+l.Delete("disable-extensions")
+l.Set("disable-blink-features", "AutomationControlled")
+
+Giữ Chrome visible, người dùng tự đăng nhập và tự xử lý CAPTCHA.
+
+Hiện tại phần khởi chạy này nằm trực tiếp trong BrowserSession.Start.
+
+2. DismissWelcomeModals đang tự đồng ý điều khoản
+
+Danh sách nút tự động bấm có:
+
+Đồng ý
+I agree
+Accept
+Chấp nhận
+Tôi đồng ý
+
+Đây là lỗi thiết kế nghiêm trọng. Tool không được tự đồng ý:
+
+Điều khoản mới.
+Chính sách riêng tư.
+Thông báo sử dụng AI.
+Xác nhận tài khoản.
+Màn hình yêu cầu quyền.
+
+Chỉ nên tự đóng các popup không nhạy cảm như:
+
+Got it
+Đã hiểu
+Close
+Đóng
+Not now
+Để sau
+
+Khi xuất hiện I agree, Accept, Đồng ý, phải chuyển trạng thái:
+
+TaskStateUserActionRequired
+
+và yêu cầu người dùng tự thao tác.
+
+3. TaskManager có nguy cơ sự kiện của task cũ ghi đè task mới
+
+Các hàm hiện tại:
+
+EmitStatus(...)
+EmitError(...)
+EmitResult(...)
+
+không nhận taskID. Chúng luôn cập nhật activeTask hiện tại.
+
+Tình huống lỗi:
+
+Task A bị hủy
+→ Task B được tạo
+→ goroutine Task A chạy chậm và phát EmitError
+→ EmitError đánh dấu Task B là failed
+
+EmitResult cũng không kiểm tra result.TaskID có trùng với active task hay không. Đây là lỗi race logic nghiêm trọng.
+
+Phải sửa thành:
+
+func (tm *TaskManager) EmitStatus(
+	taskID string,
+	state TaskState,
+	message string,
+	progress int,
+) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if tm.activeTask == nil || tm.activeTask.ID != taskID {
+		return
+	}
+
+	tm.activeTask.State = state
+	tm.activeTask.Message = message
+	tm.activeTask.Progress = clamp(progress, 0, 100)
+
+	if tm.ctx != nil {
+		runtime.EventsEmit(tm.ctx, "browser-ai:status", StatusEvent{
+			TaskID:   taskID,
+			State:    state,
+			Message:  message,
+			Progress: tm.activeTask.Progress,
+		})
+	}
+}
+
+Tương tự với:
+
+EmitError(taskID, err)
+EmitResult(taskID, result)
+CompleteTask(taskID)
+
+GetActiveTask() cũng không nên trả pointer nội bộ sau khi đã unlock. Hãy trả về snapshot dạng value.
+
+4. Có data race khi đọc activeTask
+
+StartTask() trả về:
+
+*activeTask
+
+Sau đó Service.Generate() đọc:
+
+task.State
+task.StartedAt
+
+trong khi goroutine có thể đã thay đổi task.State.
+
+GetActiveTask() cũng trả pointer đang được quản lý bởi mutex nhưng caller sử dụng pointer đó sau khi mutex đã nhả.
+
+Cần trả bản sao:
+
+type TaskSnapshot struct {
+	ID        string
+	State     TaskState
+	Message   string
+	Progress  int
+	StartedAt time.Time
+}
+
+func (tm *TaskManager) GetActiveTask() *TaskSnapshot {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if tm.activeTask == nil {
+		return nil
+	}
+
+	return &TaskSnapshot{
+		ID:        tm.activeTask.ID,
+		State:     tm.activeTask.State,
+		Message:   tm.activeTask.Message,
+		Progress:  tm.activeTask.Progress,
+		StartedAt: tm.activeTask.StartedAt,
+	}
+}
+
+Bắt buộc chạy:
+
+go test -race ./internal/browserai/...
+5. Flow đang bấm tải xuống hai lần
+
+Ở luồng tải ảnh Flow, code hiện tại thực hiện:
+
+_ = optionBtn.Click(...)
+
+sau đó mới đăng ký:
+
+waitDownload := session.browser.WaitDownload(...)
+
+rồi lại:
+
+_ = optionBtn.Click(...)
+
+Điều này có thể gây:
+
+Lần click đầu đã tải file nhưng Rod chưa lắng nghe.
+Tải hai file giống nhau.
+Menu đóng sau lần đầu nên lần hai không hoạt động.
+waitDownload() chờ vô hạn vì sự kiện tải đã xảy ra trước đó.
+
+Đây là lỗi trực tiếp trong luồng Flow.
+
+Thứ tự đúng:
+
+downloadBrowser := session.browser.Context(ctx)
+waitDownload := downloadBrowser.WaitDownload(session.downloadDir)
+
+if err := optionBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
+	return nil, fmt.Errorf("click download: %w", err)
+}
+
+downloadInfo := waitDownload()
+if downloadInfo == nil {
+	return nil, context.Cause(ctx)
+}
+
+Rod yêu cầu đăng ký WaitDownload trước khi click. Hàm này chờ đến khi PageDownloadProgress chuyển sang completed, và file được lưu tại filepath.Join(dir, info.GUID).
+
+6. Download hiện không hủy đúng theo task context
+
+Browser được khởi tạo bằng:
+
+context.Background()
+
+và download dùng:
+
+session.browser.WaitDownload(...)
+
+Do đó waitDownload() sử dụng context của browser, không phải taskCtx. Khi người dùng bấm Hủy, vòng chờ tải có thể không dừng.
+
+Rod truyền context xuống các thao tác con khi dùng Browser.Context(ctx), vì vậy phải dùng clone gắn với task context.
+
+Sửa:
+
+taskBrowser := session.browser.Context(ctx)
+waitDownload := taskBrowser.WaitDownload(session.downloadDir)
+
+Sau đó không cần polling .crdownload toàn thư mục nữa. WaitDownload đã chờ trạng thái hoàn tất.
+
+Phần polling hiện tại còn một lỗi khác: chỉ cần có bất kỳ file .crdownload nào khác trong thư mục thì task này tiếp tục chờ, dù file của nó đã hoàn thành.
+
+7. Gemini có thể tải nhầm ảnh cũ
+
+Luồng Gemini hiện chỉ tìm:
+
+GeminiSelectors.DownloadButtons
+
+sau khi gửi prompt. Nếu trang đã có câu trả lời cũ với nút Download, code có thể phát hiện nút cũ ngay lập tức và tải ảnh cũ.
+
+Phải thực hiện:
+
+Trước khi gửi prompt:
+- Lấy danh sách response container hiện tại.
+- Ghi nhận ID/DOM node/backend node hoặc số response.
+
+Sau khi gửi:
+- Chờ response container mới xuất hiện.
+- Chỉ tìm ảnh và nút Download bên trong container mới.
+
+Ví dụ abstraction:
+
+type ResultAnchor struct {
+	ResponseCount int
+	MediaURLs     map[string]struct{}
+}
+
+func CaptureGeminiAnchor(page *rod.Page) (ResultAnchor, error)
+func WaitForNewGeminiResult(
+	ctx context.Context,
+	page *rod.Page,
+	anchor ResultAnchor,
+) (*rod.Element, error)
+
+Không tìm nút Download trên toàn trang.
+
+8. Flow cũng có thể tải nhầm ảnh hoặc video cũ
+
+Flow hiện xác định ảnh mới bằng:
+
+Số card sau > số card trước
+
+sau đó tải card index:
+
+0, 1, 2...
+
+Cách này chỉ đúng khi ảnh mới luôn nằm đầu danh sách. Nếu Google đổi thứ tự hoặc append ảnh mới xuống cuối, code tải ảnh cũ.
+
+Video cũng được xác định bằng:
+
+số nút download mới tăng
+→ lấy nút download cuối cùng trên toàn trang
+
+Điều này có thể chọn nhầm nút:
+
+Tải project.
+Tải asset cũ.
+Tải ảnh.
+Tải video của task trước.
+
+Phần chọn nút video hiện dựa trên toàn bộ button, a của trang.
+
+Cần lưu identity thật:
+
+media URL
+job ID
+card data attribute
+response container
+creation timestamp
+DOM backend node ID
+
+Sau đó chỉ thao tác trong container của job mới.
+
+9. Nhiều selector :contains(...) không đúng với Rod CSS selector
+
+Ví dụ:
+
+button:contains('Sign in')
+button:contains('Dự án mới')
+span:contains('settings')
+
+Page.Elements() của Rod nhận CSS selector. :contains() không phải CSS selector chuẩn trong querySelectorAll. Rod cung cấp riêng:
+
+ElementR(selector, regex)
+Elements + đọc Text()
+ElementX(xpath)
+
+Rod ghi rõ Element dùng CSS selector, còn ElementR dùng CSS selector kết hợp regex text.
+
+Do đó registry nên có loại selector:
+
+type SelectorType string
+
+const (
+	SelectorCSS   SelectorType = "css"
+	SelectorXPath SelectorType = "xpath"
+	SelectorRegex SelectorType = "regex"
+)
+
+type SelectorCandidate struct {
+	Type     SelectorType
+	Selector string
+	Regex    string
+}
+
+Ví dụ:
+
+{
+	Type:     SelectorRegex,
+	Selector: "button",
+	Regex:    `(?i)^(send|gửi)$`,
+}
+
+Không dùng:
+
+button:contains('Gửi')
+
+Selector hiện tại còn dùng XPath tuyệt đối dựa trên #__next và vị trí div[4], button[3], nên rất dễ hỏng khi Google thêm một vùng giao diện.
+
+10. ConfigureFlowSettings có bug khiến tỷ lệ ảnh bị bỏ qua
+
+Điều kiện hiện tại:
+
+if req.ConfirmBeforeCreate == "" &&
+	req.Model == "" &&
+	req.BatchSize == "" {
+	return nil
+}
+
+Không kiểm tra:
+
+req.AspectRatio
+
+Do đó khi người dùng chỉ chọn 16:9, hàm thoát ngay và không cấu hình tỷ lệ.
+
+Phải sửa:
+
+if req.ConfirmBeforeCreate == "" &&
+	req.Model == "" &&
+	req.BatchSize == "" &&
+	req.AspectRatio == "" {
+	return nil
+}
+
+Nghiêm trọng hơn, caller đang bỏ toàn bộ lỗi:
+
+_ = ConfigureFlowSettings(ctx, page, req, tm)
+
+Nếu model hoặc tỷ lệ không được chọn, automation vẫn tiếp tục và tạo kết quả sai mà người dùng không biết.
+
+Phải đổi thành:
+
+if err := ConfigureFlowSettings(ctx, page, req, tm); err != nil {
+	return nil, fmt.Errorf("configure Flow settings: %w", err)
+}
+11. Đường dẫn đang bị hard-code theo máy lập trình
+
+Trong flow.go có:
+
+d:\CongTy\ToolCatVideoNgan\flow_submit_debug.log
+d:\CongTy\ToolCatVideoNgan\flow_project_url.txt
+
+Sang máy khác hoặc đổi thư mục cài đặt là mất log và mất project URL.
+
+Phải đưa về:
+
+%LOCALAPPDATA%/SmartSplitter/browser-ai/
+├── state/
+│   └── flow-project.json
+└── logs/
+    └── browser-ai.log
+
+Dùng:
+
+os.UserConfigDir()
+
+Không ghi đường dẫn workspace của developer vào production.
+
+12. Flow tự gửi lại prompt tới ba lần có thể tốn credit và tạo trùng
+
+Hiện code retry toàn bộ quy trình tới ba lần khi:
+
+UI báo lỗi.
+Download lỗi.
+Không phát hiện kết quả.
+Không tìm được nút tải.
+
+Nhưng sau khi prompt đã gửi thành công, việc gửi lại không còn idempotent. Có thể Google vẫn đang render task đầu tiên nhưng UI chưa được code nhận ra, sau đó tool tạo thêm task thứ hai và thứ ba.
+
+Retry chỉ được phép với:
+
+Không mở được trang.
+Không nhập được prompt.
+Nút submit chắc chắn chưa được bấm.
+Lỗi mạng trước khi submit.
+
+Không tự retry sau trạng thái:
+
+TaskStateSubmittingConfirmed
+
+Sau submit cần có job fingerprint và tiếp tục theo dõi job cũ.
+
+13. Prompt có thể làm vỡ JavaScript fallback
+
+Trong FillFlowPrompt, prompt được chèn vào source JavaScript bằng fmt.Sprintf, nhưng chỉ escape dấu ". Prompt chứa:
+
+\
+xuống dòng
+U+2028
+U+2029
+
+có thể tạo JavaScript không hợp lệ. Nội dung đặc biệt còn có thể biến thành script trong context của trang.
+
+Không ghép dữ liệu vào JavaScript source:
+
+fmt.Sprintf(`el.textContent = "%s"`, prompt)
+
+Dùng argument của Rod:
+
+_, err := input.Eval(
+	`(el, value) => {
+		el.textContent = value;
+		el.dispatchEvent(new InputEvent("input", {
+			bubbles: true,
+			inputType: "insertText",
+			data: value
+		}));
+	}`,
+	prompt,
+)
+
+Rod hỗ trợ truyền argument tới JavaScript dưới dạng giá trị JSON, không cần tự escape.
+
+14. ShowChrome mặc định khiến Chrome chạy headless
+
+Code dùng:
+
+session.Start(..., !showChrome)
+
+Giá trị zero của ShowChrome là false, nên nếu frontend quên truyền thì:
+
+headless = true
+
+Trong khi luồng yêu cầu người dùng đăng nhập, CAPTCHA và xác minh thủ công.
+
+Bản đầu nên loại bỏ tùy chọn headless:
+
+Headless(false)
+
+Chỉ thêm headless sau khi có luồng đăng nhập riêng ổn định và manual E2E đầy đủ.
+
+15. Sai ma trận Provider và MediaType
+
+Hiện Service.Generate() chỉ kiểm tra provider và media riêng biệt, không kiểm tra kết hợp.
+
+Do đó request này hợp lệ theo validation:
+
+{
+  "provider": "gemini",
+  "mediaType": "video"
+}
+
+Nhưng service vẫn gọi:
+
+GenerateGeminiImage(...)
+
+và cuối cùng có thể trả file ảnh nhưng gắn MediaTypeVideo.
+
+Phải kiểm tra:
+
+switch {
+case req.Provider == ProviderGemini &&
+	req.MediaType != MediaTypeImage:
+	return TaskInfo{}, NewError(
+		ErrFeatureUnavailable,
+		"Gemini workflow hiện chỉ hỗ trợ tạo ảnh.",
+	)
+
+case req.Provider == ProviderFlow &&
+	(req.MediaType != MediaTypeImage &&
+		req.MediaType != MediaTypeVideo):
+	return TaskInfo{}, ...
+}
+16. Validation đường dẫn chưa đúng
+
+Đoạn:
+
+req.OutputDir = filepath.Clean(req.OutputDir)
+if strings.Contains(req.OutputDir, "..") {
+	return ...
+}
+
+có hai vấn đề:
+
+Từ chối thư mục hợp lệ như Project..Final.
+Không phải cách đúng để chống traversal sau khi path đã được clean.
+Lỗi MkdirAll đang bị bỏ qua.
+
+Phải:
+
+if !filepath.IsAbs(req.OutputDir) {
+	return TaskInfo{}, errors.New("outputDir phải là đường dẫn tuyệt đối")
+}
+
+if err := os.MkdirAll(req.OutputDir, 0755); err != nil {
+	return TaskInfo{}, fmt.Errorf("create output directory: %w", err)
+}
+
+info, err := os.Stat(req.OutputDir)
+if err != nil {
+	return TaskInfo{}, err
+}
+if !info.IsDir() {
+	return TaskInfo{}, errors.New("outputDir không phải thư mục")
+}
+
+Nếu cần giới hạn trong project, phải dùng filepath.Rel(projectRoot, outputDir).
+
+17. Kiểm tra file ảnh còn quá yếu
+
+Hiện tại chỉ dùng:
+
+http.DetectContentType(...)
+strings.HasPrefix(mimeType, "image/")
+
+Một JPEG bị cắt dở vẫn có thể nhận diện là image/jpeg.
+
+Cần thêm:
+
+import (
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
+)
+
+config, format, err := image.DecodeConfig(file)
+if err != nil {
+	return "", 0, NewError(
+		ErrDownloadInvalid,
+		"Không giải mã được ảnh tải về.",
+	)
+}
+
+if config.Width < 64 || config.Height < 64 {
+	return "", 0, NewError(
+		ErrDownloadInvalid,
+		"Kích thước ảnh không hợp lệ.",
+	)
+}
+
+WebP cần decoder riêng hoặc thư viện hiện có của dự án.
+
+Phần video dùng ffprobe là hướng đúng.
+
+18. Copy file có nguy cơ xóa nguồn trước khi đảm bảo flush thành công
+
+Trong moveFile():
+
+io.Copy(destination, source)
+source.Close()
+os.Remove(src)
+
+destination chỉ được đóng bằng defer, nghĩa là file nguồn có thể bị xóa trước khi xác nhận destination.Close() thành công.
+
+Phải làm:
+
+if _, err := io.Copy(destination, source); err != nil {
+	_ = destination.Close()
+	_ = os.Remove(dst)
+	return err
+}
+
+if err := destination.Sync(); err != nil {
+	_ = destination.Close()
+	_ = os.Remove(dst)
+	return err
+}
+
+if err := destination.Close(); err != nil {
+	_ = os.Remove(dst)
+	return err
+}
+
+if err := source.Close(); err != nil {
+	return err
+}
+
+return os.Remove(src)
+19. Không nên log toàn bộ prompt
+
+Service.Generate() hiện log:
+
+Prompt=%s
+
+Prompt có thể chứa:
+
+Nội dung khách hàng.
+Kịch bản chưa công bố.
+Dữ liệu cá nhân.
+Ý tưởng quảng cáo nội bộ.
+
+Nên log:
+
+PromptLength
+PromptHash
+Provider
+MediaType
+TaskID
+
+Không log toàn bộ nội dung mặc định.
+
+20. Bộ test hiện tại chưa đủ ý nghĩa
+
+Hiện chỉ có:
+
+Test tên file.
+Test tìm Chrome.
+
+TestFindChromeExecutable không có assertion; tìm được hay không đều pass.
+
+Thiếu ít nhất:
+
+Task stale-event protection
+Task race test
+Cancel khi đang download
+Context deadline
+AspectRatio-only configuration
+Provider/media compatibility
+Selector CSS/XPath/regex
+Old-result versus new-result detection
+Download event trước/sau click
+Corrupt JPEG
+HTML lưu nhầm thành MP4
+Filename UTF-8
+Windows reserved filename
+Profile lock
+Clear profile while task active
+Login unknown
+Google UI fixture tests
+Kiến trúc nên chốt để dùng bền hơn
+
+Không thể làm browser automation trên web bên thứ ba “ổn định vĩnh viễn”. Rod là driver trực tiếp trên Chrome DevTools Protocol và phù hợp cho automation, nhưng độ ổn định cuối cùng vẫn phụ thuộc DOM của Gemini và Flow.
+
+Cấu trúc nên chuyển thành:
+
+browserai/
+├── core/
+│   ├── service.go
+│   ├── task_manager.go
+│   ├── browser_session.go
+│   └── download.go
+│
+├── providers/
+│   ├── provider.go
+│   ├── gemini/
+│   │   ├── adapter.go
+│   │   ├── selectors.go
+│   │   └── detector.go
+│   └── flow/
+│       ├── adapter.go
+│       ├── selectors.go
+│       └── detector.go
+│
+├── fixtures/
+├── diagnostics/
+└── tests/
+
+Mỗi provider triển khai interface:
+
+type ProviderAdapter interface {
+	Open(ctx context.Context, session *BrowserSession) error
+	DetectLogin(ctx context.Context) (LoginStatus, error)
+	Submit(ctx context.Context, req GenerateRequest) (JobHandle, error)
+	Wait(ctx context.Context, job JobHandle) (MediaResult, error)
+	Download(ctx context.Context, result MediaResult) ([]string, error)
+}
+
+Như vậy khi Google đổi Flow, chỉ sửa adapter Flow, không ảnh hưởng task manager và download core.
+
+Google cũng xác nhận quyền và tính năng Flow phụ thuộc khu vực, loại subscription và trạng thái tài khoản, nên code cần capability detection thay vì hard-code giả định tài khoản nào cũng có cùng nút/model.
+
+Thứ tự sửa hợp lý
+P0 — phải sửa ngay
+Xóa anti-bot flags.
+Không tự bấm Accept/I agree.
+Sửa TaskManager theo taskID.
+Sửa data race pointer.
+Sửa download: đăng ký trước click, gắn task context.
+Bỏ click download hai lần.
+Scope kết quả vào đúng response/job mới.
+Sửa ConfigureFlowSettings và không bỏ lỗi.
+Bỏ hard-code D:\....
+Chuyển Chrome mặc định sang visible.
+P1 — trước khi phát hành
+Thay toàn bộ :contains bằng ElementR hoặc selector typed.
+Loại XPath tuyệt đối khỏi selector chính.
+Sửa prompt JS injection.
+Chặn provider/media sai.
+Cải thiện validation ảnh và file copy.
+Không log prompt.
+Thêm debug screenshot và selector trace.
+Viết fixture test và chạy race test.
+Gate bắt buộc
+gofmt -w ./internal/browserai
+go vet ./internal/browserai/...
+go test ./internal/browserai/...
+go test -race ./internal/browserai/...
+npm run test
+npm run build
+wails build
+
+Sau đó chạy manual smoke test tối thiểu:
+
+Gemini ảnh × 10 lần
+Flow ảnh × 10 lần
+Flow video × 10 lần
+Hủy giữa lúc tạo
+Hủy giữa lúc tải
+Đóng app giữa task
+Đăng xuất rồi đăng nhập lại
+Tài khoản hết quota
+Tài khoản không có Flow
+Có nhiều kết quả cũ trên trang
+Đổi giao diện Google sang English
+
+Chốt cuối: chưa nên coi bản này là hoàn thiện hoặc ổn định dài hạn. Nó có nền kiến trúc tốt, nhưng đang tồn tại ít nhất 8 lỗi có thể gây tải nhầm file, gửi trùng prompt, treo khi hủy hoặc ghi sai trạng thái task. Chỉ nên tiếp tục test nội bộ sau khi sửa hết nhóm P0.

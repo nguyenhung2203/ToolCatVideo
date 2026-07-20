@@ -3,7 +3,7 @@ import { onMounted, toRef, ref, reactive } from 'vue'
 import { useDownloader } from './composables/useDownloader'
 import {
   Globe, Link2, Search, Download, Square, FolderOpen,
-  Check, X, Eye, Heart, Clock, Calendar, Copy, Loader2, Trash2, Film
+  Check, X, Eye, Heart, Clock, Calendar, Copy, Loader2, Trash2, Film, SlidersHorizontal
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -27,6 +27,8 @@ const {
   cancelDl, pickDownloadDir, initDownloadEvents, copyToClipboard,
   removeSelectedEntries
 } = useDownloader(props.showToast, videoPathsRef)
+
+const showFilters = ref(false)
 
 onMounted(async () => {
   await openDownloadPanel()
@@ -165,110 +167,108 @@ const failedThumbs = ref<Set<string>>(new Set())
           @keyup.enter="probeUrl"
           :disabled="isProbing"
         />
-        <button @click="probeUrl" class="btn dl-probe-btn" :disabled="isProbing">
+        <button @click="probeUrl" class="btn dl-probe-btn" :disabled="isProbing || !downloadUrl.trim()">
           <Loader2 v-if="isProbing" :size="14" class="spin-hourglass" />
           <Link2 v-else-if="downloadMode === 'link'" :size="14" />
           <Search v-else :size="14" />
           {{ isProbing ? (downloadMode === 'link' ? 'Đang dò...' : 'Đang tìm...') : (downloadMode === 'link' ? 'Tìm Video' : 'Tìm kiếm') }}
         </button>
+        <button type="button" @click="showFilters = !showFilters" class="btn dl-filter-toggle-btn" :class="{ active: showFilters }">
+          <SlidersHorizontal :size="14" />
+          <span>Bộ lọc</span>
+        </button>
       </div>
     </div>
 
-    <!-- ── Options row ────────────────────────────── -->
-    <div class="dl-options-row">
-      <div class="dl-opt-group">
-        <label>Loại link:</label>
-        <select v-model="dlLinkType" class="dl-select">
-          <option value="auto">Tự nhận diện {{ detectedLinkType !== 'auto' ? '(' + (detectedLinkType === 'video' ? 'Video đơn' : detectedLinkType === 'profile' ? 'Profile' : 'Playlist') + ')' : '' }}</option>
-          <option value="video">Video đơn</option>
-          <option value="profile">Profile / Kênh</option>
-          <option value="playlist">Playlist</option>
-        </select>
-      </div>
+    <!-- ── Advanced settings collapsible ────────────────── -->
+    <div v-show="showFilters" class="dl-advanced-settings">
+      <!-- ── Options row ────────────────────────────── -->
+      <div class="dl-options-row">
+        <div class="dl-opt-group">
+          <label>Loại link:</label>
+          <select v-model="dlLinkType" class="dl-select">
+            <option value="auto">Tự nhận diện {{ detectedLinkType !== 'auto' ? '(' + (detectedLinkType === 'video' ? 'Video đơn' : detectedLinkType === 'profile' ? 'Profile' : 'Playlist') + ')' : '' }}</option>
+            <option value="video">Video đơn</option>
+            <option value="profile">Profile / Kênh</option>
+            <option value="playlist">Playlist</option>
+          </select>
+        </div>
 
-      <div class="dl-opt-group dl-search-sources" v-if="downloadMode === 'search'">
-        <label>Nguồn:</label>
-        <div class="dl-source-pills">
-          <button class="dl-source-pill" :class="{ active: searchSource === 'youtube' }" @click="searchSource = 'youtube'">YouTube</button>
-          <button class="dl-source-pill" :class="{ active: searchSource === 'tiktok' }" @click="searchSource = 'tiktok'">TikTok</button>
-          <button class="dl-source-pill" :class="{ active: searchSource === 'facebook' }" @click="searchSource = 'facebook'">Facebook</button>
-          <button class="dl-source-pill" :class="{ active: searchSource === 'all' }" @click="searchSource = 'all'">Hỗn hợp</button>
+        <div class="dl-opt-group dl-search-sources" v-if="downloadMode === 'search'">
+          <label>Nguồn:</label>
+          <div class="dl-source-pills">
+            <button class="dl-source-pill" :class="{ active: searchSource === 'youtube' }" @click="searchSource = 'youtube'">YouTube</button>
+            <button class="dl-source-pill" :class="{ active: searchSource === 'tiktok' }" @click="searchSource = 'tiktok'">TikTok</button>
+            <button class="dl-source-pill" :class="{ active: searchSource === 'facebook' }" @click="searchSource = 'facebook'">Facebook</button>
+            <button class="dl-source-pill" :class="{ active: searchSource === 'all' }" @click="searchSource = 'all'">Hỗn hợp</button>
+          </div>
+        </div>
+
+        <div class="dl-opt-group">
+          <label>Cookie:</label>
+          <select v-model="cookieBrowser" class="dl-select">
+            <option value="">Không dùng</option>
+            <option value="chrome">Chrome</option>
+            <option value="edge">Edge</option>
+            <option value="firefox">Firefox</option>
+          </select>
+        </div>
+
+        <div class="dl-opt-group" v-if="probeResult">
+          <span class="dl-platform-badge" :class="probeResult.platform">
+            {{ probeResult.platform === 'youtube' ? 'YouTube' : probeResult.platform === 'tiktok' ? 'TikTok' : probeResult.platform === 'facebook' ? 'Facebook' : probeResult.platform === 'mixed' ? 'Hỗn hợp' : 'Khác' }}
+          </span>
+          <span class="dl-type-badge">{{ probeResult.type === 'playlist' ? 'Playlist/Profile' : 'Video đơn' }}</span>
+          <span class="dl-count-badge">{{ probeResult.entries.length }} video</span>
         </div>
       </div>
 
-      <div class="dl-opt-group">
-        <label>Cookie:</label>
-        <select v-model="cookieBrowser" class="dl-select">
-          <option value="">Không dùng</option>
-          <option value="chrome">Chrome</option>
-          <option value="edge">Edge</option>
-          <option value="firefox">Firefox</option>
-        </select>
+      <!-- ── Profile/Playlist config ────────────────── -->
+      <div class="dl-profile-config" v-if="isProfileOrPlaylist && !probeResult">
+        <div class="dl-opt-group">
+          <label>Số video tối đa:</label>
+          <select v-model.number="dlMaxCount" class="dl-select">
+            <option :value="10">10 video</option>
+            <option :value="20">20 video</option>
+            <option :value="30">30 video</option>
+            <option :value="50">50 video</option>
+            <option :value="100">100 video</option>
+            <option :value="200">200 video</option>
+            <option :value="0">Tất cả (chậm)</option>
+          </select>
+        </div>
+        <div class="dl-opt-group">
+          <label>Thứ tự lấy:</label>
+          <select v-model="dlFetchOrder" class="dl-select">
+            <option value="newest">Mới nhất trước</option>
+            <option value="oldest">Cũ nhất trước</option>
+          </select>
+        </div>
+        <p class="dl-profile-hint">
+          Dò {{ dlMaxCount > 0 ? dlMaxCount : 'tất cả' }} video {{ dlFetchOrder === 'newest' ? 'mới nhất' : 'cũ nhất' }}. Sau khi dò xong, bạn có thể lọc/sắp xếp thêm.
+        </p>
       </div>
 
-      <div class="dl-opt-group" v-if="probeResult">
-        <span class="dl-platform-badge" :class="probeResult.platform">
-          {{ probeResult.platform === 'youtube' ? 'YouTube' : probeResult.platform === 'tiktok' ? 'TikTok' : probeResult.platform === 'facebook' ? 'Facebook' : probeResult.platform === 'mixed' ? 'Hỗn hợp' : 'Khác' }}
-        </span>
-        <span class="dl-type-badge">{{ probeResult.type === 'playlist' ? 'Playlist/Profile' : 'Video đơn' }}</span>
-        <span class="dl-count-badge">{{ probeResult.entries.length }} video</span>
+      <!-- ── Filters ─────────────────────────────────── -->
+      <div class="dl-filters-row" v-if="probeResult && probeResult.entries.length > 1">
+        <div class="dl-filter-item">
+          <label>Sắp xếp:</label>
+          <select v-model="dlSortBy" class="dl-select">
+            <option value="views">Nhiều view nhất</option>
+            <option value="likes">Nhiều like nhất</option>
+            <option value="date">Mới nhất</option>
+            <option value="duration">Dài nhất</option>
+          </select>
+        </div>
+        <div class="dl-filter-item">
+          <label>Từ khóa:</label>
+          <input v-model="dlKeyword" type="text" class="dl-filter-input" placeholder="Lọc tiêu đề..." />
+        </div>
+        <div class="dl-filter-item">
+          <label>Min views:</label>
+          <input v-model.number="dlMinViews" type="number" class="dl-filter-input" min="0" step="100" />
+        </div>
       </div>
-    </div>
-
-    <!-- ── Profile/Playlist config ────────────────── -->
-    <div class="dl-profile-config" v-if="isProfileOrPlaylist && !probeResult">
-      <div class="dl-opt-group">
-        <label>Số video tối đa:</label>
-        <select v-model.number="dlMaxCount" class="dl-select">
-          <option :value="10">10 video</option>
-          <option :value="20">20 video</option>
-          <option :value="30">30 video</option>
-          <option :value="50">50 video</option>
-          <option :value="100">100 video</option>
-          <option :value="200">200 video</option>
-          <option :value="0">Tất cả (chậm)</option>
-        </select>
-      </div>
-      <div class="dl-opt-group">
-        <label>Thứ tự lấy:</label>
-        <select v-model="dlFetchOrder" class="dl-select">
-          <option value="newest">Mới nhất trước</option>
-          <option value="oldest">Cũ nhất trước</option>
-        </select>
-      </div>
-      <p class="dl-profile-hint">
-        Dò {{ dlMaxCount > 0 ? dlMaxCount : 'tất cả' }} video {{ dlFetchOrder === 'newest' ? 'mới nhất' : 'cũ nhất' }}. Sau khi dò xong, bạn có thể lọc/sắp xếp thêm.
-      </p>
-    </div>
-
-    <!-- ── Filters ─────────────────────────────────── -->
-    <div class="dl-filters-row" v-if="probeResult && probeResult.entries.length > 1">
-      <div class="dl-filter-item">
-        <label>Sắp xếp:</label>
-        <select v-model="dlSortBy" class="dl-select">
-          <option value="views">Nhiều view nhất</option>
-          <option value="likes">Nhiều like nhất</option>
-          <option value="date">Mới nhất</option>
-          <option value="duration">Dài nhất</option>
-        </select>
-      </div>
-      <div class="dl-filter-item">
-        <label>Từ khóa:</label>
-        <input v-model="dlKeyword" type="text" class="dl-filter-input" placeholder="Lọc tiêu đề..." />
-      </div>
-      <div class="dl-filter-item">
-        <label>Min views:</label>
-        <input v-model.number="dlMinViews" type="number" class="dl-filter-input" min="0" step="100" />
-      </div>
-    </div>
-
-    <!-- ── Select all bar ──────────────────────────── -->
-    <div class="dl-select-bar" v-if="probeResult && filteredDlEntries.length > 0">
-      <label class="dl-select-all-label" @click="dlToggleAll">
-        <input type="checkbox" :checked="dlSelectedCount === filteredDlEntries.length && filteredDlEntries.length > 0" @click.stop="dlToggleAll" />
-        Chọn tất cả
-      </label>
-      <span class="dl-selected-count">Đã chọn: {{ dlSelectedCount }}/{{ filteredDlEntries.length }}</span>
     </div>
 
     <!-- ── Empty state ── -->
@@ -284,12 +284,23 @@ const failedThumbs = ref<Set<string>>(new Set())
       <p class="dl-loading-text">Đang tìm kiếm / dò tìm nguồn video...</p>
     </div>
 
-    <!-- ── Entry list ──────────────────────────────── -->
-    <div class="dl-entries-list" v-if="probeResult && !isProbing"
-      ref="listRef"
-      style="position: relative;"
-      @mousedown="onListMouseDown"
-    >
+    <!-- ── Results area ────────────────────────────── -->
+    <div class="dl-results-area" v-if="probeResult && !isProbing">
+      <!-- ── Select all bar ──────────────────────────── -->
+      <div class="dl-select-bar" v-if="filteredDlEntries.length > 0">
+        <label class="dl-select-all-label" @click="dlToggleAll">
+          <input type="checkbox" :checked="dlSelectedCount === filteredDlEntries.length && filteredDlEntries.length > 0" @click.stop="dlToggleAll" />
+          Chọn tất cả
+        </label>
+        <span class="dl-selected-count">Đã chọn: {{ dlSelectedCount }}/{{ filteredDlEntries.length }}</span>
+      </div>
+
+      <!-- ── Entry list ──────────────────────────────── -->
+      <div class="dl-entries-list"
+        ref="listRef"
+        style="position: relative;"
+        @mousedown="onListMouseDown"
+      >
       <!-- Drag selection box -->
       <div v-if="dragBox.active" class="dl-drag-box" :style="dragBoxStyle"></div>
       <div
@@ -306,6 +317,8 @@ const failedThumbs = ref<Set<string>>(new Set())
             :src="entry.thumbnail" 
             alt="" 
             referrerpolicy="no-referrer"
+            draggable="false"
+            @dragstart.prevent
             @error="failedThumbs.add(entry.id)" />
           <Film v-else :size="20" style="opacity: 0.5;" />
         </div>
@@ -356,6 +369,7 @@ const failedThumbs = ref<Set<string>>(new Set())
         Không tìm thấy video phù hợp với bộ lọc.
       </div>
     </div>
+    </div> <!-- end dl-results-area -->
 
     <!-- ── Download progress ───────────────────────── -->
     <div class="dl-progress-section" v-if="dlProgressMap.size > 0">
@@ -382,6 +396,7 @@ const failedThumbs = ref<Set<string>>(new Set())
     <!-- ── Footer ──────────────────────────────────── -->
     <div class="dl-footer">
       <div class="dl-dir-row">
+        <FolderOpen :size="14" class="dl-dir-icon" />
         <label class="dl-dir-label">Lưu vào:</label>
         <input v-model="downloadDir" type="text" class="dl-dir-input" readonly />
         <button @click="pickDownloadDir" class="btn dl-dir-btn" title="Chọn thư mục">
@@ -399,10 +414,12 @@ const failedThumbs = ref<Set<string>>(new Set())
             class="btn dl-remove-btn dl-action-btn"
             :title="`Xóa ${dlSelectedCount} video đã chọn khỏi danh sách`"
           >
-            <Trash2 :size="13" /> Xóa {{ dlSelectedCount }} video
+            <Trash2 :size="13" /> Xóa {{ dlSelectedCount }} video đã chọn
           </button>
           <button @click="startDownload" :disabled="dlSelectedCount === 0" class="btn btn-analyze dl-action-btn">
-            <Download :size="12" /> Tải {{ dlSelectedCount }} video
+            <Download :size="12" style="margin-right: 4px;" />
+            <span v-if="dlSelectedCount === 0">Chọn video để tải</span>
+            <span v-else>Tải {{ dlSelectedCount }} video đã chọn</span>
           </button>
         </template>
       </div>
@@ -440,7 +457,7 @@ const failedThumbs = ref<Set<string>>(new Set())
 /* ── Scrollable body ───────────────────────────────────────── */
 .dl-body {
   flex: 1;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: var(--wx-space-4);
@@ -515,14 +532,17 @@ const failedThumbs = ref<Set<string>>(new Set())
 .dl-input-section {
   display: flex;
   flex-direction: column;
-  gap: var(--wx-space-2);
+  gap: var(--wx-space-1);
 }
 
 .dl-input-label {
+  display: block;
   font-size: var(--wx-fs-12);
   font-weight: var(--wx-fw-bold);
   color: var(--wx-text-muted);
-  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--wx-space-2);
 }
 
 .dl-input-row {
@@ -533,7 +553,7 @@ const failedThumbs = ref<Set<string>>(new Set())
 
 .dl-url-input {
   flex: 1;
-  background: var(--wx-surface-sunken, #0d1929);
+  background: var(--wx-surface-sunken);
   border: 1.5px solid var(--wx-border-default);
   border-radius: var(--wx-radius-md);
   color: var(--wx-text-primary);
@@ -564,6 +584,57 @@ const failedThumbs = ref<Set<string>>(new Set())
   padding: 0 var(--wx-space-4);
   font-size: var(--wx-fs-13);
   font-weight: var(--wx-fw-bold);
+  background: var(--wx-brand-primary);
+  color: var(--wx-text-inverse);
+  border: none;
+  border-radius: var(--wx-radius-md);
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.dl-probe-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.dl-probe-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.dl-filter-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--wx-space-1);
+  white-space: nowrap;
+  height: 38px;
+  box-sizing: border-box;
+  padding: 0 var(--wx-space-3);
+  font-size: var(--wx-fs-13);
+  font-weight: var(--wx-fw-semibold);
+  background: var(--wx-surface-sunken);
+  border: 1.5px solid var(--wx-border-default);
+  color: var(--wx-text-secondary);
+  border-radius: var(--wx-radius-md);
+  transition: all 150ms ease;
+  cursor: pointer;
+}
+
+.dl-filter-toggle-btn:hover {
+  border-color: var(--wx-brand-primary);
+  color: var(--wx-brand-primary);
+}
+
+.dl-filter-toggle-btn.active {
+  background: color-mix(in srgb, var(--wx-brand-primary) 12%, transparent);
+  border-color: var(--wx-brand-primary);
+  color: var(--wx-brand-primary);
+}
+
+.dl-advanced-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wx-space-3);
 }
 
 /* ── Options row ────────────────────────────────────────────── */
@@ -709,6 +780,15 @@ const failedThumbs = ref<Set<string>>(new Set())
 
 .dl-filter-input:focus { border-color: var(--wx-brand-primary); }
 
+/* ── Results Area ───────────────────────────────────────────── */
+.dl-results-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: var(--wx-space-3);
+}
+
 /* ── Select bar ─────────────────────────────────────────────── */
 .dl-select-bar {
   display: flex;
@@ -742,7 +822,8 @@ const failedThumbs = ref<Set<string>>(new Set())
   flex-direction: column;
   gap: var(--wx-space-2);
   overflow-y: auto;
-  max-height: 380px;
+  flex: 1;
+  min-height: 0;
   user-select: none;
 }
 
@@ -756,6 +837,8 @@ const failedThumbs = ref<Set<string>>(new Set())
   border-radius: var(--wx-radius-md);
   cursor: pointer;
   transition: all 150ms ease;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .dl-entry-card:hover {
@@ -784,7 +867,13 @@ const failedThumbs = ref<Set<string>>(new Set())
   border: 1px solid var(--wx-border-default);
 }
 
-.dl-entry-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.dl-entry-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-drag: none;
+  -webkit-user-drag: none;
+}
 
 .dl-entry-info {
   flex: 1;
@@ -1009,23 +1098,32 @@ const failedThumbs = ref<Set<string>>(new Set())
   flex: 1;
 }
 
+.dl-dir-icon {
+  color: var(--wx-text-muted);
+  flex-shrink: 0;
+}
+
 .dl-dir-label {
   font-size: var(--wx-fs-12);
   color: var(--wx-text-muted);
+  font-weight: var(--wx-fw-semibold);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .dl-dir-input {
   flex: 1;
+  height: 34px;
   background: var(--wx-surface-sunken);
   border: 1.5px solid var(--wx-border-default);
   color: var(--wx-text-primary);
-  padding: var(--wx-space-1) var(--wx-space-2);
+  padding: var(--wx-space-2) var(--wx-space-3);
   border-radius: var(--wx-radius-md);
   font-size: var(--wx-fs-12);
   outline: none;
   cursor: default;
   min-width: 0;
+  box-sizing: border-box;
 }
 
 .dl-dir-btn {
@@ -1033,13 +1131,26 @@ const failedThumbs = ref<Set<string>>(new Set())
   align-items: center;
   justify-content: center;
   padding: var(--wx-space-1) var(--wx-space-2);
-  height: 32px;
+  height: 34px;
   flex-shrink: 0;
+  background: color-mix(in srgb, var(--wx-surface-base) 5%, transparent);
+  border: 1px solid var(--wx-border-default);
+  border-radius: var(--wx-radius-md);
+  color: var(--wx-text-primary);
+  cursor: pointer;
+  transition: all 150ms ease;
+  box-sizing: border-box;
+}
+
+.dl-dir-btn:hover {
+  border-color: var(--wx-brand-primary);
+  color: var(--wx-brand-primary);
 }
 
 .dl-footer-actions {
   display: flex;
   gap: var(--wx-space-2);
+  flex-shrink: 0;
 }
 
 .dl-action-btn {
@@ -1047,8 +1158,8 @@ const failedThumbs = ref<Set<string>>(new Set())
   align-items: center;
   gap: var(--wx-space-1);
   justify-content: center;
-  height: 36px;
-  padding: 0 var(--wx-space-4);
+  height: 38px;
+  padding: 0 var(--wx-space-5);
   font-size: var(--wx-fs-13);
   font-weight: var(--wx-fw-bold);
 }

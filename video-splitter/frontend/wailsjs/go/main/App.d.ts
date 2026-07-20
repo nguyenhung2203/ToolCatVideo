@@ -67,3 +67,5 @@ export function SelectFiles():Promise<Array<string>>;
 export function SelectFolder():Promise<string>;
 
 export function SelectImageFile():Promise<string>;
+
+export function SelectImageFiles():Promise<Array<string>>;
