@@ -7,6 +7,8 @@ import { useTheme } from '../ui-system/composables/useTheme'
 import BaseDropdown from './common/BaseDropdown.vue'
 import VideoDownloader from './VideoDownloader.vue'
 import ImageDownloader from './ImageDownloader.vue'
+import BrowserAIImagePage from './BrowserAIImagePage.vue'
+import BrowserAIVideoPage from './BrowserAIVideoPage.vue'
 import {
   Video, Scissors, Download, Settings, Sun, Moon, History, Save,
   Plus, Trash2, Trash, RefreshCw, X, Check, Key, ChevronDown, ChevronUp,
@@ -15,7 +17,7 @@ import {
   Clock, Film, Monitor, Loader2, ArrowRight, Upload, BarChart2,
   Sparkles, Tag, FileVideo, ListVideo, LayoutGrid, SlidersHorizontal,
   Cpu, FlipHorizontal2, Timer, Volume2, VolumeX, Repeat,
-  Star, Pencil, Move
+  Star, Pencil, Move, Chrome
 } from 'lucide-vue-next'
 
 const { isDark, toggleColorScheme } = useTheme()
@@ -34,6 +36,41 @@ const showToast = (message: string, type: 'success' | 'error' | 'info' | 'warnin
   setTimeout(() => {
     toasts.value = toasts.value.filter(t => t.id !== id)
   }, duration)
+}
+
+// === Google AI Chrome Integration ===
+const showBrowserAIModal = ref(false)
+const browserAIInitialMediaType = ref('image')
+
+const handleApplyAIImage = (filePath: string) => {
+  if (editingClip.value) {
+    editingClip.value.thumbnail = filePath
+    saveActiveProjectState()
+    showToast("Đã áp dụng ảnh AI làm ảnh bìa cho clip này!", "success")
+  } else {
+    showToast(`Đã lưu ảnh AI thành công tại: ${filePath}`, "success")
+  }
+}
+
+const handleApplyAIVideo = async (filePath: string) => {
+  const existingPaths = new Set(videoPaths.value)
+  if (!existingPaths.has(filePath)) {
+    const wasEmpty = videoPaths.value.length === 0
+    videoPaths.value = [...videoPaths.value, filePath]
+    if (wasEmpty) {
+      activeVideoIndex.value = 0
+      activeVideoSrc.value = await GetStreamURL(filePath)
+      await loadVideoInfo(filePath)
+    }
+    showToast('Đã thêm video AI thành công vào danh sách nguồn!', 'success')
+  } else {
+    showToast('Video này đã có sẵn trong danh sách nguồn!', 'warning')
+  }
+}
+
+const openVideoAI = () => {
+  browserAIInitialMediaType.value = 'video'
+  showBrowserAIModal.value = true
 }
 
 // === Custom Confirm Dialog (Hộp thoại xác nhận đẹp) ===
@@ -59,6 +96,7 @@ const handleConfirmResolve = (val: boolean) => {
 
 const videoPaths = ref<string[]>([])
 const activeVideoIndex = ref<number>(0)
+const isVideoListExpanded = ref(false)
 const videoInfo = ref<project.VideoInfo | null>(null)
 const clipsMap = ref<Record<string, project.Clip[]>>({})
 const isAnalyzing = ref(false)
@@ -140,6 +178,8 @@ const showEdit = ref(false)
 const editClipIdx = ref(-1)
 
 const geminiAPIKey = ref('')
+const browserAIShowChrome = ref(true)
+const browserAIDelay = ref(1.0)
 
 // === AI Thumbnail Generator state and functions ===
 const aiThumbState = reactive({
@@ -315,7 +355,7 @@ const showSettings = ref(false)
 
 const globalSettingsConfig = ref<any>(null)
 
-const activeView = ref<'split' | 'download-video' | 'download-image'>('split')
+const activeView = ref<'split' | 'download-video' | 'download-image' | 'ai-image' | 'ai-video'>('split')
 
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
@@ -383,18 +423,25 @@ const isSettingsLoaded = ref(false)
 const saveGlobalSettings = async () => {
   if (!isSettingsLoaded.value) return
   try {
-    const payload = {
-      analyzerConfig: JSON.parse(JSON.stringify(analyzerConfig)),
-      globalRemix: JSON.parse(JSON.stringify(globalRemix)),
-      exportJobs: exportJobs.value,
-      analyzeJobs: analyzeJobs.value,
-      outDir: outDir.value,
-      outImageDir: outImageDir.value,
-      autoCreateSubfolders: autoCreateSubfolders.value,
-      exportWithThumbnails: exportWithThumbnails.value,
-      geminiAPIKey: geminiAPIKey.value
+    const settingsStr = await GetGlobalSettings()
+    let gSettings: any = {}
+    if (settingsStr) {
+      gSettings = JSON.parse(settingsStr)
     }
-    await SaveGlobalSettings(JSON.stringify(payload))
+
+    gSettings.analyzerConfig = JSON.parse(JSON.stringify(analyzerConfig))
+    gSettings.globalRemix = JSON.parse(JSON.stringify(globalRemix))
+    gSettings.exportJobs = exportJobs.value
+    gSettings.analyzeJobs = analyzeJobs.value
+    gSettings.outDir = outDir.value
+    gSettings.outImageDir = outImageDir.value
+    gSettings.autoCreateSubfolders = autoCreateSubfolders.value
+    gSettings.exportWithThumbnails = exportWithThumbnails.value
+    gSettings.geminiAPIKey = geminiAPIKey.value
+    gSettings.browserAIShowChrome = browserAIShowChrome.value
+    gSettings.browserAIDelay = browserAIDelay.value
+
+    await SaveGlobalSettings(JSON.stringify(gSettings))
     globalSettingsConfig.value = JSON.parse(JSON.stringify(analyzerConfig))
   } catch (e) {
     console.error('Lỗi tự động lưu cài đặt chung:', e)
@@ -402,7 +449,7 @@ const saveGlobalSettings = async () => {
 }
 
 let saveTimeout: any = null
-watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, autoCreateSubfolders, exportWithThumbnails, geminiAPIKey], () => {
+watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, autoCreateSubfolders, exportWithThumbnails, geminiAPIKey, browserAIShowChrome, browserAIDelay], () => {
   if (!isSettingsLoaded.value) return
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(() => {
@@ -462,12 +509,6 @@ const computedVideoSrc = computed(() => {
     return activeExportedSrc.value
   }
   return activeVideoSrc.value
-})
-
-watch(computedVideoSrc, () => {
-  if (videoPlayer.value) {
-    videoPlayer.value.load()
-  }
 })
 
 // === QUẢN LÝ PROMPT THUMBNAIL MẪU (PRESETS) ===
@@ -613,6 +654,12 @@ onMounted(async () => {
       }
       if (gSettings.geminiAPIKey !== undefined) {
         geminiAPIKey.value = gSettings.geminiAPIKey
+      }
+      if (gSettings.browserAIShowChrome !== undefined) {
+        browserAIShowChrome.value = gSettings.browserAIShowChrome
+      }
+      if (gSettings.browserAIDelay !== undefined) {
+        browserAIDelay.value = gSettings.browserAIDelay
       }
     } else {
       await loadDefaultConfig()
@@ -1258,6 +1305,49 @@ const toggleVideoSelected = (path: string) => {
   selectedVideos.value = s
 }
 
+const isDraggingSelect = ref(false)
+const dragSelectMode = ref<'select' | 'deselect'>('select')
+
+const handleVideoMousedown = (path: string, event: MouseEvent) => {
+  const target = event.target as HTMLElement
+  if (target.closest('.clip-checkbox') || target.closest('.btn-remove-video') || target.closest('input') || target.closest('button')) {
+    return
+  }
+
+  isDraggingSelect.value = true
+  const hasPath = selectedVideos.value.has(path)
+  
+  if (hasPath) {
+    dragSelectMode.value = 'deselect'
+    const s = new Set(selectedVideos.value)
+    s.delete(path)
+    selectedVideos.value = s
+  } else {
+    dragSelectMode.value = 'select'
+    const s = new Set(selectedVideos.value)
+    s.add(path)
+    selectedVideos.value = s
+  }
+
+  const handleGlobalMouseup = () => {
+    isDraggingSelect.value = false
+    window.removeEventListener('mouseup', handleGlobalMouseup)
+  }
+  window.addEventListener('mouseup', handleGlobalMouseup)
+}
+
+const handleVideoMouseenter = (path: string) => {
+  if (!isDraggingSelect.value) return
+
+  const s = new Set(selectedVideos.value)
+  if (dragSelectMode.value === 'select') {
+    s.add(path)
+  } else {
+    s.delete(path)
+  }
+  selectedVideos.value = s
+}
+
 const isAllVideosSelected = computed(() =>
   videoPaths.value.length > 0 && videoPaths.value.every(p => selectedVideos.value.has(p))
 )
@@ -1333,6 +1423,34 @@ const chooseOutImageDir = async () => {
     }
   } catch (err) {
     addLog('Lỗi chọn thư mục: ' + err)
+  }
+}
+
+const openAILogin = async (provider: string) => {
+  try {
+    showToast(`Đang mở Chrome để đăng nhập ${provider === 'gemini' ? 'Gemini' : 'Google Flow'}...`, "info")
+    // @ts-ignore
+    await import('../../wailsjs/go/browserai/Service').then(async (srv) => {
+      await srv.OpenGoogleAI(provider, true) // Always show browser for logins
+    })
+    showToast("Đã mở Chrome. Vui lòng đăng nhập tài khoản Google của bạn.", "success")
+  } catch (err) {
+    showToast("Không mở được Chrome: " + err, "error")
+  }
+}
+
+const clearAILogin = async () => {
+  const ok = confirm("Bạn có chắc chắn muốn xóa phiên đăng nhập Google? Thao tác này sẽ xóa sạch cookie đăng nhập của Gemini / Google Flow trên Chrome.")
+  if (ok) {
+    try {
+      // @ts-ignore
+      await import('../../wailsjs/go/browserai/Service').then(async (srv) => {
+        await srv.ClearBrowserProfile()
+      })
+      showToast("Đã xóa sạch phiên đăng nhập Google AI!", "success")
+    } catch (err) {
+      showToast("Lỗi xóa phiên đăng nhập: " + err, "error")
+    }
   }
 }
 
@@ -2352,6 +2470,12 @@ const formatSize = (bytes: number) => {
           <button class="nav-segment-btn" :class="{ active: activeView === 'download-image' }" @click="activeView = 'download-image'">
             <ImageIcon :size="13" /> Tải Ảnh
           </button>
+          <button class="nav-segment-btn" :class="{ active: activeView === 'ai-image' }" @click="activeView = 'ai-image'">
+            <Sparkles :size="13" style="color: var(--wx-brand-accent);" /> Tạo Ảnh AI
+          </button>
+          <button class="nav-segment-btn" :class="{ active: activeView === 'ai-video' }" @click="activeView = 'ai-video'">
+            <Sparkles :size="13" style="color: var(--wx-brand-accent);" /> Tạo Video AI
+          </button>
         </div>
 
  
@@ -2379,7 +2503,7 @@ const formatSize = (bytes: number) => {
       </div>
     </header>
 
-    <div class="app-body-vertical">
+    <div class="app-body-vertical" :class="{ 'no-scroll': activeView !== 'split' }">
       <template v-if="activeView === 'split'">
       <!-- BỐ CỤC TRÊN: DANH SÁCH VIDEO GỐC -->
       <section class="section-top-videos">
@@ -2411,7 +2535,6 @@ const formatSize = (bytes: number) => {
               <Plus :size="12" />
               Chọn Video Gốc
             </button>
-
             <!-- Nút Bắt Đầu Cắt Tự Động / Dừng Ngay (bên phải) -->
             <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0 || isExporting" @click="analyzeAll" class="btn btn-analyze flex-center font-bold">
               <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
@@ -2430,11 +2553,13 @@ const formatSize = (bytes: number) => {
           </div>
         </div>
 
-        <div class="video-horizontal-grid" v-if="videoPaths.length > 0">
+        <div class="video-horizontal-grid" :class="{ 'expanded-grid': isVideoListExpanded }" v-if="videoPaths.length > 0">
           <div v-for="(path, index) in videoPaths" :key="index"
                class="video-card-item"
                :class="{ active: index === activeVideoIndex, 'video-picked': selectedVideos.has(path) }"
                @click="selectVideo(index)"
+               @mousedown="handleVideoMousedown(path, $event)"
+               @mouseenter="handleVideoMouseenter(path)"
                :title="path">
             
             <div class="video-card-row">
@@ -2465,13 +2590,25 @@ const formatSize = (bytes: number) => {
             </div>
           </div>
         </div>
-        <div class="empty-videos-placeholder" v-else>
-          <div class="placeholder-content" style="display:flex; flex-direction:column; align-items:center; gap:10px; padding: 30px; text-align:center;">
-            <FileVideo :size="36" style="opacity: 0.3; color: var(--accent-color);" />
-            <span style="font-size: 13px; color: var(--l-text-muted);">Chưa có video gốc nào trong dự án.</span>
-            <button @click="handleSelectFiles" class="btn select-btn flex-center">
-              Chọn Video Gốc
-            </button>
+
+        <!-- Nút Xem thêm / Thu gọn cho danh sách video gốc -->
+        <div v-if="videoPaths.length > 5" style="display: flex; justify-content: center; margin-top: 4px; margin-bottom: 4px;">
+          <button 
+            type="button" 
+            @click="isVideoListExpanded = !isVideoListExpanded" 
+            class="btn-expand-list"
+          >
+            <span style="margin-right: 4px;">{{ isVideoListExpanded ? 'Thu gọn danh sách' : `Xem thêm (${videoPaths.length} video)` }}</span>
+            <ChevronUp v-if="isVideoListExpanded" :size="12" />
+            <ChevronDown v-else :size="12" />
+          </button>
+        </div>
+        <div class="empty-videos-placeholder" v-else style="height: 48px; display: flex; align-items: center; justify-content: center; padding: 0 16px; box-sizing: border-box;">
+          <div class="placeholder-content" style="display:flex; flex-direction:row; align-items:center; justify-content:center; gap:16px; width: 100%; height: 100%;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <FileVideo :size="16" style="opacity: 0.5; color: var(--accent-color);" />
+              <span style="font-size: 12px; color: var(--l-text-muted); font-weight: 500;">Chưa có video gốc nào trong dự án.</span>
+            </div>
           </div>
         </div>
       </section>
@@ -2661,7 +2798,6 @@ const formatSize = (bytes: number) => {
 
               <!-- Chọn nhanh mẫu bằng Tag/Pill trực quan -->
               <div style="display: flex; flex-direction: column; gap: 4px;">
-                <span style="font-size: 11px; color: var(--l-text-muted); font-weight: 500;">Chọn nhanh mẫu prompt có sẵn:</span>
                 <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px;">
                   <div v-for="preset in promptPresets" :key="preset.id" 
                        style="position: relative; display: inline-flex; align-items: center;">
@@ -2680,7 +2816,7 @@ const formatSize = (bytes: number) => {
                     <!-- Nút xóa tag nếu không phải mặc định -->
                     <button v-if="!['default_auto','1','2','3','4'].includes(preset.id)"
                             @click.stop="deletePresetById(preset.id)"
-                            style="margin-left: -6px; background: #ef4444; color: white; border: none; border-radius: 50%; width: 12px; height: 12px; font-size: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 2; box-shadow: 0 1px 3px rgba(0,0,0,0.3); padding: 0;"
+                            style="margin-left: -6px; background: var(--wx-danger-solid); color: var(--wx-text-inverse); border: none; border-radius: 50%; width: 12px; height: 12px; font-size: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 2; box-shadow: 0 1px 3px var(--wx-surface-overlay); padding: 0;"
                             title="Xóa mẫu này">
                       ✕
                     </button>
@@ -2961,7 +3097,18 @@ const formatSize = (bytes: number) => {
           </label>
         </div>
 
-        <div class="pub-right" style="display: flex; align-items: center; gap: 16px; flex: 1; justify-content: flex-end;">
+        <!-- Thư mục xuất chung mặc định (chỉ hiện khi chưa xuất) -->
+        <div v-if="!isExporting" style="display: flex; align-items: center; gap: 8px; flex: 1; margin: 0 16px; min-width: 0; align-self: center;">
+          <span style="font-size: 13px; font-weight: 600; color: var(--l-text); white-space: nowrap; line-height: 1; display: inline-flex; align-items: center;">
+            Lưu vào:
+          </span>
+          <input type="text" v-model="outDir" class="file-path-input dl-pub-dir-input" readonly :title="outDir" />
+          <button class="btn dl-pub-dir-btn-icon" @click="chooseOutDir" title="Chọn thư mục">
+            <FolderOpen :size="14" />
+          </button>
+        </div>
+
+        <div class="pub-right" :style="{ display: 'flex', alignItems: 'center', gap: '16px', flex: isExporting ? '1' : 'none', justifyContent: 'flex-end', flexShrink: 0 }">
           <!-- Tiến trình xuất -->
           <div v-if="isExporting && exportProgress.total > 0" class="pub-progress-box" 
                :style="{
@@ -2984,18 +3131,18 @@ const formatSize = (bytes: number) => {
               🎬 Cắt Video: <strong style="color: var(--success-color);">{{ videoDoneCount }}/{{ exportProgress.total }}</strong>
             </span>
             
-            <span style="color: rgba(255,255,255,0.15)">|</span>
+            <span style="color: var(--wx-border-default)">|</span>
             
             <!-- Tổng tiến độ Thumbnail -->
             <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
               🎨 Ảnh bìa AI: 
               <template v-if="exportWithThumbnails">
-                <strong style="color: #38bdf8;">{{ thumbDoneCount }}/{{ exportProgress.total }}</strong>
+                <strong style="color: var(--wx-brand-accent);">{{ thumbDoneCount }}/{{ exportProgress.total }}</strong>
               </template>
               <span v-else style="color: var(--text-muted); font-size: 11px; font-weight: normal; font-style: italic;">(Tắt)</span>
             </span>
             
-            <span style="color: rgba(255,255,255,0.15)">|</span>
+            <span style="color: var(--wx-border-default)">|</span>
 
             <!-- Tên Video đang xử lý -->
             <div style="color: var(--l-text-muted); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; text-align: left;" :title="exportStatusText">
@@ -3011,7 +3158,8 @@ const formatSize = (bytes: number) => {
           </div>
 
           <button v-if="!isExporting" @click="removeSelectedClips" class="btn delete-selected-btn-bar flex-center" title="Xóa các clip đã chọn">
-            🗑️ Xóa {{ selectedClips.size }} Clip
+            <Trash2 :size="13" />
+            Xóa {{ selectedClips.size }} Clip
           </button>
           <button v-if="isExporting" @click="stopExport" class="btn big-export-btn stop-export-btn flex-center">
             <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><rect x="6" y="6" width="12" height="12" fill="currentColor"/></svg>
@@ -3032,6 +3180,12 @@ const formatSize = (bytes: number) => {
 
       <!-- BỐ CỤC CHO PHẦN TẢI ẢNH CHỦ ĐỀ INLINE -->
       <ImageDownloader v-show="activeView === 'download-image'" :show-toast="showToast" @back="activeView = 'split'" />
+
+      <!-- BỐ CỤC CHO PHẦN TẠO ẢNH AI INLINE -->
+      <BrowserAIImagePage v-show="activeView === 'ai-image'" :default-output-dir="outDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-image="handleApplyAIImage" @show-toast="showToast" />
+
+      <!-- BỐ CỤC CHO PHẦN TẠO VIDEO AI INLINE -->
+      <BrowserAIVideoPage v-show="activeView === 'ai-video'" :default-output-dir="outDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-video="handleApplyAIVideo" @show-toast="showToast" />
 
     </div>
 
@@ -3064,7 +3218,7 @@ const formatSize = (bytes: number) => {
       <div class="modal-overlay" v-if="confirmDialogState.show" @click.self="handleConfirmResolve(false)" style="z-index: 99999;">
         <div class="settings-modal recent-modal confirm-dialog-modal" style="width: 420px; max-width: 90%;">
           <div class="modal-header" style="padding: 16px 20px; border-bottom: 1px solid var(--l-border);">
-            <h2 style="font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 6px; color: var(--wx-danger-solid, #ef4444);">
+            <h2 style="font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 6px; color: var(--wx-danger-solid);">
               <AlertTriangle :size="18" />
               Xác nhận
             </h2>
@@ -3077,7 +3231,7 @@ const formatSize = (bytes: number) => {
             <button @click="handleConfirmResolve(false)" class="btn cancel-btn flex-center" style="background-color: var(--l-bg-soft); color: var(--l-text); border: 1px solid var(--l-border); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">
               <X :size="13" /> Hủy
             </button>
-            <button @click="handleConfirmResolve(true)" class="btn confirm-btn flex-center" style="background-color: #ef4444; color: #fff; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; box-shadow: 0 4px 10px rgba(239, 68, 68, 0.2); display: inline-flex; align-items: center; gap: 4px;">
+            <button @click="handleConfirmResolve(true)" class="btn confirm-btn flex-center" style="background-color: var(--wx-danger-solid); color: var(--wx-text-inverse); border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; box-shadow: var(--wx-shadow-lift); display: inline-flex; align-items: center; gap: 4px;">
               <Check :size="13" /> Đồng ý
             </button>
           </div>
@@ -3141,7 +3295,7 @@ const formatSize = (bytes: number) => {
               <input type="text" v-model="newProjectName" class="file-path-input" style="padding: 10px; border-radius: 8px; border: 1px solid var(--l-border); background: var(--l-bg); color: var(--l-text); outline: none;" placeholder="Ví dụ: Kênh Tiktok Review Phim" @keyup.enter="createProject" />
             </div>
             <div class="modal-footer-buttons" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;">
-              <button @click="createProject" class="btn confirm-btn flex-center" :disabled="!newProjectName.trim()" style="background-color: #6366f1; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+              <button @click="createProject" class="btn confirm-btn flex-center" :disabled="!newProjectName.trim()" style="background-color: var(--wx-brand-primary); color: var(--wx-text-inverse); border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
                 <Plus :size="14" /> Tạo dự án
               </button>
             </div>
@@ -3601,7 +3755,46 @@ const formatSize = (bytes: number) => {
                 <label style="font-size: 12.5px; font-weight: 600;">Google Gemini API Key:</label>
                 <input type="password" v-model="geminiAPIKey" class="text-content-input" placeholder="Dán Gemini API Key của bạn..." style="margin-bottom: 0;" />
               </div>
-              <p class="settings-hint" style="font-size: 11px; color: var(--l-text-muted); margin: 0; line-height: 1.4;">API Key được lưu bảo mật cục bộ tại máy của bạn.</p>
+            </div>
+
+            <div class="settings-group" style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid var(--l-border);">
+              <h4 style="margin-top: 0; margin-bottom: 12px; color: var(--wx-brand-accent); font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                <Chrome :size="15" />
+                Cấu hình Google AI (Chrome)
+              </h4>
+              
+              <!-- Checkbox hiển thị Chrome -->
+              <div style="margin-bottom: 10px; display: flex; align-items: center;">
+                <label class="toggle-row inline" style="font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; margin-bottom: 0;">
+                  <input type="checkbox" v-model="browserAIShowChrome" style="width:16px; height:16px;" />
+                  Hiện trình duyệt Chrome khi chạy Google AI tự động
+                </label>
+              </div>
+              
+              <!-- Độ trễ & Đăng nhập chung một dòng -->
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; width: 100%; margin-top: 5px;">
+                <!-- Độ trễ tự động hóa -->
+                <div style="display: flex; flex-direction: row; align-items: center; justify-content: space-between;">
+                  <span style="font-size: 12.5px; font-weight: 600; color: var(--text-muted); white-space: nowrap;">Độ trễ:</span>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <input type="number" v-model="browserAIDelay" min="0.1" max="10.0" step="0.1" class="text-content-input" placeholder="Mặc định: 1.0" style="width: 65px; text-align: center; padding: 4px 8px; height: 30px; margin-bottom: 0;" />
+                    <span style="font-size: 12px; color: var(--l-text-muted); white-space: nowrap;">giây</span>
+                  </div>
+                </div>
+                
+                <!-- Quản lý phiên đăng nhập Google -->
+                <div style="display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 8px;">
+                  <span style="font-size: 12.5px; font-weight: 600; color: var(--text-muted); white-space: nowrap;">Đăng nhập Google:</span>
+                  <div style="display: flex; gap: 8px; align-items: center;">
+                    <button @click="openAILogin('flow')" class="mini-add-btn flex-center" style="padding: 6px 12px; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; height: 30px;">
+                      <Chrome :size="13" /> Đăng nhập
+                    </button>
+                    <button @click="clearAILogin" class="mini-add-btn flex-center" style="padding: 6px 12px; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; height: 30px; color: var(--wx-danger-solid); border-color: color-mix(in srgb, var(--wx-danger-solid) 30%, transparent);">
+                      <Trash2 :size="13" /> Đăng xuất
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
             
             <div class="settings-group">
@@ -3618,41 +3811,6 @@ const formatSize = (bytes: number) => {
                   </label>
                 </div>
 
-                <!-- Thư mục lưu video -->
-                <div class="setting-item">
-                  <label style="font-size: 12.5px; font-weight: 600;">
-                    {{ autoCreateSubfolders ? 'Thư mục xuất chung mặc định:' : 'Thư mục lưu video xuất:' }}
-                  </label>
-                  <div class="file-picker-row">
-                    <input type="text" v-model="outDir" class="file-path-input" style="flex: 1;" readonly />
-                    <button class="mini-add-btn flex-center" @click="chooseOutDir" style="padding: 7px 14px; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
-                      <FolderOpen :size="14" />
-                      Chọn thư mục
-                    </button>
-                  </div>
-                </div>
-
-                <!-- Thư mục lưu ảnh -->
-                <div class="setting-item" v-if="!autoCreateSubfolders">
-                  <label style="font-size: 12.5px; font-weight: 600;">Thư mục lưu ảnh (Thumbnail) xuất:</label>
-                  <div class="file-picker-row">
-                    <input type="text" v-model="outImageDir" class="file-path-input" style="flex: 1;" readonly />
-                    <button class="mini-add-btn flex-center" @click="chooseOutImageDir" style="padding: 7px 14px; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
-                      <FolderOpen :size="14" />
-                      Chọn thư mục
-                    </button>
-                  </div>
-                </div>
-
-                <!-- Gợi ý đường dẫn con -->
-                <div v-else style="background: var(--l-bg-soft); border: 1px dashed var(--l-border); padding: 8px 12px; border-radius: 8px; font-size: 11.5px; color: var(--l-text-muted); line-height: 1.4;">
-                  <span style="display: inline-flex; align-items: center; gap: 4px; margin-bottom: 4px; font-weight: 700; color: var(--l-text);">
-                    <Info :size="13" />
-                    Quy tắc tự chia thư mục con:
-                  </span><br />
-                  - Video sẽ lưu tại: <code style="color: var(--l-accent);">{{ outDir }}\video</code><br />
-                  - Ảnh bìa sẽ lưu tại: <code style="color: var(--wx-brand-accent);">{{ outDir }}\image</code>
-                </div>
                 
                 <div class="settings-grid" style="grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 5px;">
                   <div>
@@ -3688,10 +3846,8 @@ const formatSize = (bytes: number) => {
       </div>
     </Teleport>
 
-
   </main>
 </template>
-
 
 <style scoped src="./VideoSplitter.scoped.css"></style>
 

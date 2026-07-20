@@ -125,3 +125,7 @@ export function SelectFolder() {
 export function SelectImageFile() {
   return window['go']['main']['App']['SelectImageFile']();
 }
+
+export function SelectImageFiles() {
+  return window['go']['main']['App']['SelectImageFiles']();
+}

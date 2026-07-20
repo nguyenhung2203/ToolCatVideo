@@ -1,3 +1,88 @@
+export namespace browserai {
+	
+	export class BrowserStatus {
+	    isOpen: boolean;
+	    currentProvider: string;
+	    profileDir: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BrowserStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.isOpen = source["isOpen"];
+	        this.currentProvider = source["currentProvider"];
+	        this.profileDir = source["profileDir"];
+	    }
+	}
+	export class GenerateRequest {
+	    provider: string;
+	    mediaType: string;
+	    prompt: string;
+	    aspectRatio: string;
+	    outputDir: string;
+	    fileName: string;
+	    timeoutSecond: number;
+	    openBrowser: boolean;
+	    showChrome: boolean;
+	    model: string;
+	    batchSize: string;
+	    confirmBeforeCreate: string;
+	    resolution: string;
+	    delaySecond: number;
+	    inputImagePath: string;
+	    inputImageBase64: string;
+	    inputImagePaths: string[];
+	    inputImageBase64s: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new GenerateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.mediaType = source["mediaType"];
+	        this.prompt = source["prompt"];
+	        this.aspectRatio = source["aspectRatio"];
+	        this.outputDir = source["outputDir"];
+	        this.fileName = source["fileName"];
+	        this.timeoutSecond = source["timeoutSecond"];
+	        this.openBrowser = source["openBrowser"];
+	        this.showChrome = source["showChrome"];
+	        this.model = source["model"];
+	        this.batchSize = source["batchSize"];
+	        this.confirmBeforeCreate = source["confirmBeforeCreate"];
+	        this.resolution = source["resolution"];
+	        this.delaySecond = source["delaySecond"];
+	        this.inputImagePath = source["inputImagePath"];
+	        this.inputImageBase64 = source["inputImageBase64"];
+	        this.inputImagePaths = source["inputImagePaths"];
+	        this.inputImageBase64s = source["inputImageBase64s"];
+	    }
+	}
+	export class TaskInfo {
+	    taskId: string;
+	    state: string;
+	    message: string;
+	    startedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TaskInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.taskId = source["taskId"];
+	        this.state = source["state"];
+	        this.message = source["message"];
+	        this.startedAt = source["startedAt"];
+	    }
+	}
+
+}
+
 export namespace downloader {
 	
 	export class DownloadResult {

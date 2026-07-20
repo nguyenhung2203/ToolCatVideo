@@ -30,6 +30,7 @@ import (
 	"video-splitter/internal/project"
 	"video-splitter/internal/storage"
 	"video-splitter/internal/utils"
+	"video-splitter/internal/browserai"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"google.golang.org/genai"
@@ -45,6 +46,7 @@ func hashPath(sourcePath string) string {
 // App struct
 type App struct {
 	ctx               context.Context
+	browserAIService  *browserai.Service
 	cancelFuncs       map[string]context.CancelFunc
 	cancelMu          sync.Mutex
 	exportCancelFuncs map[string]context.CancelFunc
@@ -63,14 +65,19 @@ type App struct {
 }
 
 // NewApp creates a new App application struct
-func NewApp() *App {
-	return &App{}
+func NewApp(browserAIService *browserai.Service) *App {
+	return &App{
+		browserAIService: browserAIService,
+	}
 }
 
 // startup is called when the app starts. The context is saved
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	if a.browserAIService != nil {
+		a.browserAIService.Startup(ctx)
+	}
 	a.cancelFuncs = make(map[string]context.CancelFunc)
 	a.exportCancelFuncs = make(map[string]context.CancelFunc)
 	a.isExportCancelled = false
@@ -117,6 +124,9 @@ func (a *App) startup(ctx context.Context) {
 
 // shutdown được gọi khi app đóng — đóng database để flush an toàn.
 func (a *App) shutdown(ctx context.Context) {
+	if a.browserAIService != nil {
+		a.browserAIService.Shutdown(ctx)
+	}
 	if a.store != nil {
 		_ = a.store.Close()
 	}
@@ -853,6 +863,16 @@ func (a *App) MergeClips(sourcePath string, clips []project.Clip, outPath string
 func (a *App) SelectImageFile() (string, error) {
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "Chọn ảnh watermark / logo",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Ảnh (*.png;*.jpg;*.jpeg;*.webp)", Pattern: "*.png;*.jpg;*.jpeg;*.webp"},
+		},
+	})
+}
+
+// SelectImageFiles mở hộp thoại chọn nhiều ảnh đầu vào.
+func (a *App) SelectImageFiles() ([]string, error) {
+	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Chọn ảnh làm đầu vào",
 		Filters: []runtime.FileFilter{
 			{DisplayName: "Ảnh (*.png;*.jpg;*.jpeg;*.webp)", Pattern: "*.png;*.jpg;*.jpeg;*.webp"},
 		},

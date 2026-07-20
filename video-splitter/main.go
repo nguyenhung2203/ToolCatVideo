@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"video-splitter/internal/browserai"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -12,7 +13,8 @@ import (
 var assets embed.FS
 
 func main() {
-	app := NewApp()
+	browserAIService := browserai.NewService()
+	app := NewApp(browserAIService)
 
 	err := wails.Run(&options.App{
 		Title:  "Video Splitter",
@@ -26,6 +28,7 @@ func main() {
 		OnShutdown:       app.shutdown,
 		Bind: []interface{}{
 			app,
+			browserAIService,
 		},
 	})
 
