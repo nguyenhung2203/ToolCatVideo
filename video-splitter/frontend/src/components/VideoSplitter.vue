@@ -4,8 +4,19 @@ import { GetVideoInfo, Analyze, ExportClips, SelectFiles, CancelAnalysis, GetStr
 import { project, storage, main } from '../../wailsjs/go/models'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { useTheme } from '../ui-system/composables/useTheme'
-import { useDownloader } from './composables/useDownloader'
-import { useImageDownloader, IMAGE_SOURCES } from './composables/useImageDownloader'
+import BaseDropdown from './common/BaseDropdown.vue'
+import VideoDownloader from './VideoDownloader.vue'
+import ImageDownloader from './ImageDownloader.vue'
+import {
+  Video, Scissors, Download, Settings, Sun, Moon, History, Save,
+  Plus, Trash2, Trash, RefreshCw, X, Check, Key, ChevronDown, ChevronUp,
+  Play, Square, Pause, RotateCcw, Copy, FolderOpen, Music,
+  Image as ImageIcon, Type, Layers, Zap, AlertTriangle, Info,
+  Clock, Film, Monitor, Loader2, ArrowRight, Upload, BarChart2,
+  Sparkles, Tag, FileVideo, ListVideo, LayoutGrid, SlidersHorizontal,
+  Cpu, FlipHorizontal2, Timer, Volume2, VolumeX, Repeat,
+  Star, Pencil, Move
+} from 'lucide-vue-next'
 
 const { isDark, toggleColorScheme } = useTheme()
 
@@ -302,35 +313,14 @@ const globalMusicName = computed(() => {
 // === Cấu hình (Settings) ===
 const showSettings = ref(false)
 
-// === Download Online Video (composable) ===
-const {
-  showDownloadPanel, downloadUrl, downloadMode, isProbing, isDownloading, probeResult,
-  downloadDir, cookieBrowser, dlSelectedIds, dlSortBy, dlKeyword, dlMinViews,
-  dlProgressMap, filteredDlEntries, dlSelectedCount, formatViewCount, formatDlDate,
-  dlLinkType, dlMaxCount, dlFetchOrder, searchSource, detectedLinkType, effectiveLinkType, isProfileOrPlaylist,
-  dlToggleAll, dlToggle, openDownloadPanel, probeUrl, startDownload, cancelDl,
-  pickDownloadDir, addDownloadedToProject, initDownloadEvents, copyToClipboard,
-} = useDownloader(showToast, videoPaths)
-
-// === Download Images (composable) ===
-const {
-  showImagePanel, imageQuery, imageSource, imageApiKey, imageMaxCount,
-  isSearching: isImageSearching, isDownloading: isImageDownloading,
-  searchResult: imageSearchResult, imageDir, selectedImageIds,
-  progressMap: imageProgressMap, searchLog: imageSearchLog,
-  downloadDoneCount, downloadTotalCount, downloadProgress: imageDownloadProgress,
-  selectedCount: imageSelectedCount, allEntries: imageAllEntries,
-  sourceNeedsKey, selectedSource: imageSelectedSource, hasEnvKey: imageHasEnvKey,
-  toggleSelectAll: imageToggleAll, toggleImage, openImagePanel,
-  searchImages, startImageDownload, cancelImageDl, pickImageDir, initImageEvents,
-} = useImageDownloader(showToast)
-
 const globalSettingsConfig = ref<any>(null)
+
+const activeView = ref<'split' | 'download-video' | 'download-image'>('split')
 
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
-  sceneThreshold: 26.0,
-  minClipDuration: 5.0,
+  sceneThreshold: 20.0,
+  minClipDuration: 1.0,
   maxClipDuration: 60.0,
   autoAcceptScore: 60,
   reviewMinScore: 35,
@@ -472,6 +462,12 @@ const computedVideoSrc = computed(() => {
     return activeExportedSrc.value
   }
   return activeVideoSrc.value
+})
+
+watch(computedVideoSrc, () => {
+  if (videoPlayer.value) {
+    videoPlayer.value.load()
+  }
 })
 
 // === QUẢN LÝ PROMPT THUMBNAIL MẪU (PRESETS) ===
@@ -999,10 +995,6 @@ EventsOn('clip_thumb_update', (data: { path: string, clipId: string, thumbnail: 
   }
 })
 
-// Download events (handled by composable)
-initDownloadEvents(addLog)
-// Image download events
-initImageEvents()
 
 
 const handleSelectFiles = async () => {
@@ -1150,6 +1142,32 @@ const addWholeVideoAsClip = async (path: string) => {
   }
 }
 
+const exportWithoutSplitting = async () => {
+  const targets = videoPaths.value.filter(path => selectedVideos.value.has(path))
+  const finalTargets = targets.length > 0 ? targets : videoPaths.value
+  
+  if (finalTargets.length === 0) {
+    showToast('Vui lòng chọn hoặc thêm video gốc trước', 'warning')
+    return
+  }
+  
+  // Tự động thêm toàn bộ video làm clip nếu chưa có
+  for (const path of finalTargets) {
+    if (!clipsMap.value[path] || clipsMap.value[path].length === 0) {
+      await addWholeVideoAsClip(path)
+    }
+  }
+  
+  // Tự động tích chọn các clip này để chuẩn bị xuất
+  finalTargets.forEach(path => {
+    const list = clipsMap.value[path] || []
+    list.forEach(c => selectedClips.value.add(c.id))
+  })
+  
+  // Kích hoạt xuất toàn bộ các clip đã chọn
+  await exportClips()
+}
+
 const startAnalysis = async () => {
   if (!activeVideoPath.value) return
   isAnalyzing.value = true
@@ -1174,14 +1192,9 @@ const analyzeAll = async () => {
   const allTargets = videosForBatch()
   if (allTargets.length === 0) return
 
-  // If the user checked/selected specific videos, always re-analyze them.
-  // Only skip already-analyzed videos if doing bulk processing (no checkboxes ticked).
-  const isBatchAll = selectedVideos.value.size === 0
+  // Tự động bỏ qua các video đã được cắt và có phân đoạn (clips) hiển thị.
   const targets = allTargets.filter(p => {
-    if (isBatchAll) {
-      return !clipsMap.value[p] || clipsMap.value[p].length === 0
-    }
-    return true // Ticked -> force re-analyze
+    return !clipsMap.value[p] || clipsMap.value[p].length === 0
   })
   const alreadyCut = allTargets.filter(p => !targets.includes(p))
 
@@ -1536,8 +1549,8 @@ const loadProject = async (projId: string) => {
       Object.assign(analyzerConfig, JSON.parse(JSON.stringify(globalSettingsConfig.value)))
     } else {
       analyzerConfig.mode = 'smart'
-      analyzerConfig.sceneThreshold = 26.0
-      analyzerConfig.minClipDuration = 5.0
+      analyzerConfig.sceneThreshold = 20.0
+      analyzerConfig.minClipDuration = 1.0
       analyzerConfig.maxClipDuration = 30.0
       analyzerConfig.autoAcceptScore = 60
       analyzerConfig.reviewMinScore = 35
@@ -2308,7 +2321,7 @@ const formatSize = (bytes: number) => {
     <!-- Navbar / Header trên cùng -->
     <header class="header">
       <div class="header-left">
-        <svg class="header-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+        <Video class="header-icon" :size="26" />
         <h1>Smart Splitter</h1>
         
         <!-- Bảng chọn dự án -->
@@ -2317,89 +2330,103 @@ const formatSize = (bytes: number) => {
           <select :disabled="isAnalyzing || isExporting" :value="activeProjectId" @change="e => loadProject((e.target as HTMLSelectElement).value)" class="project-dropdown">
             <option v-for="p in namedProjects" :key="p.id" :value="p.id">{{ p.name }}</option>
           </select>
-          <button :disabled="isAnalyzing || isExporting" @click="openCreateProject" class="btn-create-proj-mini flex-center" title="Tạo dự án mới" style="display:inline-flex; align-items:center; gap:3px;">
-            <svg viewBox="0 0 24 24" width="11" height="11"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          <button :disabled="isAnalyzing || isExporting" @click="openCreateProject" class="btn-create-proj-mini flex-center" title="Tạo dự án mới">
+            <Plus :size="11" />
             Mới
           </button>
-          <button :disabled="isAnalyzing || isExporting" @click="openManageProjects" class="btn-manage-proj-mini flex-center" title="Quản lý dự án" style="display:inline-flex; align-items:center; gap:3px;">
-            <svg viewBox="0 0 24 24" width="11" height="11"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+          <button :disabled="isAnalyzing || isExporting" @click="openManageProjects" class="btn-manage-proj-mini flex-center" title="Quản lý dự án">
+            <Settings :size="11" />
             Quản lý
           </button>
         </div>
       </div>
       <div class="header-actions">
-        <!-- Nút chọn video -->
-        <button :disabled="isAnalyzing || isExporting" @click="handleSelectFiles" class="btn select-btn flex-center">
-          <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-          Chọn Video Gốc
-        </button>
-        <!-- Nút tải video online -->
-        <button :disabled="isAnalyzing || isExporting" @click="openDownloadPanel" class="btn select-btn flex-center">
-          <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M5 20h14v-2H5v2zM12 2L4 10h5v6h6v-6h5L12 2z"/></svg>
-          Tải Video Online
-        </button>
-        <!-- Nút tải ảnh theo chủ đề -->
-        <button @click="openImagePanel" class="btn select-btn flex-center img-dl-btn">
-          <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
-          Tải Ảnh Chủ Đề
-        </button>
- 
-        <!-- Nút Bắt đầu / Dừng quét phân tích -->
-        <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0 || isExporting" @click="analyzeAll" class="btn start-btn flex-center">
-          <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
-          Bắt Đầu Cắt Tự Động
-        </button>
-        <button v-else @click="cancelCurrentAnalysis" class="btn stop-analyze-btn flex-center">
-          <svg class="btn-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
-          Dừng Ngay ({{ processedVideosCount }}/{{ totalVideosCount }})
-        </button>
- 
-        <div class="header-divider"></div>
+        <!-- Menu chọn chức năng chính (Segmented tabs cực đẹp) -->
+        <div class="nav-segmented-control">
+          <button class="nav-segment-btn" :class="{ active: activeView === 'split' }" @click="activeView = 'split'">
+            <Scissors :size="13" /> Cắt Video
+          </button>
+          <button class="nav-segment-btn" :class="{ active: activeView === 'download-video' }" @click="activeView = 'download-video'">
+            <Download :size="13" /> Tải Video
+          </button>
+          <button class="nav-segment-btn" :class="{ active: activeView === 'download-image' }" @click="activeView = 'download-image'">
+            <ImageIcon :size="13" /> Tải Ảnh
+          </button>
+        </div>
+
  
         <!-- Mở dự án gần đây -->
         <button :disabled="isAnalyzing || isExporting" @click="openRecentProjects" class="icon-btn-circle" title="Project đã lưu">
-          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.97 8.97 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
+          <History :size="20" />
         </button>
- 
+
         <!-- Lưu dự án -->
         <button :disabled="isAnalyzing || isExporting" @click="saveProject" class="icon-btn-circle" title="Lưu phiên làm việc" v-if="activeClips.length > 0">
-          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
+          <Save :size="20" />
         </button>
  
         <!-- Nút chuyển chế độ Sáng/Tối -->
         <button @click="toggleColorScheme" class="icon-btn-circle theme-toggle-btn" :title="isDark ? 'Chuyển sang giao diện Sáng' : 'Chuyển sang giao diện Tối'">
-          <svg v-if="isDark" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--wx-brand-accent);"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-          <svg v-else viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--wx-brand-primary);"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+          <Sun v-if="isDark" :size="20" style="color: var(--wx-brand-accent);" />
+          <Moon v-else :size="20" style="color: var(--wx-brand-primary);" />
         </button>
- 
+
         <!-- Nút Cài đặt chung -->
         <button :disabled="isAnalyzing || isExporting" @click="showSettings = true" class="icon-btn-circle" title="Cài đặt chung">
-          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+          <Settings :size="20" />
         </button>
 
       </div>
     </header>
 
     <div class="app-body-vertical">
+      <template v-if="activeView === 'split'">
       <!-- BỐ CỤC TRÊN: DANH SÁCH VIDEO GỐC -->
       <section class="section-top-videos">
-        <div class="section-title-bar">
-          <div class="title-left">
+        <div class="section-title-bar" style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div class="title-left" style="display: flex; align-items: center; gap: 8px;">
             <h2>Danh sách Video Gốc</h2>
-            <span class="video-counter">({{ videoPaths.length }} video)</span>
-          </div>
-          <div class="title-right-actions" v-if="videoPaths.length > 0" :class="{ 'panel-disabled': isAnalyzing || isExporting }">
-            <button 
-              v-if="selectedVideos.size > 0" 
-              @click.stop="removeSelectedVideos" 
-              class="btn-danger-compact" 
-            >
-              Xóa {{ selectedVideos.size }} video đã chọn
-            </button>
-            <label class="select-all-label" @click.stop>
+            <span class="video-counter" style="margin-right: 8px;">({{ videoPaths.length }} video)</span>
+
+            <!-- Xóa video đã chọn & Chọn tất cả (bên trái) -->
+            <label v-if="videoPaths.length > 0" :class="{ 'panel-disabled': isAnalyzing || isExporting }" class="select-all-label" @click.stop style="display: inline-flex; align-items: center; gap: 6px; height: 28px; font-size: 12px;">
               <input type="checkbox" :checked="isAllVideosSelected" @change="toggleSelectAllVideos" class="clip-checkbox" />
               <span>Chọn tất cả video để xử lý</span>
             </label>
+
+            <button 
+              v-if="videoPaths.length > 0 && selectedVideos.size > 0" 
+              :disabled="isAnalyzing || isExporting"
+              @click.stop="removeSelectedVideos" 
+              class="btn-danger-compact" 
+              style="height: 28px; box-sizing: border-box; padding: 5px 10px; font-size: 11px;"
+            >
+              Xóa {{ selectedVideos.size }} video đã chọn
+            </button>
+          </div>
+
+          <div class="title-right-actions" style="display: flex; align-items: center; gap: 8px;">
+            <!-- Nút chọn video gốc (bên phải) -->
+            <button :disabled="isAnalyzing || isExporting" @click="handleSelectFiles" class="btn select-btn flex-center">
+              <Plus :size="12" />
+              Chọn Video Gốc
+            </button>
+
+            <!-- Nút Bắt Đầu Cắt Tự Động / Dừng Ngay (bên phải) -->
+            <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0 || isExporting" @click="analyzeAll" class="btn btn-analyze flex-center font-bold">
+              <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
+              Cắt Video
+            </button>
+            <button v-else @click="cancelCurrentAnalysis" class="btn stop-analyze-btn flex-center font-bold">
+              <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
+              Dừng Ngay ({{ processedVideosCount }}/{{ totalVideosCount }})
+            </button>
+
+            <!-- Nút Chỉ Xuất Video Gốc (Không Cắt) -->
+            <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0 || isExporting" @click="exportWithoutSplitting" class="btn btn-export-direct flex-center font-bold" title="Xuất trực tiếp các video gốc đang chọn (áp dụng cấu hình hiệu ứng/tốc độ ở bên trái, không cắt nhỏ)">
+              <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2v9.67z"/></svg>
+              Xuất Video
+            </button>
           </div>
         </div>
 
@@ -2416,23 +2443,17 @@ const formatSize = (bytes: number) => {
               </label>
               
               <div class="video-card-icon">
-                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+                <FileVideo :size="16" />
               </div>
               
               <span class="video-card-name">{{ path.split('\\').pop() }}</span>
               
-              <span class="status-badge-compact done" v-if="clipsMap[path] && clipsMap[path].length > 0" :title="`Đã quét ${clipsMap[path].length} clip`">
-                <svg viewBox="0 0 24 24" width="10" height="10" style="display:inline-block; vertical-align:middle; margin-right:2px;"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-                {{ clipsMap[path].length }}
-              </span>
-              <span class="status-badge-compact pending" v-else title="Chờ quét phân đoạn">
-                <svg viewBox="0 0 24 24" width="10" height="10" class="spin-hourglass" style="display:inline-block; vertical-align:middle;"><path fill="currentColor" d="M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5l-4-4V4h8v3.5l-4 4z"/></svg>
-              </span>
+              <span class="status-dot dot-green" v-if="clipsMap[path] && clipsMap[path].length > 0" :title="`Đã cắt ${clipsMap[path].length} clip`"></span>
+              <span class="status-dot dot-red" v-else title="Chưa cắt"></span>
 
-              <button class="btn-whole-video" @click.stop="addWholeVideoAsClip(path)" title="Thêm nguyên video làm clip (để chỉnh sửa, không cắt)" v-if="!clipsMap[path] || clipsMap[path].length === 0" :disabled="isAnalyzing || isExporting" :style="isAnalyzing || isExporting ? { opacity: 0.4, pointerEvents: 'none' } : {}">
-                <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 12c-2.21 0-4-1.79-4-4s1.79-4 4-4 4 1.79 4 4-1.79 4-4 4z"/></svg>
+              <button class="btn-remove-video" @click.stop="removeVideo(index)" title="Xóa video khỏi dự án" :disabled="isAnalyzing || isExporting" :style="isAnalyzing || isExporting ? { opacity: 0.4, pointerEvents: 'none' } : {}">
+                <X :size="10" />
               </button>
-              <button class="btn-remove-video" @click.stop="removeVideo(index)" title="Xóa video khỏi dự án" :disabled="isAnalyzing || isExporting" :style="isAnalyzing || isExporting ? { opacity: 0.4, pointerEvents: 'none' } : {}">✕</button>
             </div>
 
             <!-- Tiến trình quét -->
@@ -2445,9 +2466,12 @@ const formatSize = (bytes: number) => {
           </div>
         </div>
         <div class="empty-videos-placeholder" v-else>
-          <div class="placeholder-content">
-            <svg viewBox="0 0 24 24" width="20" height="20" class="placeholder-icon"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-            <span>Chưa có video gốc nào. Nhấn nút <strong>"Chọn Video Gốc"</strong> để bắt đầu.</span>
+          <div class="placeholder-content" style="display:flex; flex-direction:column; align-items:center; gap:10px; padding: 30px; text-align:center;">
+            <FileVideo :size="36" style="opacity: 0.3; color: var(--accent-color);" />
+            <span style="font-size: 13px; color: var(--l-text-muted);">Chưa có video gốc nào trong dự án.</span>
+            <button @click="handleSelectFiles" class="btn select-btn flex-center">
+              Chọn Video Gốc
+            </button>
           </div>
         </div>
       </section>
@@ -2456,9 +2480,9 @@ const formatSize = (bytes: number) => {
       <section class="section-middle-workspace">
         <!-- Bên Trái: Bảng Cấu Hình Dự Án (Cắt & Sửa) -->
         <div class="project-settings-panel" :class="{ 'panel-disabled': isAnalyzing || isExporting }">
-          <div class="settings-section-header" style="margin-bottom: 6px; display:flex; align-items:center; gap:6px;">
-            <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--accent-color);"><path fill="currentColor" d="M19.07 4.93l-1.41 1.41 1.41 1.41c1.17 1.17 1.17 3.07 0 4.24s-3.07 1.17-4.24 0L12 9.17l-2.83 2.83c-1.17 1.17-3.07 1.17-4.24 0s-1.17-3.07 0-4.24l1.41-1.41-1.41-1.41c-2.34 2.34-2.34 6.14 0 8.49L7.76 16l-2.83 2.83c-1.17 1.17-1.17 3.07 0 4.24s3.07 1.17 4.24 0L12 20.24l2.83 2.83c1.17 1.17 3.07 1.17 4.24 0s1.17-3.07 0-4.24L16.24 16l2.83-2.83c2.34-2.34 2.34-6.14 0-8.49z"/></svg>
-            <h3 style="margin: 0; font-size: 13.5px; font-weight: 800; color: var(--accent-color); text-transform: uppercase;">Cấu hình cắt</h3>
+          <div class="settings-section-header" style="margin-bottom: 6px;">
+            <Scissors :size="14" style="color:var(--accent-color);" />
+            <h3>Cấu hình cắt</h3>
           </div>
           
           <div class="compact-settings-group-list">
@@ -2526,7 +2550,6 @@ const formatSize = (bytes: number) => {
                   <option value="amd">AMD (Card rời AMD)</option>
                   <option value="none">❌ Không tăng tốc (chỉ dùng CPU)</option>
                 </select>
-                <span style="font-size: 9px; opacity: 0.55; margin-top: 2px; display: block;">Bật GPU giúp phân tích & xuất video nhanh hơn 3-5 lần</span>
               </div>
             </div>
           </div>
@@ -2534,9 +2557,9 @@ const formatSize = (bytes: number) => {
           <div style="border-bottom: 1px solid var(--border-color); margin: 6px 0;"></div>
 
           <!-- Phần 2: Cấu hình chỉnh sửa -->
-          <div class="settings-section-header" style="margin-bottom: 6px; display:flex; align-items:center; gap:6px;">
-            <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--accent-color);"><path fill="currentColor" d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-2z"/></svg>
-            <h3 style="margin: 0; font-size: 13.5px; font-weight: 800; color: var(--accent-color); text-transform: uppercase;">Cấu hình sửa</h3>
+          <div class="settings-section-header" style="margin-bottom: 6px;">
+            <Film :size="14" style="color:var(--accent-color);" />
+            <h3>Cấu hình sửa</h3>
           </div>
 
           <div class="remix-options-grid-compact">
@@ -2678,17 +2701,17 @@ const formatSize = (bytes: number) => {
 
 
 
-          <!-- Áp dụng hàng loạt -->
-          <div style="margin-top: auto; border-top: 1px solid var(--border-color); padding-top: 8px;">
-            <label class="auto-apply-label-compact" style="margin-bottom: 6px; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); cursor: pointer;">
-              <input type="checkbox" v-model="globalRemix.autoApply" />
-              <span>Tự động áp dụng khi quét mới</span>
-            </label>
-            <button @click="applyGlobalRemixToAllActive" class="btn primary-btn flex-center font-bold" style="width: 100%; padding: 6px; border-radius: 6px; background-color: var(--accent-color); color: white; border: none; cursor: pointer; font-size: 11.5px; display: flex; align-items: center; justify-content: center; gap: 4px;">
-              <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
-              Áp hiệu ứng cho tất cả clip hiện tại
-            </button>
-          </div>
+            <!-- Áp dụng hàng loạt -->
+            <div style="margin-top: auto; border-top: 1px solid var(--border-color); padding-top: 8px;">
+              <label class="auto-apply-label-compact" style="margin-bottom: 6px; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); cursor: pointer;">
+                <input type="checkbox" v-model="globalRemix.autoApply" />
+                <span>Tự động áp dụng khi quét mới</span>
+              </label>
+              <button @click="applyGlobalRemixToAllActive" class="btn primary-btn flex-center font-bold" style="width: 100%; padding: 6px; border-radius: 6px; background-color: var(--accent-color); color: white; border: none; cursor: pointer; font-size: 11.5px; display: flex; align-items: center; justify-content: center; gap: 4px;">
+                <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
+                Áp hiệu ứng cho tất cả clip hiện tại
+              </button>
+            </div>
         </div>
 
         <!-- Bên Phải: Trình phát Video & Visual Timeline -->
@@ -2711,24 +2734,12 @@ const formatSize = (bytes: number) => {
             
             <video v-if="activeVideoSrc" ref="videoPlayer" :src="computedVideoSrc" controls class="video-player-mini" @timeupdate="onVideoTimeUpdate"></video>
             <div class="empty-player-screen" v-else>
-              <div class="player-emoji">📺</div>
+              <div class="player-emoji">
+                <Monitor :size="40" style="color: var(--text-muted);" />
+              </div>
               <span>Chọn một video để xem trước</span>
             </div>
 
-            <!-- Lớp phủ khi đang phân tích AI -->
-            <div class="analysis-overlay" v-if="activeAnalyzingPaths.has(activeVideoPath)">
-              <div class="overlay-card">
-                <div class="spinner"></div>
-                <h4>Đang tự động cắt: <span class="processing-name-tag">{{ activeProcessingVideoName }}</span></h4>
-                <div class="progress-label flex-between" style="width: 100%;">
-                  <span>Tiến trình: <strong style="color: var(--accent-color); margin-left: 4px;">{{ getAnalyzeETA(activeVideoPath) }}</strong></span>
-                  <span>{{ Math.round(displayProgressMap[activeVideoPath] || 0) }}%</span>
-                </div>
-                <div class="progress-container">
-                  <div class="progress-bar" :style="{ width: (displayProgressMap[activeVideoPath] || 0) + '%' }"></div>
-                </div>
-              </div>
-            </div>
           </div>
 
           <!-- Timeline phân đoạn -->
@@ -2763,27 +2774,32 @@ const formatSize = (bytes: number) => {
           </div>
 
           <!-- Trình ghép nhạc nền & Lặp nhạc (Tối ưu hóa không gian) -->
-          <div class="music-merging-panel" v-if="videoPaths.length > 0" :class="{ 'panel-disabled': isAnalyzing || isExporting }" style="margin-top: 15px; background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255,255,255,0.06); padding: 16px; border-radius: 12px; backdrop-filter: blur(8px);">
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+          <div class="music-merging-panel" v-if="videoPaths.length > 0" :class="{ 'panel-disabled': isAnalyzing || isExporting }" style="margin-top: 8px; background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255,255,255,0.06); padding: 10px 14px; border-radius: 10px; backdrop-filter: blur(8px);">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
               <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-                <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--wx-brand-accent); display: flex; align-items: center; gap: 8px;">
-                  🎵 Trình Ghép Nhạc Nền & Lặp Nhạc (Áp dụng hàng loạt)
+                <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: var(--wx-brand-accent); display: flex; align-items: center; gap: 6px;">
+                  <Music :size="15" />
+                  Trình Ghép Nhạc Nền & Lặp Nhạc (Áp dụng hàng loạt)
                 </h3>
                 <button @click="pickGlobalMusic" class="btn active-btn" style="font-size: 11.5px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; cursor: pointer; border: none; font-weight: 600;">
-                  ➕ Thêm nhạc nền
+                  <Plus :size="13" />
+                  Thêm nhạc nền
                 </button>
-                <button v-if="globalRemix.musicTracks && globalRemix.musicTracks.length > 0" @click="clearGlobalMusic" class="btn cancel-btn" style="font-size: 11.5px; padding: 5px 12px; border-radius: 6px; cursor: pointer; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); color: var(--l-text-muted);">
-                  ✕ Xóa tất cả
+                <button v-if="globalRemix.musicTracks && globalRemix.musicTracks.length > 0" @click="clearGlobalMusic" class="btn cancel-btn" style="font-size: 11.5px; padding: 5px 12px; border-radius: 6px; cursor: pointer; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); color: var(--l-text-muted); display: inline-flex; align-items: center; gap: 4px;">
+                  <X :size="12" />
+                  Xóa tất cả
                 </button>
               </div>
               <div style="display: flex; gap: 16px; font-size: 12.5px; align-items: center;">
                 <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--l-text);">
                   <input type="checkbox" v-model="globalRemix.muteOriginal" style="width: 15px; height: 15px; border-radius: 4px;" />
-                  <span>🔇 Tắt tiếng gốc</span>
+                  <VolumeX :size="14" style="color: var(--text-muted);" />
+                  <span>Tắt tiếng gốc</span>
                 </label>
                 <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--l-text);">
                   <input type="checkbox" v-model="globalRemix.musicLoop" style="width: 15px; height: 15px; border-radius: 4px;" />
-                  <span>🔁 Tự động lặp lại nhạc</span>
+                  <Repeat :size="14" style="color: var(--wx-brand-accent);" />
+                  <span>Tự động lặp lại nhạc</span>
                 </label>
               </div>
             </div>
@@ -2823,7 +2839,10 @@ const formatSize = (bytes: number) => {
       <section class="section-bottom-clips" :class="{ 'panel-disabled': isAnalyzing || isExporting }" :style="{ paddingBottom: selectedClips.size > 0 ? '100px' : '16px' }">
         <div class="section-title-bar-clips">
           <div class="title-left-clips">
-            <h2>✂️ Danh sách Video Đã Cắt</h2>
+            <h2 style="display: flex; align-items: center; gap: 6px;">
+              <Scissors :size="18" style="color: var(--wx-brand-accent);" />
+              Danh sách Video Đã Cắt
+            </h2>
             <span class="clips-counter" v-if="displayClipsCount > 0">
               ({{ displayClipsCount }} đoạn tìm thấy<template v-if="isMultiVideoDisplay"> từ {{ selectedVideos.size }} video</template>)
             </span>
@@ -2855,19 +2874,25 @@ const formatSize = (bytes: number) => {
                   <span class="status-dot done" v-if="clip.status === 'completed'" title="Đã xuất"></span>
                   <span class="status-dot pending" v-else title="Chờ xuất"></span>
                 </div>
-                <span class="clip-duration-tag">⏱ {{ formatTime(clip.endTime - clip.startTime) }}</span>
+                <span class="clip-duration-tag" style="display: inline-flex; align-items: center; gap: 4px;">
+                  <Clock :size="12" />
+                  {{ formatTime(clip.endTime - clip.startTime) }}
+                </span>
               </div>
 
               <!-- Tên video nguồn — chỉ hiện khi đang xem nhiều video -->
-              <div class="clip-source-video-tag" v-if="isMultiVideoDisplay && clip._videoName" :title="clip._videoPath">
-                📹 {{ clip._videoName.length > 30 ? clip._videoName.substring(0, 30) + '...' : clip._videoName }}
+              <div class="clip-source-video-tag" v-if="isMultiVideoDisplay && clip._videoName" :title="clip._videoPath" style="display: flex; align-items: center; gap: 4px;">
+                <Video :size="12" />
+                {{ clip._videoName.length > 30 ? clip._videoName.substring(0, 30) + '...' : clip._videoName }}
               </div>
 
               <!-- Hình đại diện của clip ngắn -->
               <div class="clip-thumbs-section" v-if="clip.thumbnail">
                 <div class="thumb-box-single" @click="jumpToTime(clip.startTime)" title="Bấm để phát thử clip này">
                   <img :src="getThumbUrl(clip.thumbnail)" />
-                  <div class="play-overlay">▶</div>
+                  <div class="play-overlay">
+                    <Play :size="18" fill="currentColor" />
+                  </div>
                 </div>
               </div>
 
@@ -2887,8 +2912,9 @@ const formatSize = (bytes: number) => {
                 <!-- <button v-if="!isExporting" @click="openEdit(idx)" class="mini-act-btn btn-edit" title="Chỉnh sửa (Chèn chữ, watermark...)">
                   ✏️ Sửa
                 </button> -->
-                <button v-if="!isExporting" @click="removeClip(idx)" class="mini-act-btn btn-delete" title="Xóa clip">
-                  🗑️ Xóa
+                <button v-if="!isExporting" @click="removeClip(idx)" class="mini-act-btn btn-delete flex-center" title="Xóa clip" style="display: inline-flex; align-items: center; gap: 4px;">
+                  <Trash2 :size="12" />
+                  Xóa
                 </button>
               </div>
 
@@ -2902,97 +2928,111 @@ const formatSize = (bytes: number) => {
 
           <div class="empty-clips-panel" v-else>
             <template v-if="activeVideoPath && activeAnalyzingPaths.has(activeVideoPath)">
-              <div class="empty-emoji">⏳</div>
+              <div class="empty-emoji">
+                <Loader2 :size="40" class="spin-hourglass" style="color: var(--wx-brand-accent);" />
+              </div>
               <h3>Đang phân tích video này...</h3>
               <p>Vui lòng chờ hoàn tất, các phân đoạn sẽ hiện ở đây.</p>
             </template>
             <template v-else-if="activeVideoPath">
-              <div class="empty-emoji">🎬</div>
+              <div class="empty-emoji">
+                <Scissors :size="40" style="color: var(--wx-brand-primary);" />
+              </div>
               <h3>Video này chưa được cắt</h3>
               <p>Bấm nút <strong>"Bắt Đầu Cắt Tự Động"</strong> ở trên hoặc nút bên dưới để cắt video này.</p>
             </template>
             <template v-else>
-              <div class="empty-emoji">🎬</div>
+              <div class="empty-emoji">
+                <Film :size="40" style="color: var(--text-muted);" />
+              </div>
               <h3>Chưa có video đã cắt nào ở đây</h3>
               <p>Chọn các video gốc phía trên rồi bấm nút <strong>"Bắt Đầu Cắt Tự Động"</strong> để hệ thống tự động cắt cảnh thông minh.</p>
             </template>
           </div>
         </div>
-
-        <!-- PANEL XUẤN BẢN CỐ ĐỊNH Ở CUỐI GÓC DƯỚI CLIPS -->
-        <div class="clips-export-publisher-bar" v-if="selectedClips.size > 0" :class="{ 'panel-disabled': isAnalyzing }">
-          <div class="pub-left" style="display: flex; align-items: center; flex: none; flex-shrink: 0;">
-            <label class="toggle-row inline" style="cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 8px; margin-bottom: 0; user-select: none; font-weight: 600; color: var(--l-text); white-space: nowrap; flex-shrink: 0;">
-              <input type="checkbox" v-model="exportWithThumbnails" style="width: 16px; height: 16px; accent-color: var(--wx-brand-primary);" />
-              Xuất kèm ảnh Thumbnail
-            </label>
-          </div>
-
-          <div class="pub-right" style="display: flex; align-items: center; gap: 16px; flex: 1; justify-content: flex-end;">
-            <!-- Tiến trình xuất -->
-            <div v-if="isExporting && exportProgress.total > 0" class="pub-progress-box" 
-                 :style="{
-                   display: 'flex', 
-                   flexDirection: 'row',
-                   flexWrap: 'nowrap',
-                   alignItems: 'center', 
-                   gap: '12px', 
-                   flex: 1, 
-                   minWidth: '580px', 
-                   padding: '6px 12px', 
-                   userSelect: 'none', 
-                   fontSize: '12.5px',
-                   borderRadius: '8px',
-                   border: '1px solid rgba(255, 255, 255, 0.06)',
-                   background: `linear-gradient(to right, rgba(16, 185, 129, 0.12) 0%, rgba(16, 185, 129, 0.12) ${exportProgress.done / exportProgress.total * 100}%, rgba(255, 255, 255, 0.01) ${exportProgress.done / exportProgress.total * 100}%)`
-                 }">
-              <!-- Tổng tiến độ Video -->
-              <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
-                🎬 Cắt Video: <strong style="color: var(--success-color);">{{ videoDoneCount }}/{{ exportProgress.total }}</strong>
-              </span>
-              
-              <span style="color: rgba(255,255,255,0.15)">|</span>
-              
-              <!-- Tổng tiến độ Thumbnail -->
-              <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
-                🎨 Ảnh bìa AI: 
-                <template v-if="exportWithThumbnails">
-                  <strong style="color: #38bdf8;">{{ thumbDoneCount }}/{{ exportProgress.total }}</strong>
-                </template>
-                <span v-else style="color: var(--text-muted); font-size: 11px; font-weight: normal; font-style: italic;">(Tắt)</span>
-              </span>
-              
-              <span style="color: rgba(255,255,255,0.15)">|</span>
-
-              <!-- Tên Video đang xử lý -->
-              <div style="color: var(--l-text-muted); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; text-align: left;" :title="exportStatusText">
-                {{ formatExportStatusMsg(exportStatusText) }}
-              </div>
-              
-              <span style="color: rgba(255,255,255,0.15)">|</span>
-              
-              <!-- ETA -->
-              <span class="eta-badge" style="font-size: 11px; font-weight: bold; color: var(--accent-color); padding: 2px 6px; background: rgba(99, 102, 241, 0.1); border-radius: 4px; white-space: nowrap;">
-                {{ getExportETA() }}
-              </span>
-            </div>
-
-            <button v-if="!isExporting" @click="removeSelectedClips" class="btn delete-selected-btn-bar flex-center" title="Xóa các clip đã chọn">
-              🗑️ Xóa {{ selectedClips.size }} Clip
-            </button>
-            <button v-if="isExporting" @click="stopExport" class="btn big-export-btn stop-export-btn flex-center">
-              <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><rect x="6" y="6" width="12" height="12" fill="currentColor"/></svg>
-              <span class="font-bold">Dừng Xuất</span>
-            </button>
-            <button v-else @click="exportClips" class="btn big-export-btn flex-center">
-              <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
-              <span class="font-bold">
-                {{ selectedClips.size > 0 ? `Xuất ${selectedClips.size} Clip Đã Chọn` : `Xuất Toàn Bộ ${displayClipsCount} Clip` }}
-              </span>
-            </button>
-          </div>
-        </div>
       </section>
+
+      <!-- PANEL XUẤN BẢN CỐ ĐỊNH Ở CUỐI GÓC DƯỚI CLIPS -->
+      <div class="clips-export-publisher-bar" v-if="selectedClips.size > 0" :class="{ 'panel-disabled': isAnalyzing }">
+        <div class="pub-left" style="display: flex; align-items: center; flex: none; flex-shrink: 0;">
+          <label class="toggle-row inline" style="cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 8px; margin-bottom: 0; user-select: none; font-weight: 600; color: var(--l-text); white-space: nowrap; flex-shrink: 0;">
+            <input type="checkbox" v-model="exportWithThumbnails" style="width: 16px; height: 16px; accent-color: var(--wx-brand-primary);" />
+            Xuất kèm ảnh Thumbnail
+          </label>
+        </div>
+
+        <div class="pub-right" style="display: flex; align-items: center; gap: 16px; flex: 1; justify-content: flex-end;">
+          <!-- Tiến trình xuất -->
+          <div v-if="isExporting && exportProgress.total > 0" class="pub-progress-box" 
+               :style="{
+                 display: 'flex', 
+                 flexDirection: 'row',
+                 flexWrap: 'nowrap',
+                 alignItems: 'center', 
+                 gap: '12px', 
+                 flex: 1, 
+                 minWidth: '580px', 
+                 padding: '6px 12px', 
+                 userSelect: 'none', 
+                 fontSize: '12.5px',
+                 borderRadius: '8px',
+                 border: '1px solid rgba(255, 255, 255, 0.06)',
+                 background: `linear-gradient(to right, rgba(16, 185, 129, 0.12) 0%, rgba(16, 185, 129, 0.12) ${exportProgress.done / exportProgress.total * 100}%, rgba(255, 255, 255, 0.01) ${exportProgress.done / exportProgress.total * 100}%)`
+               }">
+            <!-- Tổng tiến độ Video -->
+            <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
+              🎬 Cắt Video: <strong style="color: var(--success-color);">{{ videoDoneCount }}/{{ exportProgress.total }}</strong>
+            </span>
+            
+            <span style="color: rgba(255,255,255,0.15)">|</span>
+            
+            <!-- Tổng tiến độ Thumbnail -->
+            <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
+              🎨 Ảnh bìa AI: 
+              <template v-if="exportWithThumbnails">
+                <strong style="color: #38bdf8;">{{ thumbDoneCount }}/{{ exportProgress.total }}</strong>
+              </template>
+              <span v-else style="color: var(--text-muted); font-size: 11px; font-weight: normal; font-style: italic;">(Tắt)</span>
+            </span>
+            
+            <span style="color: rgba(255,255,255,0.15)">|</span>
+
+            <!-- Tên Video đang xử lý -->
+            <div style="color: var(--l-text-muted); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; text-align: left;" :title="exportStatusText">
+              {{ formatExportStatusMsg(exportStatusText) }}
+            </div>
+            
+            <span style="color: rgba(255,255,255,0.15)">|</span>
+            
+            <!-- ETA -->
+            <span class="eta-badge" style="font-size: 11px; font-weight: bold; color: var(--accent-color); padding: 2px 6px; background: rgba(99, 102, 241, 0.1); border-radius: 4px; white-space: nowrap;">
+              {{ getExportETA() }}
+            </span>
+          </div>
+
+          <button v-if="!isExporting" @click="removeSelectedClips" class="btn delete-selected-btn-bar flex-center" title="Xóa các clip đã chọn">
+            🗑️ Xóa {{ selectedClips.size }} Clip
+          </button>
+          <button v-if="isExporting" @click="stopExport" class="btn big-export-btn stop-export-btn flex-center">
+            <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><rect x="6" y="6" width="12" height="12" fill="currentColor"/></svg>
+            <span class="font-bold">Dừng Xuất</span>
+          </button>
+          <button v-else @click="exportClips" class="btn big-export-btn flex-center">
+            <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
+            <span class="font-bold">
+              {{ selectedClips.size > 0 ? `Xuất ${selectedClips.size} Clip Đã Chọn` : `Xuất Toàn Bộ ${displayClipsCount} Clip` }}
+            </span>
+          </button>
+        </div>
+      </div>
+      </template>
+
+      <!-- BỐ CỤC CHO PHẦN TẢI VIDEO ONLINE INLINE -->
+      <VideoDownloader v-show="activeView === 'download-video'" :video-paths="videoPaths" :show-toast="showToast" @back="activeView = 'split'" />
+
+      <!-- BỐ CỤC CHO PHẦN TẢI ẢNH CHỦ ĐỀ INLINE -->
+      <ImageDownloader v-show="activeView === 'download-image'" :show-toast="showToast" @back="activeView = 'split'" />
+
     </div>
 
     <!-- Thanh trạng thái CapCut-style dưới đáy -->
@@ -3005,15 +3045,15 @@ const formatSize = (bytes: number) => {
     <Teleport to="body">
       <div class="toast-container">
         <TransitionGroup name="toast-slide">
-          <div v-for="t in toasts" :key="t.id" class="toast-item" :class="t.type">
+          <div class="toast-item" :class="t.type" v-for="t in toasts" :key="t.id">
             <div class="toast-icon-wrap">
-              <span v-if="t.type === 'success'" class="toast-icon">✔️</span>
-              <span v-else-if="t.type === 'error'" class="toast-icon">❌</span>
-              <span v-else-if="t.type === 'warning'" class="toast-icon">⚠️</span>
-              <span v-else class="toast-icon">ℹ️</span>
+              <Check v-if="t.type === 'success'" :size="16" class="toast-icon" />
+              <X v-else-if="t.type === 'error'" :size="16" class="toast-icon" />
+              <AlertTriangle v-else-if="t.type === 'warning'" :size="16" class="toast-icon" />
+              <Info v-else :size="16" class="toast-icon" />
             </div>
             <div class="toast-content">{{ t.message }}</div>
-            <button class="toast-close-btn" @click="toasts = toasts.filter(item => item.id !== t.id)">✕</button>
+            <button class="toast-close-btn" @click="toasts = toasts.filter(item => item.id !== t.id)"><X :size="14" /></button>
           </div>
         </TransitionGroup>
       </div>
@@ -3024,17 +3064,22 @@ const formatSize = (bytes: number) => {
       <div class="modal-overlay" v-if="confirmDialogState.show" @click.self="handleConfirmResolve(false)" style="z-index: 99999;">
         <div class="settings-modal recent-modal confirm-dialog-modal" style="width: 420px; max-width: 90%;">
           <div class="modal-header" style="padding: 16px 20px; border-bottom: 1px solid var(--l-border);">
-            <h2 style="font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; color: var(--wx-danger-solid, #ef4444);">
-              ⚠️ Xác nhận
+            <h2 style="font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 6px; color: var(--wx-danger-solid, #ef4444);">
+              <AlertTriangle :size="18" />
+              Xác nhận
             </h2>
-            <button class="modal-close" @click="handleConfirmResolve(false)">✕</button>
+            <button class="modal-close" @click="handleConfirmResolve(false)"><X :size="16" /></button>
           </div>
           <div class="modal-body" style="padding: 20px; font-size: 13.5px; line-height: 1.5; font-weight: 600;">
             {{ confirmDialogState.message }}
           </div>
           <div class="modal-footer-buttons" style="display: flex; gap: 10px; justify-content: flex-end; padding: 12px 20px; border-top: 1px solid var(--l-border); background: var(--l-bg-sunken); border-bottom-left-radius: 16px; border-bottom-right-radius: 16px;">
-            <button @click="handleConfirmResolve(false)" class="btn cancel-btn" style="background-color: var(--l-bg-soft); color: var(--l-text); border: 1px solid var(--l-border); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700;">Hủy</button>
-            <button @click="handleConfirmResolve(true)" class="btn confirm-btn" style="background-color: #ef4444; color: #fff; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; box-shadow: 0 4px 10px rgba(239, 68, 68, 0.2);">Đồng ý</button>
+            <button @click="handleConfirmResolve(false)" class="btn cancel-btn flex-center" style="background-color: var(--l-bg-soft); color: var(--l-text); border: 1px solid var(--l-border); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">
+              <X :size="13" /> Hủy
+            </button>
+            <button @click="handleConfirmResolve(true)" class="btn confirm-btn flex-center" style="background-color: #ef4444; color: #fff; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; box-shadow: 0 4px 10px rgba(239, 68, 68, 0.2); display: inline-flex; align-items: center; gap: 4px;">
+              <Check :size="13" /> Đồng ý
+            </button>
           </div>
         </div>
       </div>
@@ -3045,12 +3090,17 @@ const formatSize = (bytes: number) => {
       <div class="modal-overlay" v-if="showRecent" @click.self="showRecent = false">
         <div class="settings-modal recent-modal">
           <div class="modal-header">
-            <h2>🗂️ Project đã lưu</h2>
-            <button class="modal-close" @click="showRecent = false">✕</button>
+            <h2 style="display: flex; align-items: center; gap: 6px;">
+              <FolderOpen :size="18" style="color: var(--wx-brand-accent);" />
+              Project đã lưu
+            </h2>
+            <button class="modal-close" @click="showRecent = false"><X :size="16" /></button>
           </div>
           <div class="modal-body">
             <div v-if="recentProjects.length === 0" class="empty-recent">
-              <div class="empty-graphic">🗂️</div>
+              <div class="empty-graphic">
+                <FolderOpen :size="40" style="color: var(--wx-brand-accent); margin-bottom: 8px;" />
+              </div>
               <p>Chưa có project nào được lưu. Phân tích một video rồi bấm "Lưu" để lưu phiên làm việc.</p>
             </div>
             <ul v-else class="recent-list">
@@ -3060,8 +3110,12 @@ const formatSize = (bytes: number) => {
                   <span class="recent-meta">{{ proj.clipCount }} clip · {{ formatTime(proj.duration) }} · {{ proj.status }}</span>
                 </div>
                 <div class="recent-actions">
-                  <button @click="restoreProject(proj)" class="btn-mini open" title="Mở lại">Mở</button>
-                  <button @click="deleteProject(proj)" class="btn-mini del" title="Xóa khỏi lịch sử">✕</button>
+                  <button @click="restoreProject(proj)" class="btn-mini open flex-center" title="Mở lại" style="display: inline-flex; align-items: center; gap: 4px;">
+                    <FolderOpen :size="12" /> Mở
+                  </button>
+                  <button @click="deleteProject(proj)" class="btn-mini del flex-center" title="Xóa khỏi lịch sử" style="display: inline-flex; align-items: center; gap: 4px;">
+                    <Trash2 :size="12" />
+                  </button>
                 </div>
               </li>
             </ul>
@@ -3075,8 +3129,11 @@ const formatSize = (bytes: number) => {
       <div class="modal-overlay" v-if="showProjectModal" @click.self="showProjectModal = false">
         <div class="settings-modal recent-modal">
           <div class="modal-header">
-            <h2>➕ Tạo dự án mới</h2>
-            <button class="modal-close" @click="showProjectModal = false">✕</button>
+            <h2 style="display: flex; align-items: center; gap: 6px;">
+              <Plus :size="18" style="color: var(--wx-brand-accent);" />
+              Tạo dự án mới
+            </h2>
+            <button class="modal-close" @click="showProjectModal = false"><X :size="16" /></button>
           </div>
           <div class="modal-body">
             <div class="setting-item" style="display: flex; flex-direction: column; gap: 8px;">
@@ -3084,8 +3141,9 @@ const formatSize = (bytes: number) => {
               <input type="text" v-model="newProjectName" class="file-path-input" style="padding: 10px; border-radius: 8px; border: 1px solid var(--l-border); background: var(--l-bg); color: var(--l-text); outline: none;" placeholder="Ví dụ: Kênh Tiktok Review Phim" @keyup.enter="createProject" />
             </div>
             <div class="modal-footer-buttons" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;">
-              <button @click="showProjectModal = false" class="btn cancel-btn" style="background-color: var(--l-bg-sunken); color: var(--l-text); border: 1px solid var(--l-border); padding: 8px 16px; border-radius: 6px; cursor: pointer;">Hủy</button>
-              <button @click="createProject" class="btn confirm-btn" :disabled="!newProjectName.trim()" style="background-color: #6366f1; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">Tạo dự án</button>
+              <button @click="createProject" class="btn confirm-btn flex-center" :disabled="!newProjectName.trim()" style="background-color: #6366f1; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                <Plus :size="14" /> Tạo dự án
+              </button>
             </div>
           </div>
         </div>
@@ -3097,8 +3155,11 @@ const formatSize = (bytes: number) => {
       <div class="modal-overlay" v-if="showManageProjectsModal" @click.self="showManageProjectsModal = false">
         <div class="settings-modal recent-modal">
           <div class="modal-header">
-            <h2>⚙️ Quản lý các dự án</h2>
-            <button class="modal-close" @click="showManageProjectsModal = false">✕</button>
+            <h2 style="display: flex; align-items: center; gap: 6px;">
+              <Settings :size="18" style="color: var(--wx-brand-accent);" />
+              Quản lý các dự án
+            </h2>
+            <button class="modal-close" @click="showManageProjectsModal = false"><X :size="16" /></button>
           </div>
           <div class="modal-body">
             <ul class="recent-list">
@@ -3110,8 +3171,12 @@ const formatSize = (bytes: number) => {
                   </span>
                 </div>
                 <div class="recent-actions">
-                  <button @click="loadProject(proj.id); showManageProjectsModal = false" class="btn-mini open">Mở</button>
-                  <button @click="deleteNamedProject(proj.id)" :disabled="namedProjects.length <= 1" class="btn-mini del" title="Xóa dự án">✕</button>
+                  <button @click="loadProject(proj.id); showManageProjectsModal = false" class="btn-mini open flex-center" style="display: inline-flex; align-items: center; gap: 4px;">
+                    <FolderOpen :size="12" /> Mở
+                  </button>
+                  <button @click="deleteNamedProject(proj.id)" :disabled="namedProjects.length <= 1" class="btn-mini del flex-center" title="Xóa dự án" style="display: inline-flex; align-items: center; gap: 4px;">
+                    <Trash2 :size="12" />
+                  </button>
                 </div>
               </li>
             </ul>
@@ -3130,15 +3195,25 @@ const formatSize = (bytes: number) => {
               <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z"/></svg>
               Quay lại
             </button>
-            <h2>✂️ Chỉnh sửa Clip #{{ editingClip.index }}
+            <h2 style="display: flex; align-items: center; gap: 6px;">
+              <Scissors :size="18" style="color: var(--wx-brand-accent);" />
+              Chỉnh sửa Clip #{{ editingClip.index }}
               <span class="edit-time-sub">{{ formatTime(editingClip.startTime) }} → {{ formatTime(editingClip.endTime) }}</span>
             </h2>
           </div>
           <div class="edit-header-right">
-            <button @click="resetEdit" class="btn reset-btn">🔄 Đặt lại</button>
-            <button @click="applyEditToAll" class="btn reset-btn" title="Áp bộ chỉnh sửa này cho mọi clip của video hiện tại">📋 Áp cho video này</button>
-            <button @click="applyEditToSelectedVideos" class="btn reset-btn" :title="selectedVideos.size > 0 ? `Áp cho mọi clip của ${selectedVideos.size} video đã tick` : 'Áp cho mọi clip của tất cả video đã phân tích'">📦 {{ selectedVideos.size > 0 ? `Áp cho ${selectedVideos.size} video đã chọn` : 'Áp cho tất cả video' }}</button>
-            <button @click="showEdit = false" class="btn save-btn">✅ Xong</button>
+            <button @click="resetEdit" class="btn reset-btn" style="display: inline-flex; align-items: center; gap: 4px;">
+              <RotateCcw :size="14" /> Đặt lại
+            </button>
+            <button @click="applyEditToAll" class="btn reset-btn" title="Áp bộ chỉnh sửa này cho mọi clip của video hiện tại" style="display: inline-flex; align-items: center; gap: 4px;">
+              <Copy :size="14" /> Áp cho video này
+            </button>
+            <button @click="applyEditToSelectedVideos" class="btn reset-btn" :title="selectedVideos.size > 0 ? `Áp cho mọi clip của ${selectedVideos.size} video đã tick` : 'Áp cho mọi clip của tất cả video đã phân tích'" style="display: inline-flex; align-items: center; gap: 4px;">
+              <Layers :size="14" /> {{ selectedVideos.size > 0 ? `Áp cho ${selectedVideos.size} video đã chọn` : 'Áp cho tất cả video' }}
+            </button>
+            <button @click="showEdit = false" class="btn save-btn" style="display: inline-flex; align-items: center; gap: 4px;">
+              <Check :size="14" /> Xong
+            </button>
           </div>
         </header>
 
@@ -3162,7 +3237,10 @@ const formatSize = (bytes: number) => {
           <div class="edit-controls">
             <!-- Tỉ lệ khung -->
             <div class="settings-group">
-              <h3 class="group-title">📐 Tỉ lệ khung hình</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <Monitor :size="15" />
+                Tỉ lệ khung hình
+              </h3>
               <label class="toggle-row">
                 <input type="checkbox" v-model="editingClip.edit.aspect.enabled" />
                 Đổi tỉ lệ khung (cho Reels / TikTok / Shorts)
@@ -3191,7 +3269,10 @@ const formatSize = (bytes: number) => {
 
             <!-- Màu sắc -->
             <div class="settings-group">
-              <h3 class="group-title">🎨 Màu sắc</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <SlidersHorizontal :size="15" />
+                Màu sắc
+              </h3>
               <label class="toggle-row">
                 <input type="checkbox" v-model="editingClip.edit.color.enabled" />
                 Bật chỉnh màu
@@ -3227,7 +3308,10 @@ const formatSize = (bytes: number) => {
 
             <!-- Tốc độ -->
             <div class="settings-group">
-              <h3 class="group-title">⏩ Tốc độ phát</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <Timer :size="15" />
+                Tốc độ phát
+              </h3>
               <div class="settings-grid">
                 <div class="setting-item">
                   <label>Hệ số tốc độ
@@ -3244,14 +3328,21 @@ const formatSize = (bytes: number) => {
             <!-- Chữ / phụ đề (GĐ6) -->
             <div class="settings-group">
               <div class="group-title-row">
-                <h3 class="group-title">🅰️ Chữ / Phụ đề</h3>
-                <button class="mini-add-btn" @click="addText">+ Thêm dòng chữ</button>
+                <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                  <Type :size="15" />
+                  Chữ / Phụ đề
+                </h3>
+                <button class="mini-add-btn flex-center" @click="addText" style="display: inline-flex; align-items: center; gap: 4px;">
+                  <Plus :size="12" /> Thêm dòng chữ
+                </button>
               </div>
               <div v-if="editingClip.edit.texts.length === 0" class="group-empty">Chưa có chữ. Bấm "Thêm dòng chữ" để chèn tiêu đề / caption.</div>
               <div v-for="(t, ti) in editingClip.edit.texts" :key="ti" class="text-item-card">
                 <div class="text-item-head">
                   <span class="text-item-idx">Dòng #{{ ti + 1 }}</span>
-                  <button class="mini-del-btn" @click="removeText(ti)" title="Xóa dòng chữ">✕</button>
+                  <button class="mini-del-btn flex-center" @click="removeText(ti)" title="Xóa dòng chữ" style="display: inline-flex; align-items: center; gap: 4px;">
+                    <X :size="12" />
+                  </button>
                 </div>
                 <input type="text" class="text-content-input" v-model="t.content" placeholder="Nhập nội dung chữ (hỗ trợ tiếng Việt)" />
                 <div class="settings-grid">
@@ -3295,7 +3386,10 @@ const formatSize = (bytes: number) => {
 
             <!-- Watermark / logo (GĐ6) -->
             <div class="settings-group">
-              <h3 class="group-title">🖼️ Watermark / Logo</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <Layers :size="15" />
+                Watermark / Logo
+              </h3>
               <label class="toggle-row">
                 <input type="checkbox" v-model="editingClip.edit.watermark.enabled" />
                 Chèn ảnh watermark / logo
@@ -3303,7 +3397,9 @@ const formatSize = (bytes: number) => {
               <div v-if="editingClip.edit.watermark.enabled">
                 <div class="file-picker-row">
                   <input type="text" class="file-path-input" v-model="editingClip.edit.watermark.imgPath" placeholder="Đường dẫn ảnh PNG/JPG" readonly />
-                  <button class="mini-add-btn" @click="pickWatermark">📁 Chọn ảnh</button>
+                  <button class="mini-add-btn flex-center" @click="pickWatermark" style="display: inline-flex; align-items: center; gap: 4px;">
+                    <FolderOpen :size="12" /> Chọn ảnh
+                  </button>
                 </div>
                 <div class="settings-grid">
                   <div class="setting-item">
@@ -3333,7 +3429,10 @@ const formatSize = (bytes: number) => {
 
             <!-- Âm thanh + nhạc nền (GĐ6) -->
             <div class="settings-group">
-              <h3 class="group-title">🎵 Âm thanh & Nhạc nền</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <Music :size="15" />
+                Âm thanh & Nhạc nền
+              </h3>
               <div class="settings-grid">
                 <div class="setting-item">
                   <label>Âm lượng gốc <span class="hint">1 = giữ nguyên</span></label>
@@ -3354,8 +3453,12 @@ const formatSize = (bytes: number) => {
               </div>
               <div class="file-picker-row" style="margin-top: 12px;">
                 <input type="text" class="file-path-input" v-model="editingClip.edit.audio.musicPath" placeholder="Nhạc nền (mp3/wav) — trộn với tiếng gốc" readonly />
-                <button class="mini-add-btn" @click="pickMusic">🎵 Chọn nhạc</button>
-                <button v-if="editingClip.edit.audio.musicPath" class="mini-del-btn" @click="editingClip.edit.audio.musicPath = ''" title="Bỏ nhạc nền">✕</button>
+                <button class="mini-add-btn flex-center" @click="pickMusic" style="display: inline-flex; align-items: center; gap: 4px;">
+                  <Music :size="12" /> Chọn nhạc
+                </button>
+                <button v-if="editingClip.edit.audio.musicPath" class="mini-del-btn flex-center" @click="editingClip.edit.audio.musicPath = ''" title="Bỏ nhạc nền" style="display: inline-flex; align-items: center; gap: 4px;">
+                  <X :size="12" />
+                </button>
               </div>
               <div class="settings-grid" v-if="editingClip.edit.audio.musicPath">
                 <div class="setting-item">
@@ -3367,7 +3470,10 @@ const formatSize = (bytes: number) => {
 
             <!-- Transition (GĐ7 — dùng khi ghép) -->
             <div class="settings-group">
-              <h3 class="group-title">🔀 Chuyển cảnh (khi ghép thành 1 video)</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <Move :size="15" />
+                Chuyển cảnh (khi ghép thành 1 video)
+              </h3>
               <div class="settings-grid">
                 <div class="setting-item">
                   <label>Kiểu chuyển cảnh
@@ -3397,10 +3503,14 @@ const formatSize = (bytes: number) => {
 
             <!-- 🎨 Ảnh Thumbnail AI -->
             <div class="settings-group">
-              <h3 class="group-title">🎨 Ảnh Thumbnail AI (Gemini + Imagen 4)</h3>
+              <h3 class="group-title" style="display: flex; align-items: center; gap: 6px;">
+                <Sparkles :size="15" />
+                Ảnh Thumbnail AI (Gemini + Imagen 4)
+              </h3>
               
-              <div v-if="!geminiAPIKey" class="group-empty" style="padding: 10px; font-size: 12px; color: var(--wx-brand-accent);">
-                ⚠️ Vui lòng cấu hình <strong>Google Gemini API Key</strong> trong phần <strong>Cài đặt chung</strong> ở Header trước để kích hoạt tính năng này.
+              <div v-if="!geminiAPIKey" class="group-empty" style="padding: 10px; font-size: 12px; color: var(--wx-brand-accent); display: flex; align-items: center; gap: 4px;">
+                <AlertTriangle :size="14" />
+                Vui lòng cấu hình <strong>Google Gemini API Key</strong> trong phần <strong>Cài đặt chung</strong> ở Header trước để kích hoạt tính năng này.
               </div>
               <div v-else>
                 <div style="margin-bottom: 12px;">
@@ -3468,302 +3578,7 @@ const formatSize = (bytes: number) => {
       </div>
     </Teleport>
 
-    <!-- ============ DOWNLOAD ONLINE VIDEO MODAL ============ -->
-    <Teleport to="body">
-      <div class="modal-overlay" v-if="showDownloadPanel" @click.self="showDownloadPanel = false">
-        <div class="settings-modal dl-modal">
-          <div class="modal-header">
-            <h2 style="display:flex; align-items:center; gap:6px;">
-              <svg viewBox="0 0 24 24" width="18" height="18" style="color:var(--accent-color);"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.53c-.26-.81-1-1.4-1.9-1.4h-1v-3c0-.55-.45-1-1-1h-6v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
-              Tải Video Online
-            </h2>
-            <button class="modal-close" @click="showDownloadPanel = false">✕</button>
-          </div>
-          <div class="modal-body">
-            <!-- Mode Selector Switch: Dán Link vs Tìm Kiếm -->
-            <div style="display: flex; gap: 8px; margin-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 10px;">
-              <button type="button" @click="downloadMode = 'link'; downloadUrl = ''; probeResult = null" 
-                      style="font-size: 11px; padding: 5px 12px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; outline: none; display: flex; align-items: center; gap: 4px;"
-                      :style="{
-                        background: downloadMode === 'link' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.02)',
-                        borderColor: downloadMode === 'link' ? 'var(--accent-color)' : 'rgba(255,255,255,0.08)',
-                        color: downloadMode === 'link' ? 'var(--accent-color)' : 'var(--l-text-muted)'
-                      }">
-                🔗 Dán link nguồn trực tiếp
-              </button>
-              <button type="button" @click="downloadMode = 'search'; downloadUrl = ''; probeResult = null" 
-                      style="font-size: 11px; padding: 5px 12px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; outline: none; display: flex; align-items: center; gap: 4px;"
-                      :style="{
-                        background: downloadMode === 'search' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.02)',
-                        borderColor: downloadMode === 'search' ? 'var(--accent-color)' : 'rgba(255,255,255,0.08)',
-                        color: downloadMode === 'search' ? 'var(--accent-color)' : 'var(--l-text-muted)'
-                      }">
-                🔍 Tìm kiếm bằng từ khóa
-              </button>
-            </div>
 
-            <!-- Single Input Box depending on Active Mode -->
-            <div style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px;">
-              <label style="font-size: 11px; color: var(--l-text-muted); font-weight: 600;">
-                {{ downloadMode === 'link' ? 'NHẬP ĐƯỜNG DẪN LINK NGUỒN CỦA VIDEO / DANH SÁCH / KÊNH:' : 'NHẬP TỪ KHÓA / CHỦ ĐỀ CẦN TÌM KIẾM ĐA NGUỒN:' }}
-              </label>
-              <div style="display: flex; gap: 8px;">
-                <input v-model="downloadUrl" type="text" class="dl-url-input" style="flex: 1;" 
-                       :placeholder="downloadMode === 'link' ? 'Dán link video, kênh hoặc playlist (YouTube, TikTok, Facebook Reel/Watch hoặc website nguồn bất kỳ)...' : 'Nhập từ khóa tìm kiếm (ví dụ: xe độ, vlog, nấu ăn, hài hước)...'" 
-                       @keyup.enter="probeUrl" :disabled="isProbing" />
-                <button @click="probeUrl" class="btn dl-probe-btn" :disabled="isProbing" style="display:inline-flex; align-items:center; gap:4px; white-space: nowrap; height: 38px;">
-                  <template v-if="isProbing">
-                    <svg viewBox="0 0 24 24" width="14" height="14" class="spin-hourglass" style="display:inline-block; animation: spin 1.5s linear infinite;"><path fill="currentColor" d="M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5l-4-4V4h8v3.5l-4 4z"/></svg>
-                    Đang dò...
-                  </template>
-                  <template v-else>
-                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-                    {{ downloadMode === 'link' ? 'Dò link' : 'Tìm kiếm' }}
-                  </template>
-                </button>
-              </div>
-            </div>
-
-            <!-- Loại link + Cookie + Nguồn tìm kiếm -->
-            <div class="dl-options-row">
-              <div class="dl-opt-group">
-                <label>Loại link:</label>
-                <select v-model="dlLinkType" class="dl-select">
-                  <option value="auto">Tự nhận diện {{ detectedLinkType !== 'auto' ? '(' + (detectedLinkType === 'video' ? 'Video đơn' : detectedLinkType === 'profile' ? 'Profile' : 'Playlist') + ')' : '' }}</option>
-                  <option value="video">Video đơn</option>
-                  <option value="profile">Profile / Kênh</option>
-                  <option value="playlist">Playlist</option>
-                </select>
-              </div>
-              <div class="dl-opt-group" style="flex: 1.8; min-width: 250px;" v-if="downloadMode === 'search'">
-                <label>Nguồn tìm kiếm:</label>
-                <div style="display: flex; gap: 5px; margin-top: 4px;">
-                  <button type="button" @click="searchSource = 'youtube'" 
-                          style="font-size: 11px; padding: 4px 8px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; outline: none;"
-                          :style="{
-                            background: searchSource === 'youtube' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.02)',
-                            borderColor: searchSource === 'youtube' ? 'var(--accent-color)' : 'rgba(255,255,255,0.08)',
-                            color: searchSource === 'youtube' ? 'var(--accent-color)' : 'var(--l-text-muted)'
-                          }">
-                    YouTube
-                  </button>
-                  <button type="button" @click="searchSource = 'tiktok'" 
-                          style="font-size: 11px; padding: 4px 8px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; outline: none;"
-                          :style="{
-                            background: searchSource === 'tiktok' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.02)',
-                            borderColor: searchSource === 'tiktok' ? 'var(--accent-color)' : 'rgba(255,255,255,0.08)',
-                            color: searchSource === 'tiktok' ? 'var(--accent-color)' : 'var(--l-text-muted)'
-                          }">
-                    TikTok
-                  </button>
-                  <button type="button" @click="searchSource = 'facebook'" 
-                          style="font-size: 11px; padding: 4px 8px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; outline: none;"
-                          :style="{
-                            background: searchSource === 'facebook' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.02)',
-                            borderColor: searchSource === 'facebook' ? 'var(--accent-color)' : 'rgba(255,255,255,0.08)',
-                            color: searchSource === 'facebook' ? 'var(--accent-color)' : 'var(--l-text-muted)'
-                          }">
-                    Facebook
-                  </button>
-                  <button type="button" @click="searchSource = 'all'" 
-                          style="font-size: 11px; padding: 4px 8px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 1px solid rgba(255,255,255,0.08); font-weight: 600; outline: none;"
-                          :style="{
-                            background: searchSource === 'all' ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.02)',
-                            borderColor: searchSource === 'all' ? 'var(--accent-color)' : 'rgba(255,255,255,0.08)',
-                            color: searchSource === 'all' ? 'var(--accent-color)' : 'var(--l-text-muted)'
-                          }">
-                    Hỗn hợp
-                  </button>
-                </div>
-              </div>
-              <div class="dl-opt-group">
-                <label>Cookie:</label>
-                <select v-model="cookieBrowser" class="dl-select">
-                  <option value="">Không dùng</option>
-                  <option value="chrome">Chrome</option>
-                  <option value="edge">Edge</option>
-                  <option value="firefox">Firefox</option>
-                </select>
-              </div>
-              <div class="dl-opt-group" v-if="probeResult">
-                <span class="dl-platform-badge" :class="probeResult.platform">
-                  {{ probeResult.platform === 'youtube' ? 'YouTube' : probeResult.platform === 'tiktok' ? 'TikTok' : probeResult.platform === 'facebook' ? 'Facebook' : probeResult.platform === 'mixed' ? 'Hỗn hợp' : 'Khác' }}
-                </span>
-                <span class="dl-type-badge">{{ probeResult.type === 'playlist' ? 'Playlist/Profile' : 'Video đơn' }}</span>
-                <span class="dl-count-badge">{{ probeResult.entries.length }} video</span>
-              </div>
-            </div>
-
-            <!-- Cấu hình Profile/Playlist: số lượng + thứ tự -->
-            <div class="dl-profile-config" v-if="isProfileOrPlaylist && !probeResult">
-              <div class="dl-opt-group">
-                <label>Số video tối đa:</label>
-                <select v-model.number="dlMaxCount" class="dl-select">
-                  <option :value="10">10 video</option>
-                  <option :value="20">20 video</option>
-                  <option :value="30">30 video</option>
-                  <option :value="50">50 video</option>
-                  <option :value="100">100 video</option>
-                  <option :value="200">200 video</option>
-                  <option :value="0">Tất cả (chậm)</option>
-                </select>
-              </div>
-              <div class="dl-opt-group">
-                <label>Thứ tự lấy:</label>
-                <select v-model="dlFetchOrder" class="dl-select">
-                  <option value="newest">Mới nhất trước</option>
-                  <option value="oldest">Cũ nhất trước</option>
-                </select>
-              </div>
-              <div class="dl-profile-hint">
-                Dò {{ dlMaxCount > 0 ? dlMaxCount : 'tất cả' }} video {{ dlFetchOrder === 'newest' ? 'mới nhất' : 'cũ nhất' }}. Sau khi dò xong, bạn có thể lọc/sắp xếp thêm theo views, likes, thời lượng.
-              </div>
-            </div>
-
-            <!-- Filters (chỉ hiển thị khi có nhiều hơn 1 video) -->
-            <div class="dl-filters-row" v-if="probeResult && probeResult.entries.length > 1">
-              <div class="dl-filter-item">
-                <label>Sắp xếp:</label>
-                <select v-model="dlSortBy" class="dl-select">
-                  <option value="views">Nhiều view nhất</option>
-                  <option value="likes">Nhiều like nhất</option>
-                  <option value="date">Mới nhất</option>
-                  <option value="duration">Dài nhất</option>
-                </select>
-              </div>
-              <div class="dl-filter-item">
-                <label>Từ khóa:</label>
-                <input v-model="dlKeyword" type="text" class="dl-filter-input" placeholder="Lọc tiêu đề..." />
-              </div>
-              <div class="dl-filter-item">
-                <label>Min views:</label>
-                <input v-model.number="dlMinViews" type="number" class="dl-filter-input" min="0" step="100" />
-              </div>
-            </div>
-
-            <!-- Select all + count -->
-            <div class="dl-select-bar" v-if="probeResult && filteredDlEntries.length > 0">
-              <label class="dl-select-all-label" @click="dlToggleAll">
-                <input type="checkbox" :checked="dlSelectedCount === filteredDlEntries.length && filteredDlEntries.length > 0" @click.stop="dlToggleAll" />
-                Chọn tất cả
-              </label>
-              <span class="dl-selected-count">Đã chọn: {{ dlSelectedCount }}/{{ filteredDlEntries.length }}</span>
-            </div>
-
-            <!-- Video entries list -->
-            <div class="dl-entries-list" v-if="probeResult">
-              <div v-for="entry in filteredDlEntries" :key="entry.id" class="dl-entry-card" :class="{ selected: dlSelectedIds.has(entry.id) }" @click="dlToggle(entry.id)">
-                <input type="checkbox" :checked="dlSelectedIds.has(entry.id)" @click.stop="dlToggle(entry.id)" class="dl-entry-check" />
-                <div class="dl-entry-thumb">
-                  <img v-if="entry.thumbnail" :src="entry.thumbnail" alt="" referrerpolicy="no-referrer" crossorigin="anonymous" @error="($event.target as HTMLImageElement).style.display='none'; ($event.target as HTMLImageElement).parentElement!.classList.add('dl-entry-thumb-placeholder'); ($event.target as HTMLImageElement).parentElement!.textContent='🎬'" />
-                  <span v-else>🎬</span>
-                </div>
-                <div class="dl-entry-info">
-                  <div class="dl-entry-title">{{ entry.title || 'Không rõ tên' }}</div>
-                  <div class="dl-entry-meta">
-                    <span v-if="entry.viewCount" title="Lượt xem" style="display:inline-flex; align-items:center; gap:2px;">
-                      <svg viewBox="0 0 24 24" width="11" height="11" style="color:var(--text-muted);"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
-                      {{ formatViewCount(entry.viewCount) }}
-                    </span>
-                    <span v-if="entry.likeCount" title="Lượt thích" style="display:inline-flex; align-items:center; gap:2px;">
-                      <svg viewBox="0 0 24 24" width="11" height="11" style="color:var(--text-muted);"><path fill="currentColor" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-                      {{ formatViewCount(entry.likeCount) }}
-                    </span>
-                    <span v-if="entry.duration" title="Thời lượng" style="display:inline-flex; align-items:center; gap:2px;">
-                      <svg viewBox="0 0 24 24" width="11" height="11" style="color:var(--text-muted);"><path fill="currentColor" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
-                      {{ formatTime(entry.duration) }}
-                    </span>
-                    <span v-if="entry.uploadDate" title="Ngày đăng" style="display:inline-flex; align-items:center; gap:2px;">
-                      <svg viewBox="0 0 24 24" width="11" height="11" style="color:var(--text-muted);"><path fill="currentColor" d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11z"/></svg>
-                      {{ formatDlDate(entry.uploadDate) }}
-                    </span>
-                    <a v-if="entry.url" :href="entry.url" target="_blank" @click.stop 
-                       style="display:inline-flex; align-items:center; gap:2px; color: var(--accent-color); text-decoration: none; font-size: 11px; margin-left: auto; font-weight: 600;" 
-                       title="Xem video gốc trên trình duyệt">
-                      🔗 Xem
-                    </a>
-                    <button v-if="entry.url" type="button" @click.stop="copyToClipboard(entry.url)"
-                       style="display:inline-flex; align-items:center; gap:2px; color: var(--accent-color); background: none; border: none; font-size: 11px; margin-left: 8px; font-weight: 600; cursor: pointer; padding: 0;" 
-                       title="Sao chép đường dẫn video gốc">
-                      📋 Copy
-                    </button>
-                  </div>
-                  <div v-if="entry.url" style="font-size: 10px; color: var(--l-text-muted); opacity: 0.6; margin-top: 4px; word-break: break-all; user-select: text;" @click.stop>
-                    {{ entry.url }}
-                  </div>
-                </div>
-                <!-- Per-entry progress -->
-                <div class="dl-entry-progress" v-if="dlProgressMap.get(entry.id)">
-                  <template v-if="dlProgressMap.get(entry.id)!.status === 'done'">
-                    <svg viewBox="0 0 24 24" width="16" height="16" style="color:var(--success-color);"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-                  </template>
-                  <template v-else-if="dlProgressMap.get(entry.id)!.status === 'error'">
-                    <svg viewBox="0 0 24 24" width="16" height="16" style="color:var(--danger-color);"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-                  </template>
-                  <template v-else>
-                    <div class="dl-mini-progress-bar">
-                      <div class="dl-mini-progress-fill" :style="{ width: dlProgressMap.get(entry.id)!.percent + '%' }"></div>
-                    </div>
-                    <span class="dl-mini-pct">{{ Math.round(dlProgressMap.get(entry.id)!.percent) }}%</span>
-                  </template>
-                </div>
-              </div>
-              <div v-if="filteredDlEntries.length === 0" class="dl-empty">
-                Không tìm thấy video phù hợp với bộ lọc.
-              </div>
-            </div>
-
-            <!-- Download progress summary -->
-            <div class="dl-progress-section" v-if="dlProgressMap.size > 0">
-              <h4 class="dl-progress-title" style="display:flex; align-items:center; gap:6px; margin: 12px 0 6px 0;">
-                <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--accent-color);"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
-                Tiến trình tải
-              </h4>
-              <div v-for="[id, p] of dlProgressMap" :key="id" class="dl-progress-row">
-                <span class="dl-prog-icon" v-if="p.status === 'done'">
-                  <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--success-color);"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-                </span>
-                <span class="dl-prog-icon" v-else-if="p.status === 'error'">
-                  <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--danger-color);"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-                </span>
-                <span class="dl-prog-icon" v-else>
-                  <svg viewBox="0 0 24 24" width="14" height="14" class="spin-hourglass" style="display:inline-block;"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
-                </span>
-                <span class="dl-prog-title">{{ p.title }}</span>
-                <div class="dl-prog-bar" v-if="p.status === 'downloading'">
-                  <div class="dl-prog-fill" :style="{ width: p.percent + '%' }"></div>
-                </div>
-                <span class="dl-prog-pct" v-if="p.status === 'downloading'">{{ Math.round(p.percent) }}% · {{ p.speed }} · ETA {{ p.eta }}</span>
-                <span class="dl-prog-pct" v-else-if="p.status === 'done'" style="color: var(--success-color)">Hoàn tất</span>
-                <span class="dl-prog-pct" v-else style="color: var(--danger-color)">{{ p.error || 'Lỗi' }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="modal-footer dl-footer">
-            <div class="dl-footer-left">
-              <div class="dl-dir-row">
-                <label>Lưu vào:</label>
-                <input v-model="downloadDir" type="text" class="dl-dir-input" readonly />
-                <button @click="pickDownloadDir" class="btn dl-dir-btn" style="display:inline-flex; align-items:center; justify-content:center; padding: 4px 8px;">
-                  <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--text-main);"><path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
-                </button>
-              </div>
-            </div>
-            <div class="dl-footer-right">
-              <button v-if="isDownloading" @click="cancelDl" class="btn stop-analyze-btn" style="display:inline-flex; align-items:center; gap:4px; justify-content:center;">
-                <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
-                Hủy tải
-              </button>
-              <button v-else @click="startDownload" :disabled="dlSelectedCount === 0" class="btn start-btn dl-start-btn" style="display:inline-flex; align-items:center; gap:4px; justify-content:center;">
-                <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
-                Tải {{ dlSelectedCount }} video
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Teleport>
 
     <!-- ===== MODAL CÀI ĐẶT CHUNG (Global Settings) ===== -->
     <Teleport to="body">
@@ -3771,14 +3586,17 @@ const formatSize = (bytes: number) => {
         <div class="settings-modal" style="width: 520px; max-height: 85vh;">
           <div class="modal-header">
             <h2 style="display:flex; align-items:center; gap:6px;">
-              <svg viewBox="0 0 24 24" width="18" height="18" style="color:var(--l-accent);"><path fill="currentColor" d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/></svg>
+              <Settings :size="18" style="color:var(--wx-brand-accent);" />
               Cài đặt chung
             </h2>
-            <button class="modal-close" @click="showSettings = false">✕</button>
+            <button class="modal-close" @click="showSettings = false"><X :size="16" /></button>
           </div>
           <div class="modal-body" style="overflow-y: auto;">
             <div class="settings-group" style="margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid var(--l-border);">
-              <h4 style="margin-top: 0; margin-bottom: 10px; color: var(--wx-brand-accent); font-size: 13.5px; font-weight: 700;">🔑 Cấu hình AI Thumbnail (Google Gemini)</h4>
+              <h4 style="margin-top: 0; margin-bottom: 10px; color: var(--wx-brand-accent); font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                <Key :size="15" />
+                Cấu hình AI Thumbnail (Google Gemini)
+              </h4>
               <div class="setting-item" style="margin-bottom: 8px;">
                 <label style="font-size: 12.5px; font-weight: 600;">Google Gemini API Key:</label>
                 <input type="password" v-model="geminiAPIKey" class="text-content-input" placeholder="Dán Gemini API Key của bạn..." style="margin-bottom: 0;" />
@@ -3787,7 +3605,10 @@ const formatSize = (bytes: number) => {
             </div>
             
             <div class="settings-group">
-              <h4 style="margin-top: 0; margin-bottom: 15px; color: var(--wx-brand-primary); font-size: 13.5px; font-weight: 700;">💻 Cấu hình hiệu năng & hệ thống</h4>
+              <h4 style="margin-top: 0; margin-bottom: 15px; color: var(--wx-brand-primary); font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                <Cpu :size="15" />
+                Cấu hình hiệu năng & hệ thống
+              </h4>
               <div class="settings-grid" style="grid-template-columns: 1fr; gap: 15px; margin-bottom: 15px;">
                 <!-- Checkbox tự động tạo thư mục con -->
                 <div class="setting-item" style="margin-bottom: 5px;">
@@ -3804,7 +3625,10 @@ const formatSize = (bytes: number) => {
                   </label>
                   <div class="file-picker-row">
                     <input type="text" v-model="outDir" class="file-path-input" style="flex: 1;" readonly />
-                    <button class="mini-add-btn" @click="chooseOutDir" style="padding: 7px 14px; white-space: nowrap; cursor: pointer;">📁 Chọn thư mục</button>
+                    <button class="mini-add-btn flex-center" @click="chooseOutDir" style="padding: 7px 14px; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                      <FolderOpen :size="14" />
+                      Chọn thư mục
+                    </button>
                   </div>
                 </div>
 
@@ -3813,13 +3637,19 @@ const formatSize = (bytes: number) => {
                   <label style="font-size: 12.5px; font-weight: 600;">Thư mục lưu ảnh (Thumbnail) xuất:</label>
                   <div class="file-picker-row">
                     <input type="text" v-model="outImageDir" class="file-path-input" style="flex: 1;" readonly />
-                    <button class="mini-add-btn" @click="chooseOutImageDir" style="padding: 7px 14px; white-space: nowrap; cursor: pointer;">📁 Chọn thư mục</button>
+                    <button class="mini-add-btn flex-center" @click="chooseOutImageDir" style="padding: 7px 14px; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                      <FolderOpen :size="14" />
+                      Chọn thư mục
+                    </button>
                   </div>
                 </div>
 
                 <!-- Gợi ý đường dẫn con -->
                 <div v-else style="background: var(--l-bg-soft); border: 1px dashed var(--l-border); padding: 8px 12px; border-radius: 8px; font-size: 11.5px; color: var(--l-text-muted); line-height: 1.4;">
-                  💡 <strong>Quy tắc tự chia thư mục con:</strong><br />
+                  <span style="display: inline-flex; align-items: center; gap: 4px; margin-bottom: 4px; font-weight: 700; color: var(--l-text);">
+                    <Info :size="13" />
+                    Quy tắc tự chia thư mục con:
+                  </span><br />
                   - Video sẽ lưu tại: <code style="color: var(--l-accent);">{{ outDir }}\video</code><br />
                   - Ảnh bìa sẽ lưu tại: <code style="color: var(--wx-brand-accent);">{{ outDir }}\image</code>
                 </div>
@@ -3850,196 +3680,15 @@ const formatSize = (bytes: number) => {
             </div>
           </div>
           <div class="modal-footer" style="justify-content: flex-end;">
-            <button class="btn save-btn" @click="showSettings = false">✅ Hoàn tất</button>
+            <button class="btn save-btn flex-center" @click="showSettings = false" style="display: inline-flex; align-items: center; gap: 4px;">
+              <Check :size="15" /> Hoàn tất
+            </button>
           </div>
         </div>
       </div>
     </Teleport>
 
-    <!-- ═══════════════════════════════════════════════════════ -->
-    <!-- IMAGE DOWNLOADER MODAL                                  -->
-    <!-- ═══════════════════════════════════════════════════════ -->
-    <Teleport to="body">
-      <div class="modal-overlay" v-if="showImagePanel" @click.self="showImagePanel = false">
-        <div class="settings-modal" style="width:min(92vw,900px);max-height:88vh;display:flex;flex-direction:column;">
 
-          <!-- Header -->
-          <div class="modal-header">
-            <h2 style="display:flex;align-items:center;gap:8px;">
-              <svg viewBox="0 0 24 24" width="18" height="18" style="color:#06b6d4;flex-shrink:0;"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
-              Tải Ảnh Theo Chủ Đề
-            </h2>
-            <button class="modal-close" @click="showImagePanel = false">✕</button>
-          </div>
-
-          <!-- Search section -->
-          <div class="modal-body" style="padding:16px 20px 14px;border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0;">
-            <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px;">
-              <label style="font-size:11px;color:var(--l-text-muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em;">Nhập chủ đề / từ khóa:</label>
-              <div style="display:flex;gap:8px;">
-                <input v-model="imageQuery" type="text" class="dl-url-input" style="flex:1;"
-                  placeholder="VD: mèo cute, phong cảnh Việt Nam, ẩm thực đường phố, nature..."
-                  @keyup.enter="searchImages" :disabled="isImageSearching || isImageDownloading" />
-                <button @click="searchImages" class="btn dl-probe-btn"
-                  :disabled="isImageSearching || isImageDownloading || !imageQuery.trim()"
-                  style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap;height:38px;background:linear-gradient(135deg,#0891b2,#06b6d4)!important;">
-                  <template v-if="isImageSearching">
-                    <span style="display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .9s linear infinite;"></span>
-                    Đang tìm...
-                  </template>
-                  <template v-else>
-                    <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-                    Tìm Ảnh
-                  </template>
-                </button>
-              </div>
-            </div>
-            <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">
-              <div style="flex:1;min-width:220px;">
-                <label style="font-size:11px;color:var(--l-text-muted);font-weight:600;display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;">Nguồn ảnh:</label>
-                <div style="display:flex;gap:5px;flex-wrap:wrap;">
-                  <button v-for="src in IMAGE_SOURCES" :key="src.value" type="button" :title="src.hint"
-                    @click="imageSource = src.value"
-                    style="font-size:12px;padding:5px 12px;border-radius:7px;cursor:pointer;transition:all .2s;font-weight:600;outline:none;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;"
-                    :style="{
-                      background: imageSource===src.value ? 'rgba(6,182,212,.15)' : 'rgba(255,255,255,.03)',
-                      border: imageSource===src.value ? '1px solid #06b6d4' : '1px solid rgba(255,255,255,.08)',
-                      color: imageSource===src.value ? '#22d3ee' : 'var(--l-text-muted)'
-                    }">
-                    {{ src.icon }} {{ src.label }}
-                    <span v-if="src.needsKey" style="font-size:9px;padding:1px 5px;background:rgba(245,158,11,.2);color:#fbbf24;border-radius:4px;border:1px solid rgba(245,158,11,.35);">Key</span>
-                  </button>
-                </div>
-                <p v-if="imageSelectedSource" style="font-size:11px;color:var(--l-text-muted);margin:5px 0 0;font-style:italic;line-height:1.4;">{{ imageSelectedSource.hint }}</p>
-              </div>
-              <div style="flex-shrink:0;">
-                <label style="font-size:11px;color:var(--l-text-muted);font-weight:600;display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;">Số lượng:</label>
-                <select v-model="imageMaxCount" class="dl-select" style="padding:7px 12px;font-size:13px;">
-                  <option :value="20">20 ảnh</option>
-                  <option :value="50">50 ảnh</option>
-                  <option :value="100">100 ảnh</option>
-                  <option :value="200">200 ảnh</option>
-                  <option :value="500">500 ảnh</option>
-                  <option :value="1000">1000 ảnh</option>
-                </select>
-              </div>
-            </div>
-            <div v-if="sourceNeedsKey" style="display:flex;align-items:center;gap:10px;margin-top:10px;padding:10px 14px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;flex-wrap:wrap;">
-              <svg viewBox="0 0 24 24" width="14" height="14" style="color:#fbbf24;flex-shrink:0;"><path fill="currentColor" d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
-              <label style="font-size:12px;color:var(--l-text-muted);font-weight:600;white-space:nowrap;flex-shrink:0;">{{ imageSelectedSource?.label }} API Key:</label>
-              <div style="flex:1;min-width:160px;display:flex;gap:6px;align-items:center;position:relative;">
-                <input v-model="imageApiKey" type="password" class="dl-url-input" style="flex:1;height:34px;font-size:12.5px;" :placeholder="`Nhập ${imageSelectedSource?.label} API Key...`" />
-                <!-- Badge: key từ .env -->
-                <span v-if="imageHasEnvKey" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;background:rgba(16,185,129,.15);color:#10b981;border:1px solid rgba(16,185,129,.3);pointer-events:none;">✅ .env</span>
-              </div>
-              <!-- Hint khi chưa có key -->
-              <span v-if="!imageApiKey" style="font-size:11px;color:#fbbf24;flex-basis:100%;margin-top:2px;">
-                ⚠️ Chưa có key. Nhập vào đây hoặc thêm vào file <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:3px;">frontend/.env.local</code> để dùng mặc định.
-              </span>
-              <span v-else-if="imageHasEnvKey" style="font-size:11px;color:#10b981;flex-basis:100%;margin-top:2px;">
-                ✅ Đang dùng key từ file <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:3px;">frontend/.env.local</code>
-              </span>
-              <a :href="imageSource==='pixabay'?'https://pixabay.com/api/docs/':imageSource==='unsplash'?'https://unsplash.com/developers':'https://www.pexels.com/api/'" target="_blank" style="font-size:12px;font-weight:600;color:#06b6d4;text-decoration:none;white-space:nowrap;flex-shrink:0;">Lấy key miễn phí →</a>
-            </div>
-          </div>
-
-          <!-- Results -->
-          <div style="flex:1;overflow-y:auto;padding:14px 20px;">
-            <div v-if="!imageSearchResult && !isImageSearching" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;height:200px;color:var(--l-text-muted);text-align:center;">
-              <svg viewBox="0 0 24 24" width="56" height="56" style="opacity:.2;"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
-              <p style="font-size:14.5px;font-weight:600;margin:0;">Nhập chủ đề → nhấn <span style="color:#06b6d4;">Tìm Ảnh</span> để bắt đầu</p>
-              <p style="font-size:12px;opacity:.55;margin:0;">DuckDuckGo miễn phí không cần key • Hỗ trợ tiếng Việt & tiếng Anh</p>
-            </div>
-            <div v-if="isImageSearching" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;height:200px;color:var(--l-text-muted);">
-              <div style="width:40px;height:40px;border:3px solid rgba(255,255,255,.1);border-top-color:#06b6d4;border-radius:50%;animation:spin .9s linear infinite;"></div>
-              <p style="font-size:14px;font-weight:600;margin:0;">Đang tìm kiếm từ <span style="color:#22d3ee;">{{ imageSelectedSource?.label }}</span>...</p>
-            </div>
-            <template v-if="imageSearchResult && !isImageSearching">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                <span style="font-size:13px;color:var(--l-text-muted);display:flex;align-items:center;gap:8px;">
-                  <strong style="color:var(--l-text);font-size:17px;">{{ imageAllEntries.length }}</strong> ảnh tìm thấy
-                  <span style="font-size:10.5px;font-weight:700;padding:2px 9px;border-radius:12px;background:rgba(6,182,212,.12);color:#22d3ee;text-transform:capitalize;">{{ imageSearchResult.source }}</span>
-                </span>
-                <button type="button" @click="imageToggleAll"
-                  style="font-size:12px;padding:5px 14px;border-radius:7px;cursor:pointer;transition:all .18s;font-weight:600;outline:none;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);color:var(--l-text-muted);display:inline-flex;align-items:center;gap:5px;">
-                  {{ imageSelectedCount === imageAllEntries.length ? "Bỏ tất cả" : "Chọn tất cả" }}
-                  <span style="font-weight:700;color:var(--l-text);">({{ imageSelectedCount }}/{{ imageAllEntries.length }})</span>
-                </button>
-              </div>
-              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:9px;">
-                <div v-for="entry in imageAllEntries" :key="entry.id" @click="toggleImage(entry.id)"
-                  style="border-radius:9px;overflow:hidden;cursor:pointer;transition:all .18s;position:relative;"
-                  :style="{
-                    border: selectedImageIds.has(entry.id) ? '2px solid #06b6d4' : '2px solid rgba(255,255,255,.06)',
-                    background: 'rgba(255,255,255,.03)',
-                    transform: selectedImageIds.has(entry.id) ? 'translateY(-2px)' : 'translateY(0)',
-                    boxShadow: selectedImageIds.has(entry.id) ? '0 6px 20px rgba(6,182,212,.2)' : 'none'
-                  }">
-                  <div style="position:relative;aspect-ratio:4/3;overflow:hidden;background:rgba(0,0,0,.3);">
-                    <img :src="entry.thumbUrl || entry.url" :alt="entry.title || 'anh'" loading="lazy"
-                      style="width:100%;height:100%;object-fit:cover;display:block;transition:transform .25s;"
-                      @error="($event.target as HTMLImageElement).style.display='none'"
-                      @mouseover="($event.target as HTMLImageElement).style.transform='scale(1.07)'"
-                      @mouseleave="($event.target as HTMLImageElement).style.transform='scale(1)'" />
-                    <div v-if="selectedImageIds.has(entry.id)"
-                      style="position:absolute;top:6px;right:6px;width:22px;height:22px;border-radius:50%;background:#06b6d4;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:white;box-shadow:0 2px 8px rgba(0,0,0,.5);">
-                      <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-                    </div>
-                  </div>
-                  <div v-if="entry.author" style="padding:5px 7px;">
-                    <p style="font-size:10px;color:var(--l-text-muted);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">by {{ entry.author }}</p>
-                  </div>
-                </div>
-              </div>
-            </template>
-          </div>
-
-          <!-- Log strip -->
-          <div v-if="imageSearchLog.length > 0" style="padding:7px 20px;background:rgba(0,0,0,.2);border-top:1px solid rgba(255,255,255,.05);font-size:11px;line-height:1.4;color:var(--l-text-muted);font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;">
-            {{ imageSearchLog[0] }}
-          </div>
-
-          <!-- Footer -->
-          <div class="modal-footer" style="flex-direction:column;gap:10px;padding:14px 20px;">
-            <div style="display:flex;align-items:center;gap:8px;">
-              <svg viewBox="0 0 24 24" width="14" height="14" style="color:var(--l-text-muted);flex-shrink:0;"><path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
-              <span style="font-size:12px;color:var(--l-text-muted);font-weight:600;white-space:nowrap;flex-shrink:0;">Lưu vào:</span>
-              <input v-model="imageDir" class="dl-url-input" style="flex:1;height:34px;font-size:12px;cursor:default;" readonly placeholder="Thư mục lưu ảnh..." />
-              <button @click="pickImageDir" style="padding:6px 12px;font-size:15px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:7px;color:var(--l-text);cursor:pointer;flex-shrink:0;">&#128193;</button>
-            </div>
-            <div v-if="isImageDownloading" style="display:flex;align-items:center;gap:10px;">
-              <div style="flex:1;height:5px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden;">
-                <div :style="{width: imageDownloadProgress+'%'}" style="height:100%;background:linear-gradient(90deg,#0891b2,#06b6d4);border-radius:3px;transition:width .4s ease;"></div>
-              </div>
-              <span style="font-size:12px;color:var(--l-text-muted);font-weight:700;white-space:nowrap;">{{ downloadDoneCount }}/{{ downloadTotalCount }} ảnh</span>
-            </div>
-            <div style="display:flex;justify-content:flex-end;gap:10px;">
-              <button v-if="isImageDownloading" @click="cancelImageDl"
-                style="padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;background:rgba(255,255,255,.05);border:1px solid rgba(239,68,68,.3);color:#f87171;">
-                &#9209; Dừng tải</button>
-              <button v-if="!isImageDownloading" @click="showImagePanel = false"
-                style="padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:var(--l-text-muted);">
-                Đóng</button>
-              <button @click="startImageDownload"
-                :disabled="isImageDownloading || isImageSearching || imageSelectedCount === 0"
-                style="padding:8px 24px;border-radius:8px;font-size:13.5px;font-weight:700;cursor:pointer;transition:all .2s;border:none;display:inline-flex;align-items:center;gap:6px;"
-                :style="{
-                  background: (isImageDownloading||isImageSearching||imageSelectedCount===0)?'rgba(255,255,255,.07)':'linear-gradient(135deg,#0891b2,#06b6d4)',
-                  color: (isImageDownloading||isImageSearching||imageSelectedCount===0)?'rgba(255,255,255,.25)':'white',
-                  boxShadow: (isImageDownloading||isImageSearching||imageSelectedCount===0)?'none':'0 4px 14px rgba(6,182,212,.4)',
-                  cursor: (isImageDownloading||isImageSearching||imageSelectedCount===0)?'not-allowed':'pointer'
-                }">
-                <svg v-if="!isImageDownloading" viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M5 20h14v-2H5v2zM12 2L4 10h5v6h6v-6h5L12 2z"/></svg>
-                <span v-if="isImageDownloading">Đang tải {{ downloadDoneCount }}/{{ downloadTotalCount }}...</span>
-                <span v-else-if="imageSelectedCount===0">Chọn ảnh để tải</span>
-                <span v-else>Tải {{ imageSelectedCount }} ảnh đã chọn</span>
-              </button>
-            </div>
-          </div>
-
-        </div>
-      </div>
-    </Teleport>
   </main>
 </template>
 

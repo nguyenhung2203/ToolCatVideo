@@ -194,8 +194,8 @@ func DefaultWeights() SignalWeights {
 func DefaultConfig() AnalyzerConfig {
 	return AnalyzerConfig{
 		Mode:             ModeSmart,
-		SceneThreshold:   26.0,
-		MinClipDuration:  5.0,
+		SceneThreshold:   20.0,
+		MinClipDuration:  1.0,
 		MaxClipDuration:  60.0,
 		AutoAcceptScore:  60, // visual-only scene change (45 - 10 = 35) sẽ được xếp vào review candidate, không bị auto-accept tràn lan
 		ReviewMinScore:   35,

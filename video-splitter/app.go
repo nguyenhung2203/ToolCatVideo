@@ -159,6 +159,36 @@ func (a *App) SelectFolder() (string, error) {
 	return dir, nil
 }
 
+// FetchImageAsBase64 tải ảnh từ URL bên ngoài và trả về dạng base64 data URI,
+// giúp WebView2 hiển thị ảnh thumbnail từ YouTube/TikTok mà không bị chặn CSP.
+func (a *App) FetchImageAsBase64(imageURL string) string {
+	if imageURL == "" {
+		return ""
+	}
+	client := &http.Client{Timeout: 8 * time.Second}
+	req, err := http.NewRequest("GET", imageURL, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("Referer", "https://www.youtube.com/")
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return ""
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+	b64 := base64.StdEncoding.EncodeToString(data)
+	return "data:" + contentType + ";base64," + b64
+}
+
 // GetVideoInfo lấy thông tin của video qua ffprobe
 func (a *App) GetVideoInfo(filePath string) (*project.VideoInfo, error) {
 	return media.GetVideoInfo(filePath)
@@ -640,7 +670,7 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 				threads = 2 // Giới hạn 2 threads mỗi clip để chạy song song mượt mà
 			}
 			runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Đang cắt video...", filepath.Base(sourcePath), clip.Index))
-			err := exporter.CutVideo(clipCtx, sourcePath, clip, outPath, cfg.ExportPreset, cfg.ExportCRF, threads, cfg.HardwareAccel)
+			err := exporter.CutVideo(clipCtx, sourcePath, clip, outPath, cfg.ExportPreset, cfg.ExportCRF, threads, cfg.HardwareAccel, cfg.Mode)
 			if err != nil {
 				if clipCtx.Err() != nil {
 					res.Error = "Tiến trình bị dừng"
@@ -792,7 +822,7 @@ func (a *App) MergeClips(sourcePath string, clips []project.Clip, outPath string
 	for i, clip := range clips {
 		runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Ghép: đang chuẩn bị phân đoạn %d/%d...", i+1, len(clips)))
 		p := filepath.Join(tmpDir, fmt.Sprintf("part_%03d.mp4", i))
-		if err := exporter.CutVideo(context.Background(), sourcePath, clip, p, cfg.ExportPreset, cfg.ExportCRF, 0, cfg.HardwareAccel); err != nil {
+		if err := exporter.CutVideo(context.Background(), sourcePath, clip, p, cfg.ExportPreset, cfg.ExportCRF, 0, cfg.HardwareAccel, cfg.Mode); err != nil {
 			return "", fmt.Errorf("lỗi chuẩn bị clip #%d: %v", clip.Index, err)
 		}
 		parts = append(parts, p)
@@ -1366,7 +1396,26 @@ func (a *App) ProbeOnlineURL(rawURL string, cookieBrowser string, maxCount int, 
 		runtime.EventsEmit(a.ctx, "download_log", fmt.Sprintf("Lỗi dò link: %v", err))
 		return nil, err
 	}
-	runtime.EventsEmit(a.ctx, "download_log", fmt.Sprintf("Tìm thấy %d video từ %s (%s)", len(result.Entries), result.Platform, result.Type))
+	runtime.EventsEmit(a.ctx, "download_log", fmt.Sprintf("Tìm thấy %d video từ %s (%s). Đang tải ảnh xem trước...", len(result.Entries), result.Platform, result.Type))
+
+	// Tải song song tất cả thumbnail về dạng base64 để bypass CSP/CORS
+	var wg sync.WaitGroup
+	for i := range result.Entries {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			thumbURL := result.Entries[idx].Thumbnail
+			if thumbURL != "" && !strings.HasPrefix(thumbURL, "data:") {
+				b64 := a.FetchImageAsBase64(thumbURL)
+				if b64 != "" {
+					result.Entries[idx].Thumbnail = b64
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	runtime.EventsEmit(a.ctx, "download_log", fmt.Sprintf("Đã tải xong ảnh xem trước cho %d video.", len(result.Entries)))
 	return result, nil
 }
 

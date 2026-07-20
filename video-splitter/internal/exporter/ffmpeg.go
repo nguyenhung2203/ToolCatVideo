@@ -227,7 +227,7 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 //   - Nếu stream-copy thất bại (codec không tương thích, container lỗi), tự động
 //     fallback sang re-encode.
 //   - Nếu clip CÓ filter → re-encode bằng libx264 với preset/crf cấu hình.
-func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPath string, preset string, crf int, threads int, hwAccel string) error {
+func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPath string, preset string, crf int, threads int, hwAccel string, mode string) error {
 	if preset == "" {
 		preset = "fast"
 	}
@@ -244,7 +244,8 @@ func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPa
 	}
 
 	// Không cần filter → stream-copy (nhanh gấp nhiều lần)
-	if !needsReencode(clip.Edit) {
+	// Chỉ sử dụng stream-copy nếu không phải chế độ Precise (Kỹ), vì Precise yêu cầu chính xác tuyệt đối từng khung hình (bắt buộc re-encode).
+	if mode != "precise" && !needsReencode(clip.Edit) {
 		err := cutVideoStreamCopy(ctx, inputPath, clip.StartTime, dur, outputPath)
 		if err == nil {
 			return nil
