@@ -471,7 +471,7 @@ func GenerateFlowVideo(
 			}
 
 			logDebug("Đã bấm Ctrl+V! Đang chờ DOM tải xong 100% (thẻ ảnh hiển thị trong ô prompt)...")
-			WaitUntilImageAttachedAndLoaded(ctx, page, 25*time.Second, logDebug)
+			WaitUntilImageAttachedAndLoaded(ctx, page, 50*time.Second, logDebug)
 			sleep(1500 * time.Millisecond) // Chờ thêm 1.5 giây cho React cập nhật state
 
 			// Quét tìm lại ô prompt sau khi đính kèm ảnh

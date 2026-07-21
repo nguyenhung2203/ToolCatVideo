@@ -223,39 +223,67 @@
 
         <!-- Success Preview panel -->
         <div v-else-if="state === 'completed' && result" class="completed-panel" style="display: flex; flex-direction: column; height: 100%; overflow: hidden; min-height: 0;">
-          <div class="preview-header" style="padding-bottom: 4px; flex-shrink: 0;">
-            <CheckCircle :size="18" class="success-check-icon" />
-            <span class="success-title">
-              {{ previewURLs.length > 1 ? `Đã tạo thành công ${previewURLs.length} file!` : `Đã tạo thành công file: ${result.fileName}` }}
-            </span>
+          <div class="preview-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; padding-bottom: 4px; flex-shrink: 0;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <CheckCircle :size="18" class="success-check-icon" />
+              <span class="success-title">
+                {{ (previewURLs.length > 0 ? previewURLs : (previewURL ? [previewURL] : [])).length > 1 ? `Đã tạo thành công ${(previewURLs.length > 0 ? previewURLs : [previewURL]).length} file!` : `Đã tạo thành công file: ${result.fileName}` }}
+              </span>
+            </div>
+            <button 
+              v-if="(previewURLs.length > 0 ? previewURLs : (previewURL ? [previewURL] : [])).length > 1" 
+              type="button" 
+              @click="toggleSelectAllCompleted" 
+              class="img-source-pill active" 
+              style="margin-left: auto; font-size: 11px; height: 26px; flex: none; width: auto; padding: 0 10px;"
+            >
+              {{ selectedCompletedIndexes.size === (previewURLs.length > 0 ? previewURLs : [previewURL]).length ? 'Bỏ tất cả' : 'Chọn tất cả' }}
+              <span style="margin-left: 2px;">({{ selectedCompletedIndexes.size }}/{{ (previewURLs.length > 0 ? previewURLs : [previewURL]).length }})</span>
+            </button>
           </div>
 
-          <!-- Previews Compact Grid Area with Smooth Scrollbar -->
+          <!-- Previews Compact Grid Area with Drag-select & Card Selection -->
           <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 10px 4px; width: 100%;">
-            <div class="img-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; width: 100%; justify-items: center;">
+            <div
+              ref="gridRef"
+              class="img-grid"
+              @mousedown.left="onGridMouseDown"
+              style="position: relative; user-select: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; width: 100%; justify-items: center;"
+            >
+              <!-- Drag-select overlay box -->
+              <div v-if="dragBox.active" class="img-drag-box" :style="dragBoxStyle"></div>
+
               <div 
                 v-for="(pUrl, pIdx) in (previewURLs.length > 0 ? previewURLs : (previewURL ? [previewURL] : []))" 
                 :key="pIdx" 
                 class="img-card" 
-                style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 160px; background: var(--wx-glass-light-bg); backdrop-filter: blur(var(--wx-glass-light-blur)); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 6px; box-shadow: var(--wx-shadow-md); position: relative;"
+                :class="{ selected: selectedCompletedIndexes.has(pIdx) }"
+                :data-preview-idx="pIdx"
+                @click="toggleCompletedImage(pIdx)"
+                style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 160px; background: var(--wx-glass-light-bg); backdrop-filter: blur(var(--wx-glass-light-blur)); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 6px; box-shadow: var(--wx-shadow-md); cursor: pointer; transition: all var(--wx-d-fast) var(--wx-ease-standard); position: relative;"
               >
                 <video :src="pUrl" style="width: 100%; height: 160px; object-fit: cover; border-radius: var(--wx-radius-sm);" controls></video>
+
+                <!-- Checkmark Overlay Badge -->
+                <div v-if="selectedCompletedIndexes.has(pIdx)" class="img-card-check" style="position: absolute; top: 10px; right: 10px; background: var(--wx-brand-primary); color: var(--wx-text-inverse); border-radius: var(--wx-radius-full); width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; box-shadow: var(--wx-shadow-sm); border: 1px solid var(--wx-text-inverse); z-index: 10;">
+                  <Check :size="12" />
+                </div>
               </div>
             </div>
           </div>
 
-          <!-- Single Row Bottom Action & Info Bar (Identical layout to Selection View) -->
+          <!-- Single Row Bottom Action & Info Bar -->
           <div class="completed-actions" style="flex-shrink: 0; margin-top: 8px; display: flex; gap: 8px; align-items: center; width: 100%;">
             <button @click="resetForm" class="img-dir-btn" style="height: 38px;">
               <RefreshCw :size="12" style="margin-right: 4px;" /> Tạo lại
             </button>
 
             <span style="font-size: var(--wx-fs-12); color: var(--wx-text-muted); flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-              <template v-if="previewURLs.length <= 1">
+              <template v-if="(previewURLs.length > 0 ? previewURLs : [previewURL]).length <= 1">
                 Đường dẫn: <code style="color: var(--wx-brand-accent);">{{ result.filePath }}</code> ({{ formatSize(result.fileSize) }})
               </template>
               <template v-else>
-                Lưu vào: <code style="color: var(--wx-brand-accent);">{{ outputDir }}</code> ({{ previewURLs.length }} video - {{ formatSize(result.fileSize) }})
+                Lưu vào: <code style="color: var(--wx-brand-accent);">{{ outputDir }}</code> (Đã chọn {{ selectedCompletedIndexes.size }}/{{ (previewURLs.length > 0 ? previewURLs : [previewURL]).length }} video - {{ formatSize(result.fileSize) }})
               </template>
             </span>
 
@@ -318,6 +346,29 @@ const {
 } = useBrowserAI(showToast)
 
 const selectedPreviewIndexes = ref<Set<number>>(new Set())
+const selectedCompletedIndexes = ref<Set<number>>(new Set([0]))
+
+function toggleCompletedImage(idx: number) {
+  if (selectedCompletedIndexes.value.has(idx)) {
+    selectedCompletedIndexes.value.delete(idx)
+  } else {
+    selectedCompletedIndexes.value.add(idx)
+  }
+}
+
+function toggleSelectAllCompleted() {
+  const list = (previewURLs.value && previewURLs.value.length > 0) ? previewURLs.value : (previewURL.value ? [previewURL.value] : [])
+  if (selectedCompletedIndexes.value.size === list.length) {
+    selectedCompletedIndexes.value.clear()
+  } else {
+    selectedCompletedIndexes.value = new Set(list.map((_, i) => i))
+  }
+}
+
+watch(() => result.value, () => {
+  const list = (previewURLs.value && previewURLs.value.length > 0) ? previewURLs.value : (previewURL.value ? [previewURL.value] : [])
+  selectedCompletedIndexes.value = new Set(list.map((_, i) => i))
+}, { immediate: true })
 
 // Drag-to-select logic
 const gridRef = ref<HTMLElement | null>(null)
@@ -386,7 +437,7 @@ function onGridMouseDown(e: MouseEvent) {
   if (!grid) return
 
   dragMode = null
-  dragStartSelectedIndices = new Set(selectedPreviewIndexes.value)
+  dragStartSelectedIndices = new Set(state.value === 'completed' ? selectedCompletedIndexes.value : selectedPreviewIndexes.value)
 
   const rect = grid.getBoundingClientRect()
   dragBox.x1 = e.clientX - rect.left + grid.scrollLeft
@@ -440,7 +491,7 @@ function updateSelectionFromDrag() {
   if (selX2 - selX1 < 4 && selY2 - selY1 < 4) return
 
   const gridRect = grid.getBoundingClientRect()
-  const currentSet = selectedPreviewIndexes.value
+  const currentSet = state.value === 'completed' ? selectedCompletedIndexes.value : selectedPreviewIndexes.value
 
   const cards = grid.querySelectorAll<HTMLElement>('[data-preview-idx]')
   cards.forEach(card => {
