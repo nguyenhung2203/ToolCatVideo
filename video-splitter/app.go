@@ -731,6 +731,19 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 							theme = "Tạo ảnh thumbnail đẹp, ấn tượng và thu hút cho video ngắn"
 						}
 
+						aspectRatio := "9:16"
+						if clip.Edit.Aspect.Enabled && clip.Edit.Aspect.Ratio != "" {
+							aspectRatio = clip.Edit.Aspect.Ratio
+						} else {
+							if vi, errVi := media.GetVideoInfo(sourcePath); errVi == nil && vi != nil {
+								if vi.Width > vi.Height {
+									aspectRatio = "16:9"
+								} else {
+									aspectRatio = "9:16"
+								}
+							}
+						}
+
 						task := browserai.ThumbnailTask{
 							ID:             fmt.Sprintf("task_thumb_%s_%d", clip.ID, clip.Index),
 							ClipName:       fmt.Sprintf("Clip #%d (%s)", clip.Index, cleanVideoName),
@@ -741,7 +754,7 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 							InputImagePath: extractedFrame,
 							Provider:       browserai.ProviderFlow,
 							Model:          "Nano Banana 2",
-							AspectRatio:    "9:16",
+							AspectRatio:    aspectRatio,
 						}
 
 						mu.Lock()
