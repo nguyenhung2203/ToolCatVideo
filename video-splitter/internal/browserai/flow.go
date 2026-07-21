@@ -662,22 +662,29 @@ func GenerateFlowVideo(
 					return nil, NewError(ErrQuotaExceeded, quotaMsg)
 				}
 
-				// Check for error card via page.Eval JS
+				// Check for error card or policy violation card via page.Eval JS
 				isError, _ := page.Eval(`() => {
-					return Array.from(document.querySelectorAll('div, span, button')).some(el => {
+					const errorKeywords = [
+						'không thành công',
+						'vi phạm các chính sách',
+						'vi phạm chính sách',
+						'policy violation',
+						'lượt tạo này có thể vi phạm',
+						'thử một câu lệnh khác',
+						'something went wrong',
+						'rất tiếc, đã xảy ra lỗi',
+						'failed to generate',
+						'unable to generate'
+					];
+					return Array.from(document.querySelectorAll('div, span, button, p')).some(el => {
 						const txt = el.textContent.toLowerCase();
 						const isVisible = el.getBoundingClientRect().width > 0;
-						return isVisible && (
-							(txt.includes('không thành công') && txt.includes('lỗi')) ||
-							txt.includes('something went wrong') ||
-							txt.includes('rất tiếc, đã xảy ra lỗi') ||
-							(txt.includes('failed') && txt.includes('create'))
-						);
+						return isVisible && errorKeywords.some(kw => txt.includes(kw));
 					});
 				}`)
 				if isError != nil && isError.Value.Bool() {
-					logDebug("Phát hiện thẻ lỗi trên Google Flow (Không thành công / Rất tiếc, đã xảy ra lỗi) khi tạo hình ảnh.")
-					finalErr = NewError(ErrGenerationFailed, "Google Flow báo lỗi tạo hình ảnh.")
+					logDebug("Phát hiện thẻ báo lỗi / vi phạm chính sách tạo ảnh trên Google Flow. Đang kích hoạt thử lại tự động (Tối đa 3 lần)...")
+					finalErr = NewError(ErrGenerationFailed, "Google Flow báo lỗi / vi phạm chính sách tạo hình ảnh.")
 					generationFailed = true
 					break
 				}
