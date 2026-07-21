@@ -662,28 +662,28 @@ func GenerateFlowVideo(
 					return nil, NewError(ErrQuotaExceeded, quotaMsg)
 				}
 
-				// Check for error card or policy violation card via page.Eval JS
+				// Check for error card or policy violation card ONLY on the newest tile card (firstTile)
 				isError, _ := page.Eval(`() => {
+					const firstTile = document.querySelector('div[data-tile-id], div[role="button"][aria-roledescription="draggable"]');
+					if (!firstTile) return false;
+
+					const txt = firstTile.textContent.toLowerCase();
 					const errorKeywords = [
-						'không thành công',
+						'lượt tạo này có thể vi phạm',
 						'vi phạm các chính sách',
 						'vi phạm chính sách',
 						'policy violation',
-						'lượt tạo này có thể vi phạm',
-						'thử một câu lệnh khác',
-						'something went wrong',
-						'rất tiếc, đã xảy ra lỗi',
-						'failed to generate',
-						'unable to generate'
+						'thử một câu lệnh khác'
 					];
-					return Array.from(document.querySelectorAll('div, span, button, p')).some(el => {
-						const txt = el.textContent.toLowerCase();
-						const isVisible = el.getBoundingClientRect().width > 0;
-						return isVisible && errorKeywords.some(kw => txt.includes(kw));
-					});
+
+					const hasErrorTxt = errorKeywords.some(kw => txt.includes(kw));
+					const warningEl = firstTile.querySelector('i');
+					const hasWarningIcon = warningEl !== null && warningEl.textContent.trim().toLowerCase() === 'warning';
+
+					return hasErrorTxt || hasWarningIcon;
 				}`)
 				if isError != nil && isError.Value.Bool() {
-					logDebug("Phát hiện thẻ báo lỗi / vi phạm chính sách tạo ảnh trên Google Flow. Đang kích hoạt thử lại tự động (Tối đa 3 lần)...")
+					logDebug("Phát hiện thẻ báo lỗi / vi phạm chính sách trên thẻ ảnh MỚI NHẤT. Đang kích hoạt thử lại tự động (Tối đa 3 lần)...")
 					finalErr = NewError(ErrGenerationFailed, "Google Flow báo lỗi / vi phạm chính sách tạo hình ảnh.")
 					generationFailed = true
 					break
