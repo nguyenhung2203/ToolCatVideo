@@ -82,6 +82,82 @@ export namespace browserai {
 	        this.inputImageBase64s = source["inputImageBase64s"];
 	    }
 	}
+	export class ThumbnailTask {
+	    id: string;
+	    clipName: string;
+	    clipPath: string;
+	    outputDir: string;
+	    fileName: string;
+	    prompt: string;
+	    inputImagePath: string;
+	    provider: string;
+	    model: string;
+	    aspectRatio: string;
+	    state: string;
+	    errorMessage: string;
+	    resultPath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ThumbnailTask(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.clipName = source["clipName"];
+	        this.clipPath = source["clipPath"];
+	        this.outputDir = source["outputDir"];
+	        this.fileName = source["fileName"];
+	        this.prompt = source["prompt"];
+	        this.inputImagePath = source["inputImagePath"];
+	        this.provider = source["provider"];
+	        this.model = source["model"];
+	        this.aspectRatio = source["aspectRatio"];
+	        this.state = source["state"];
+	        this.errorMessage = source["errorMessage"];
+	        this.resultPath = source["resultPath"];
+	    }
+	}
+	export class QueueStatus {
+	    total: number;
+	    completed: number;
+	    failed: number;
+	    current: number;
+	    isRunning: boolean;
+	    tasks: ThumbnailTask[];
+	
+	    static createFrom(source: any = {}) {
+	        return new QueueStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.total = source["total"];
+	        this.completed = source["completed"];
+	        this.failed = source["failed"];
+	        this.current = source["current"];
+	        this.isRunning = source["isRunning"];
+	        this.tasks = this.convertValues(source["tasks"], ThumbnailTask);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class TaskInfo {
 	    taskId: string;
 	    state: string;

@@ -637,6 +637,7 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 	a.exportCancelMu.Unlock()
 
 	results := make([]ExportResult, len(clips))
+	var aiQueueTasks []browserai.ThumbnailTask
 	sem := make(chan struct{}, jobs)
 	var wg sync.WaitGroup
 	var done int
@@ -716,59 +717,37 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 						_ = copyFile(clip.Thumbnail, destThumbPath)
 					}
 				} else {
-					// Tự động sinh thumbnail bằng AI
-					apiKey := ""
-					// Tìm API Key từ settings.json
-					dirUser, errUser := os.UserConfigDir()
-					if errUser == nil && dirUser != "" {
-						settingsPath := filepath.Join(dirUser, "video-splitter", "settings.json")
-						if data, errRead := os.ReadFile(settingsPath); errRead == nil {
-							var gSettings struct {
-								GeminiAPIKey string `json:"geminiAPIKey"`
-							}
-							_ = json.Unmarshal(data, &gSettings)
-							apiKey = gSettings.GeminiAPIKey
+					// Trích xuất 1 khung hình rõ nét (tự động lọc bỏ khung hình bị đen/tối)
+					clipDuration := clip.EndTime - clip.StartTime
+					clearFramePath := filepath.Join(os.TempDir(), "video-splitter", fmt.Sprintf("clearframe_%s_%d.jpg", clip.ID, clip.Index))
+					extractedFrame, errFrame := media.ExtractClearFrame(clipCtx, sourcePath, clipDuration, clearFramePath)
+
+					if errFrame == nil && extractedFrame != "" {
+						// Tạo ảnh thumbnail mặc định ban đầu từ frame cắt được
+						_ = copyFile(extractedFrame, destThumbPath)
+
+						theme := cfg.Prompt
+						if theme == "" {
+							theme = "Tạo ảnh thumbnail đẹp, ấn tượng và thu hút cho video ngắn"
 						}
-					}
 
-					aiSuccess := false
-					if apiKey == "" {
-						runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Clip #%d: Cảnh báo - Chưa cấu hình API Key trong Settings! Sử dụng ảnh mặc định.", clip.Index))
-					} else {
-						// 1. Trích xuất 3 frames tham chiếu
-						frames, errFrames := a.ExtractClipFrames(sourcePath, clip.StartTime, clip.EndTime)
-						if errFrames != nil {
-							runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Clip #%d: Cảnh báo - Lỗi trích xuất frames: %v. Sử dụng ảnh mặc định.", clip.Index, errFrames))
-						} else if len(frames) == 0 {
-							runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Clip #%d: Cảnh báo - Không trích xuất được frame nào! Sử dụng ảnh mặc định.", clip.Index))
-						} else {
-							// 2. Sinh ảnh bằng Gemini 1.5 + Imagen 4
-							runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Đang vẽ ảnh bìa AI...", filepath.Base(sourcePath), clip.Index))
-							editJSON, _ := json.Marshal(clip.Edit)
-							
-							theme := cfg.Prompt
-							if theme == "" {
-								theme = "A premium, eye-catching, and highly engaging thumbnail matching the style and key characters/objects of the reference frames."
-							}
-
-							aiImgPath, errImg := a.GenerateAIThumbnail(apiKey, theme, frames, sourcePath, clip.Index, "9:16", string(editJSON))
-							if errImg != nil {
-								runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Clip #%d: Lỗi sinh ảnh AI: %v. Sử dụng ảnh mặc định.", clip.Index, errImg))
-							} else if aiImgPath == "" {
-								runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Clip #%d: Cảnh báo - Ảnh sinh ra bị rỗng! Sử dụng ảnh mặc định.", clip.Index))
-							} else {
-								errCopy := copyFile(aiImgPath, destThumbPath)
-								if errCopy != nil {
-									runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Clip #%d: Cảnh báo - Lỗi sao chép ảnh bìa: %v. Sử dụng ảnh mặc định.", clip.Index, errCopy))
-								} else {
-									aiSuccess = true
-								}
-							}
+						task := browserai.ThumbnailTask{
+							ID:             fmt.Sprintf("task_thumb_%s_%d", clip.ID, clip.Index),
+							ClipName:       fmt.Sprintf("Clip #%d (%s)", clip.Index, cleanVideoName),
+							ClipPath:       outPath,
+							OutputDir:      outImageDir,
+							FileName:       strings.TrimSuffix(destThumbName, ".jpg"),
+							Prompt:         theme,
+							InputImagePath: extractedFrame,
+							Provider:       browserai.ProviderFlow,
+							Model:          "Nano Banana 2",
+							AspectRatio:    "9:16",
 						}
-					}
 
-					// Fallback: Copy ảnh mặc định của clip nếu sinh AI thất bại hoặc thiếu cấu hình
-					if !aiSuccess && clip.Thumbnail != "" {
+						mu.Lock()
+						aiQueueTasks = append(aiQueueTasks, task)
+						mu.Unlock()
+					} else if clip.Thumbnail != "" {
 						if _, errStat := os.Stat(clip.Thumbnail); errStat == nil {
 							_ = copyFile(clip.Thumbnail, destThumbPath)
 						}
@@ -792,6 +771,11 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 		}(i, clip)
 	}
 	wg.Wait()
+
+	if len(aiQueueTasks) > 0 && a.browserAIService != nil {
+		runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("🔥 Đã nạp %d clip vào Hàng Đợi AI tự động sinh Thumbnail trên Google Flow!", len(aiQueueTasks)))
+		a.browserAIService.EnqueueThumbnailTasks(aiQueueTasks)
+	}
 
 	okCount := 0
 	for _, r := range results {

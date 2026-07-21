@@ -25,6 +25,9 @@ type activeTask struct {
 	Cancel        context.CancelFunc
 	SelectionChan chan []int // Receive selected image indexes from frontend
 	Previews      []string   // Store preview URLs for frontend sync
+	DoneChan      chan struct{}
+	Result        *GenerateResult
+	Err           error
 }
 
 func NewTaskManager() *TaskManager {
@@ -51,12 +54,12 @@ func (tm *TaskManager) StartTask(id string, req GenerateRequest, cancel context.
 	task := &activeTask{
 		ID:            id,
 		Request:       req,
-		State:         TaskStateIdle,
-		Message:       "Bắt đầu tác vụ",
+		State:         TaskStateLaunching,
 		Progress:      0,
 		StartedAt:     time.Now(),
 		Cancel:        cancel,
 		SelectionChan: make(chan []int, 1),
+		DoneChan:      make(chan struct{}),
 	}
 	tm.activeTask = task
 	return task, nil
@@ -100,6 +103,14 @@ func (tm *TaskManager) EmitError(err error) {
 
 	tm.activeTask.State = TaskStateFailed
 	tm.activeTask.Message = err.Error()
+	tm.activeTask.Err = err
+	if tm.activeTask.DoneChan != nil {
+		select {
+		case <-tm.activeTask.DoneChan:
+		default:
+			close(tm.activeTask.DoneChan)
+		}
+	}
 
 	if tm.ctx != nil {
 		runtime.EventsEmit(tm.ctx, "browser-ai:error", map[string]string{
@@ -120,6 +131,14 @@ func (tm *TaskManager) EmitResult(result GenerateResult) {
 	tm.activeTask.State = TaskStateCompleted
 	tm.activeTask.Message = "Tác vụ hoàn thành thành công"
 	tm.activeTask.Progress = 100
+	tm.activeTask.Result = &result
+	if tm.activeTask.DoneChan != nil {
+		select {
+		case <-tm.activeTask.DoneChan:
+		default:
+			close(tm.activeTask.DoneChan)
+		}
+	}
 
 	if tm.ctx != nil {
 		runtime.EventsEmit(tm.ctx, "browser-ai:result", result)

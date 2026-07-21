@@ -22,13 +22,16 @@ type Service struct {
 	appContext context.Context
 	session    *BrowserSession
 	tm         *TaskManager
+	qm         *AIQueueManager
 }
 
 func NewService() *Service {
-	return &Service{
+	s := &Service{
 		session: NewBrowserSession(),
 		tm:      NewTaskManager(),
 	}
+	s.qm = NewAIQueueManager(s)
+	return s
 }
 
 func (s *Service) Startup(ctx context.Context) {
@@ -36,6 +39,7 @@ func (s *Service) Startup(ctx context.Context) {
 	defer s.mu.Unlock()
 	s.appContext = ctx
 	s.tm.SetContext(ctx)
+	s.qm.SetContext(ctx)
 }
 
 func (s *Service) Shutdown(ctx context.Context) {
@@ -109,6 +113,22 @@ func (s *Service) GetActiveTaskInfo() ActiveTaskInfo {
 		Progress: active.Progress,
 		Previews: active.Previews,
 	}
+}
+
+func (s *Service) EnqueueThumbnailTasks(tasks []ThumbnailTask) {
+	s.qm.Enqueue(tasks)
+}
+
+func (s *Service) CancelQueue() {
+	s.qm.Cancel()
+}
+
+func (s *Service) ClearQueue() {
+	s.qm.Clear()
+}
+
+func (s *Service) GetQueueStatus() QueueStatus {
+	return s.qm.GetStatus()
 }
 
 func (s *Service) CheckLogin(provider string) (LoginStatus, error) {

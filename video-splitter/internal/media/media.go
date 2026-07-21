@@ -6,6 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"os/exec"
 	"sort"
@@ -369,6 +372,117 @@ func ExtractFrame(ctx context.Context, inputPath string, timeSec float64, output
 		return fmt.Errorf("ffmpeg extract frame error: %v", err)
 	}
 	return nil
+}
+
+// IsBlackOrDarkImage giải mã file ảnh và tính độ sáng trung bình (Luminance) để xác định xem khung hình có bị đen/tối không
+func IsBlackOrDarkImage(imagePath string) (bool, error) {
+	f, err := os.Open(imagePath)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return false, err
+	}
+
+	bounds := img.Bounds()
+	width, height := bounds.Max.X - bounds.Min.X, bounds.Max.Y - bounds.Min.Y
+	if width <= 0 || height <= 0 {
+		return true, nil
+	}
+
+	var totalLum float64
+	var darkPixels int
+	var sampleCount int
+
+	step := 4
+	if width > 1000 || height > 1000 {
+		step = 8
+	}
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += step {
+		for x := bounds.Min.X; x < bounds.Max.X; x += step {
+			r, g, b, _ := img.At(x, y).RGBA()
+			r8, g8, b8 := float64(r>>8), float64(g>>8), float64(b>>8)
+			
+			lum := 0.299*r8 + 0.587*g8 + 0.114*b8
+			totalLum += lum
+			sampleCount++
+
+			if lum < 20.0 {
+				darkPixels++
+			}
+		}
+	}
+
+	if sampleCount == 0 {
+		return true, nil
+	}
+
+	avgLum := totalLum / float64(sampleCount)
+	darkRatio := float64(darkPixels) / float64(sampleCount)
+
+	if avgLum < 18.0 || (darkRatio > 0.85 && avgLum < 30.0) {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// ExtractClearFrame cắt 1 khung hình đẹp, tự động bỏ qua các khung hình bị đen/tối
+func ExtractClearFrame(ctx context.Context, inputPath string, duration float64, outputPath string) (string, error) {
+	var timestamps []float64
+
+	if duration > 0 {
+		timestamps = []float64{
+			duration * 0.30,
+			duration * 0.50,
+			duration * 0.70,
+			duration * 0.15,
+			0.5,
+		}
+	} else {
+		timestamps = []float64{1.0, 2.0, 0.5}
+	}
+
+	tmpPath := outputPath + ".tmp.jpg"
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+
+	var lastErr error
+	for _, ts := range timestamps {
+		if ts < 0 {
+			ts = 0.5
+		}
+		err := ExtractFrame(ctx, inputPath, ts, tmpPath)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		isDark, errDark := IsBlackOrDarkImage(tmpPath)
+		if errDark == nil && !isDark {
+			_ = os.Remove(outputPath)
+			errMove := os.Rename(tmpPath, outputPath)
+			if errMove == nil {
+				fmt.Printf("[ExtractClearFrame] Trích xuất khung hình rõ nét tại %.2fs cho %s\n", ts, outputPath)
+				return outputPath, nil
+			}
+		}
+	}
+
+	fallbackTs := 0.5
+	if duration > 0 {
+		fallbackTs = duration * 0.5
+	}
+	errFallback := ExtractFrame(ctx, inputPath, fallbackTs, outputPath)
+	if errFallback != nil && lastErr != nil {
+		return "", lastErr
+	}
+	return outputPath, nil
 }
 
 // LoadAllKeyframes dùng ffprobe để đọc toàn bộ danh sách keyframe pts_time của video.

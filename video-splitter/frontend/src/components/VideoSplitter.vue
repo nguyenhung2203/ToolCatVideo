@@ -783,6 +783,32 @@ onMounted(async () => {
     }
   })
 
+  // Trạng thái Hàng đợi AI Thumbnail
+  const aiQueueState = reactive({
+    total: 0,
+    completed: 0,
+    failed: 0,
+    current: 0,
+    isRunning: false,
+    tasks: [] as any[]
+  })
+
+  EventsOn('browser-ai:queue-progress', (status: any) => {
+    aiQueueState.total = status.total || 0
+    aiQueueState.completed = status.completed || 0
+    aiQueueState.failed = status.failed || 0
+    aiQueueState.current = status.current || 0
+    aiQueueState.isRunning = status.isRunning || false
+    aiQueueState.tasks = status.tasks || []
+
+    if (status.isRunning) {
+      exportStatusText.value = `🔥 [Hàng Đợi AI] Đang tự động tạo Thumbnail (${status.completed + status.failed}/${status.total})...`
+    } else if (status.total > 0 && status.completed + status.failed === status.total) {
+      exportStatusText.value = `✓ [Hàng Đợi AI] Đã hoàn thành toàn bộ ${status.completed} Thumbnail AI!`
+      showToast(`Đã tạo xong ${status.completed} Thumbnail AI bằng Google Flow!`, 'success')
+    }
+  })
+
   // Đếm ngược thời gian hoàn tất & Cập nhật tiến độ mượt mà (interpolation)
   timerInterval = setInterval(() => {
     const now = Date.now()
