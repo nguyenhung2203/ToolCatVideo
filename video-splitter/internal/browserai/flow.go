@@ -460,23 +460,12 @@ func GenerateFlowVideo(
 			}
 		}
 
-		logDebug("Bắt đầu điền prompt vào ô nhập liệu: '%s'...", req.Prompt)
-		tm.EmitStatus(TaskStateSubmitting, "Đang điền prompt...", 35)
-		err = FillFlowPrompt(page, promptInput, req.Prompt)
-		if err != nil {
-			logDebug("Lỗi khi điền prompt: %v", err)
-			finalErr = fmt.Errorf("fill prompt: %w", err)
-			continue
-		}
-		logDebug("Đã điền prompt xong thành công!")
-
+		// 1. Upload ảnh trước (nếu có) để thẻ ảnh đính kèm vào ô prompt trước
 		if len(req.InputImagePaths) > 0 {
-			logDebug("Phát hiện yêu cầu gửi kèm ảnh (%d ảnh). Đang upload ảnh...", len(req.InputImagePaths))
-			// Tìm file input
+			logDebug("Phát hiện yêu cầu gửi kèm ảnh (%d ảnh). Đang upload ảnh trước...", len(req.InputImagePaths))
 			fileInput, errInput := page.Element("input[type=file]")
 			if errInput != nil {
 				logDebug("Không tìm thấy input[type=file] ẩn. Thử click nút '+' để kích hoạt...")
-				// Tìm nút +
 				addBtn, errAdd := page.ElementByJS(rod.Eval(`() => {
 					const buttons = Array.from(document.querySelectorAll('button'));
 					return buttons.find(btn => {
@@ -498,13 +487,32 @@ func GenerateFlowVideo(
 				if errSet != nil {
 					logDebug("Lỗi khi set file upload: %v", errSet)
 				} else {
-					logDebug("Đã upload %d ảnh thành công! Đang chờ 3 giây để upload hoàn tất...", len(req.InputImagePaths))
-					sleep(3000 * time.Millisecond) // Chờ ảnh upload xong và hiển thị trong ô prompt
+					logDebug("Đã upload %d ảnh thành công! Đang chờ 3.5 giây để thẻ ảnh đính kèm vào ô prompt...", len(req.InputImagePaths))
+					sleep(3500 * time.Millisecond) // Chờ ảnh upload xong và hiển thị trong ô prompt
 				}
 			} else {
 				logDebug("Không tìm thấy phần tử tải file lên trên Google Flow")
 			}
+
+			// Quét tìm lại ô prompt sau khi đính kèm ảnh
+			promptInput, err = FindFirstVisible(ctx, page, FlowSelectors.PromptInputs, 5*time.Second)
+			if err != nil {
+				finalErr = fmt.Errorf("không tìm thấy ô nhập liệu sau khi upload ảnh: %w", err)
+				continue
+			}
 		}
+
+		// 2. Điền văn bản prompt vào ô nhập liệu (sau khi đã đính kèm ảnh)
+		logDebug("Bắt đầu điền prompt vào ô nhập liệu: '%s'...", req.Prompt)
+		tm.EmitStatus(TaskStateSubmitting, "Đang điền prompt...", 35)
+		err = FillFlowPrompt(page, promptInput, req.Prompt)
+		if err != nil {
+			logDebug("Lỗi khi điền prompt: %v", err)
+			finalErr = fmt.Errorf("fill prompt: %w", err)
+			continue
+		}
+		logDebug("Đã điền prompt xong thành công!")
+		sleep(1000 * time.Millisecond)
 
 		logDebug("Bắt đầu thực hiện gửi prompt...")
 		tm.EmitStatus(TaskStateSubmitting, "Đang gửi prompt...", 40)

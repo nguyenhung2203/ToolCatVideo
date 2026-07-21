@@ -802,8 +802,10 @@ onMounted(async () => {
     aiQueueState.tasks = status.tasks || []
 
     if (status.isRunning) {
+      isMultiExportRunning.value = true
       exportStatusText.value = `🔥 [Hàng Đợi AI] Đang tự động tạo Thumbnail (${status.completed + status.failed}/${status.total})...`
     } else if (status.total > 0 && status.completed + status.failed === status.total) {
+      isMultiExportRunning.value = false
       exportStatusText.value = `✓ [Hàng Đợi AI] Đã hoàn thành toàn bộ ${status.completed} Thumbnail AI!`
       showToast(`Đã tạo xong ${status.completed} Thumbnail AI bằng Google Flow!`, 'success')
     }
@@ -1623,7 +1625,9 @@ const exportClips = async () => {
     showToast('Lỗi xuất video: ' + err, 'error')
   } finally {
     isExporting.value = false
-    isMultiExportRunning.value = false
+    if (!aiQueueState.isRunning) {
+      isMultiExportRunning.value = false
+    }
     exportStartTime.value = null
   }
 }
