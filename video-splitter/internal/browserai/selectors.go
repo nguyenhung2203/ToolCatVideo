@@ -107,6 +107,9 @@ var FlowSelectors = SelectorSet{
 	ErrorMarkers: []SelectorCandidate{
 		{Selector: ".error-toast"},
 		{Selector: ".error-alert"},
+		{Selector: "//*[@id=\"__next\"]/div[1]/div[4]/div[2]/div[2]/div/div/div[2]/div[1]/div[2]/div[2]/div/div/div[2]"},
+		{Selector: "//*[@id=\"__next\"]/div[1]/div[4]/div[2]/div[2]/div/div/div[2]/div[1]/div[2]/div[2]/div/div/div[1]"},
+		{Selector: "//*[@id=\"__next\"]/div[1]/div[4]/div[2]/div[2]/div/div/div[2]/div[1]/div[2]/div[2]/div/button"},
 	},
 }
 

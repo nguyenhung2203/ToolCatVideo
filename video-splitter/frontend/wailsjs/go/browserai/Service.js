@@ -6,12 +6,20 @@ export function Cancel(arg1) {
   return window['go']['browserai']['Service']['Cancel'](arg1);
 }
 
+export function CancelQueue() {
+  return window['go']['browserai']['Service']['CancelQueue']();
+}
+
 export function CheckLogin(arg1) {
   return window['go']['browserai']['Service']['CheckLogin'](arg1);
 }
 
 export function ClearBrowserProfile() {
   return window['go']['browserai']['Service']['ClearBrowserProfile']();
+}
+
+export function ClearQueue() {
+  return window['go']['browserai']['Service']['ClearQueue']();
 }
 
 export function CloseBrowser() {
@@ -22,12 +30,24 @@ export function ConfirmSelectedImages(arg1, arg2, arg3, arg4) {
   return window['go']['browserai']['Service']['ConfirmSelectedImages'](arg1, arg2, arg3, arg4);
 }
 
+export function EnqueueThumbnailTasks(arg1) {
+  return window['go']['browserai']['Service']['EnqueueThumbnailTasks'](arg1);
+}
+
 export function Generate(arg1) {
   return window['go']['browserai']['Service']['Generate'](arg1);
 }
 
+export function GetActiveTaskInfo() {
+  return window['go']['browserai']['Service']['GetActiveTaskInfo']();
+}
+
 export function GetBrowserStatus() {
   return window['go']['browserai']['Service']['GetBrowserStatus']();
+}
+
+export function GetQueueStatus() {
+  return window['go']['browserai']['Service']['GetQueueStatus']();
 }
 
 export function OpenGoogleAI(arg1, arg2) {
@@ -36,6 +56,10 @@ export function OpenGoogleAI(arg1, arg2) {
 
 export function OpenOutputFolder(arg1) {
   return window['go']['browserai']['Service']['OpenOutputFolder'](arg1);
+}
+
+export function SetQueueConcurrency(arg1) {
+  return window['go']['browserai']['Service']['SetQueueConcurrency'](arg1);
 }
 
 export function Shutdown(arg1) {

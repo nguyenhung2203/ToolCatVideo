@@ -117,9 +117,9 @@
                 Đã sinh xong! Chọn video muốn tải về máy
               </span>
             </div>
-            <button type="button" @click="toggleSelectAllPreviews" class="img-source-pill active" style="margin-left: auto; font-size: 11px; height: 28px;">
+            <button type="button" @click="toggleSelectAllPreviews" class="img-source-pill active" style="margin-left: auto; font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px;">
               {{ selectedPreviewIndexes.size === selectionPreviews.length ? 'Bỏ tất cả' : 'Chọn tất cả' }}
-              <span>({{ selectedPreviewIndexes.size }}/{{ selectionPreviews.length }})</span>
+              <span style="margin-left: 2px;">({{ selectedPreviewIndexes.size }}/{{ selectionPreviews.length }})</span>
             </button>
           </div>
 
@@ -223,57 +223,72 @@
 
         <!-- Success Preview panel -->
         <div v-else-if="state === 'completed' && result" class="completed-panel" style="display: flex; flex-direction: column; height: 100%; overflow: hidden; min-height: 0;">
-          <div class="preview-header">
-            <CheckCircle :size="20" class="success-check-icon" />
-            <span class="success-title">
-              {{ previewURLs.length > 1 ? `Đã tạo thành công ${previewURLs.length} file!` : `Đã tạo thành công file: ${result.fileName}` }}
-            </span>
+          <div class="preview-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; padding-bottom: 4px; flex-shrink: 0;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <CheckCircle :size="18" class="success-check-icon" />
+              <span class="success-title">
+                {{ (previewURLs.length > 0 ? previewURLs : (previewURL ? [previewURL] : [])).length > 1 ? `Đã tạo thành công ${(previewURLs.length > 0 ? previewURLs : [previewURL]).length} file!` : `Đã tạo thành công file: ${result.fileName}` }}
+              </span>
+            </div>
+            <button 
+              v-if="(previewURLs.length > 0 ? previewURLs : (previewURL ? [previewURL] : [])).length > 1" 
+              type="button" 
+              @click="toggleSelectAllCompleted" 
+              class="img-source-pill active" 
+              style="margin-left: auto; font-size: 11px; height: 26px; flex: none; width: auto; padding: 0 10px;"
+            >
+              {{ selectedCompletedIndexes.size === (previewURLs.length > 0 ? previewURLs : [previewURL]).length ? 'Bỏ tất cả' : 'Chọn tất cả' }}
+              <span style="margin-left: 2px;">({{ selectedCompletedIndexes.size }}/{{ (previewURLs.length > 0 ? previewURLs : [previewURL]).length }})</span>
+            </button>
           </div>
 
-          <!-- Previews Area -->
-          <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 10px 0;">
-            <!-- Single Media Preview -->
-            <div v-if="previewURLs.length <= 1" class="media-preview-container">
-              <video v-if="previewURL" :src="previewURL" class="preview-media" controls autoplay loop></video>
-              <div v-else class="preview-media flex-center" style="background: var(--wx-surface-sunken); flex-direction: column;">
-                <ImageIcon :size="48" style="color: var(--wx-text-muted);" />
-                <span style="font-size: var(--wx-fs-12); color: var(--wx-text-muted); margin-top: 8px;">Không thể tạo link xem trước cục bộ</span>
-              </div>
-            </div>
+          <!-- Previews Compact Grid Area with Drag-select & Card Selection -->
+          <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 10px 4px; width: 100%;">
+            <div
+              ref="gridRef"
+              class="img-grid"
+              @mousedown.left="onGridMouseDown"
+              style="position: relative; user-select: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; width: 100%; justify-items: center;"
+            >
+              <!-- Drag-select overlay box -->
+              <div v-if="dragBox.active" class="img-drag-box" :style="dragBoxStyle"></div>
 
-            <!-- Multiple Media Preview Grid -->
-            <div v-else class="media-preview-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; justify-items: center; width: 100%; margin: 10px 0;">
-              <div v-for="(pUrl, pIdx) in previewURLs" :key="pIdx" class="media-preview-card" style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 180px; background: var(--wx-glass-light-bg); backdrop-filter: blur(var(--wx-glass-light-blur)); border: 1px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 10px; box-shadow: var(--wx-shadow-md);">
+              <div 
+                v-for="(pUrl, pIdx) in (previewURLs.length > 0 ? previewURLs : (previewURL ? [previewURL] : []))" 
+                :key="pIdx" 
+                class="img-card" 
+                :class="{ selected: selectedCompletedIndexes.has(pIdx) }"
+                :data-preview-idx="pIdx"
+                @click="toggleCompletedImage(pIdx)"
+                style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 160px; background: var(--wx-glass-light-bg); backdrop-filter: blur(var(--wx-glass-light-blur)); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 6px; box-shadow: var(--wx-shadow-md); cursor: pointer; transition: all var(--wx-d-fast) var(--wx-ease-standard); position: relative;"
+              >
                 <video :src="pUrl" style="width: 100%; height: 160px; object-fit: cover; border-radius: var(--wx-radius-sm);" controls></video>
-                
-                <span style="font-size: 11px; margin-top: 8px; color: var(--wx-text-muted); word-break: break-all; text-align: center; font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; height: 32px; line-height: 16px;">
-                  {{ result.filePaths && result.filePaths[pIdx] ? getFilename(result.filePaths[pIdx]) : result.fileName }}
-                </span>
-                
-                <button @click="applyAsSourceVideo(result.filePaths[pIdx])" class="img-action-btn apply-btn" style="font-size: 11.5px; padding: 4px 8px; margin-top: 8px; background: var(--wx-brand-primary); color: var(--wx-text-inverse); border: none; height: 28px; border-radius: var(--wx-radius-sm); width: 100%; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;">
-                  🎬 Chọn video này
-                </button>
+
+                <!-- Checkmark Overlay Badge -->
+                <div v-if="selectedCompletedIndexes.has(pIdx)" class="img-card-check" style="position: absolute; top: 10px; right: 10px; background: var(--wx-brand-primary); color: var(--wx-text-inverse); border-radius: var(--wx-radius-full); width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; box-shadow: var(--wx-shadow-sm); border: 1px solid var(--wx-text-inverse); z-index: 10;">
+                  <Check :size="12" />
+                </div>
               </div>
             </div>
           </div>
 
-          <!-- File Details -->
-          <div class="file-details" style="flex-shrink: 0; padding-top: 8px; border-top: 1px solid var(--wx-border-default);">
-            <div v-if="previewURLs.length <= 1">Đường dẫn: <code>{{ result.filePath }}</code></div>
-            <div v-else>Thư mục lưu: <code>{{ outputDir }}</code></div>
-            <div>Kích thước file chính: <code>{{ formatSize(result.fileSize) }}</code></div>
-          </div>
+          <!-- Single Row Bottom Action & Info Bar -->
+          <div class="completed-actions" style="flex-shrink: 0; margin-top: 8px; display: flex; gap: 8px; align-items: center; width: 100%;">
+            <button @click="resetForm" class="img-dir-btn" style="height: 38px;">
+              <RefreshCw :size="12" style="margin-right: 4px;" /> Tạo lại
+            </button>
 
-          <!-- Quick Action Buttons -->
-          <div class="completed-actions" style="flex-shrink: 0; margin-top: 10px;">
-            <button @click="resetForm" class="img-dir-btn">
-              <RefreshCw :size="12" /> Tạo lại
-            </button>
-            <button v-if="previewURLs.length <= 1" @click="applyAsSourceVideo(result.filePath)" class="img-action-btn apply-btn">
-              🎬 Thêm vào video nguồn
-            </button>
-            <button @click="openFolder" class="img-dir-btn">
-              <FolderOpen :size="12" /> Mở thư mục
+            <span style="font-size: var(--wx-fs-12); color: var(--wx-text-muted); flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              <template v-if="(previewURLs.length > 0 ? previewURLs : [previewURL]).length <= 1">
+                Đường dẫn: <code style="color: var(--wx-brand-accent);">{{ result.filePath }}</code> ({{ formatSize(result.fileSize) }})
+              </template>
+              <template v-else>
+                Lưu vào: <code style="color: var(--wx-brand-accent);">{{ outputDir }}</code> (Đã chọn {{ selectedCompletedIndexes.size }}/{{ (previewURLs.length > 0 ? previewURLs : [previewURL]).length }} video - {{ formatSize(result.fileSize) }})
+              </template>
+            </span>
+
+            <button @click="openFolder" class="img-dir-btn" style="height: 38px;">
+              <FolderOpen :size="12" style="margin-right: 4px;" /> Mở thư mục
             </button>
           </div>
         </div>
@@ -288,6 +303,8 @@ import { useBrowserAI } from './composables/useBrowserAI'
 import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, CheckCircle, RefreshCw, ImageIcon, Check, Download } from 'lucide-vue-next'
 // @ts-ignore
 import { SelectFolder, GetStreamURL, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
+// @ts-ignore
+import { OpenOutputFolder } from '../../wailsjs/go/browserai/Service'
 
 const mediaType = 'video'
 
@@ -329,6 +346,24 @@ const {
 } = useBrowserAI(showToast)
 
 const selectedPreviewIndexes = ref<Set<number>>(new Set())
+const selectedCompletedIndexes = ref<Set<number>>(new Set([0]))
+
+function toggleCompletedImage(idx: number) {
+  if (selectedCompletedIndexes.value.has(idx)) {
+    selectedCompletedIndexes.value.delete(idx)
+  } else {
+    selectedCompletedIndexes.value.add(idx)
+  }
+}
+
+function toggleSelectAllCompleted() {
+  const list = (previewURLs.value && previewURLs.value.length > 0) ? previewURLs.value : (previewURL.value ? [previewURL.value] : [])
+  if (selectedCompletedIndexes.value.size === list.length) {
+    selectedCompletedIndexes.value.clear()
+  } else {
+    selectedCompletedIndexes.value = new Set(list.map((_, i) => i))
+  }
+}
 
 // Drag-to-select logic
 const gridRef = ref<HTMLElement | null>(null)
@@ -397,7 +432,7 @@ function onGridMouseDown(e: MouseEvent) {
   if (!grid) return
 
   dragMode = null
-  dragStartSelectedIndices = new Set(selectedPreviewIndexes.value)
+  dragStartSelectedIndices = new Set(state.value === 'completed' ? selectedCompletedIndexes.value : selectedPreviewIndexes.value)
 
   const rect = grid.getBoundingClientRect()
   dragBox.x1 = e.clientX - rect.left + grid.scrollLeft
@@ -451,7 +486,7 @@ function updateSelectionFromDrag() {
   if (selX2 - selX1 < 4 && selY2 - selY1 < 4) return
 
   const gridRect = grid.getBoundingClientRect()
-  const currentSet = selectedPreviewIndexes.value
+  const currentSet = state.value === 'completed' ? selectedCompletedIndexes.value : selectedPreviewIndexes.value
 
   const cards = grid.querySelectorAll<HTMLElement>('[data-preview-idx]')
   cards.forEach(card => {
@@ -497,6 +532,11 @@ const outputDir = ref('')
 const fileName = ref('')
 const previewURL = ref('')
 const previewURLs = ref<string[]>([])
+
+watch(() => result.value, () => {
+  const list = (previewURLs.value && previewURLs.value.length > 0) ? previewURLs.value : (previewURL.value ? [previewURL.value] : [])
+  selectedCompletedIndexes.value = new Set(list.map((_, i) => i))
+}, { immediate: true })
 
 interface InputImage {
   id: string
@@ -725,17 +765,6 @@ const startGeneration = async () => {
     finalFileName = `ai_video_${Date.now()}`
   }
 
-  let delayVal = 1.0
-  try {
-    const settingsStr = await GetGlobalSettings()
-    if (settingsStr) {
-      const gSettings = JSON.parse(settingsStr)
-      if (gSettings.browserAIDelay !== undefined) {
-        delayVal = parseFloat(gSettings.browserAIDelay)
-      }
-    }
-  } catch (_) {}
-
   const filePaths = inputImages.value.map(i => i.path).filter(p => p !== '')
   const base64s = inputImages.value.map(i => i.base64).filter(b => b !== '')
 
@@ -752,7 +781,6 @@ const startGeneration = async () => {
     batchSize: selectedBatchSize.value,
     confirmBeforeCreate: confirmBeforeCreate.value,
     resolution: '1K',
-    delaySecond: delayVal,
     inputImagePaths: filePaths,
     inputImageBase64s: base64s
   })
@@ -766,14 +794,15 @@ const applyAsSourceVideo = (path?: string) => {
 }
 
 const openFolder = async () => {
-  if (result.value && result.value.filePath) {
+  const dir = outputDir.value || (result.value && (result.value.filePath || (result.value.filePaths && result.value.filePaths[0])))
+  if (dir) {
     try {
-      const dir = outputDir.value
-      // @ts-ignore
-      import('../../wailsjs/go/browserai/Service').then(async (srv) => {
-        await srv.OpenOutputFolder(dir)
-      })
-    } catch (_) {}
+      await OpenOutputFolder(dir)
+    } catch (err) {
+      showToast("Lỗi mở thư mục: " + err, "error")
+    }
+  } else {
+    showToast("Không tìm thấy đường dẫn thư mục", "warning")
   }
 }
 

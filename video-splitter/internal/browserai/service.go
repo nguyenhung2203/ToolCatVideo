@@ -22,13 +22,16 @@ type Service struct {
 	appContext context.Context
 	session    *BrowserSession
 	tm         *TaskManager
+	qm         *AIQueueManager
 }
 
 func NewService() *Service {
-	return &Service{
+	s := &Service{
 		session: NewBrowserSession(),
 		tm:      NewTaskManager(),
 	}
+	s.qm = NewAIQueueManager(s)
+	return s
 }
 
 func (s *Service) Startup(ctx context.Context) {
@@ -36,6 +39,7 @@ func (s *Service) Startup(ctx context.Context) {
 	defer s.mu.Unlock()
 	s.appContext = ctx
 	s.tm.SetContext(ctx)
+	s.qm.SetContext(ctx)
 }
 
 func (s *Service) Shutdown(ctx context.Context) {
@@ -87,6 +91,50 @@ func (s *Service) GetBrowserStatus() BrowserStatus {
 		CurrentProvider: currentProvider,
 		ProfileDir:      profileDir,
 	}
+}
+
+type ActiveTaskInfo struct {
+	TaskID   string    `json:"taskId"`
+	State    TaskState `json:"state"`
+	Message  string    `json:"message"`
+	Progress int       `json:"progress"`
+	Previews []string  `json:"previews"`
+}
+
+func (s *Service) GetActiveTaskInfo() ActiveTaskInfo {
+	active := s.tm.GetActiveTask()
+	if active == nil {
+		return ActiveTaskInfo{State: TaskStateIdle}
+	}
+	return ActiveTaskInfo{
+		TaskID:   active.ID,
+		State:    active.State,
+		Message:  active.Message,
+		Progress: active.Progress,
+		Previews: active.Previews,
+	}
+}
+
+func (s *Service) EnqueueThumbnailTasks(tasks []ThumbnailTask) {
+	s.qm.Enqueue(tasks)
+}
+
+func (s *Service) CancelQueue() {
+	s.qm.Cancel()
+}
+
+func (s *Service) ClearQueue() {
+	s.qm.Clear()
+}
+
+func (s *Service) GetQueueStatus() QueueStatus {
+	return s.qm.GetStatus()
+}
+
+// SetQueueConcurrency đặt số luồng trình duyệt (tab) chạy song song cho Hàng Đợi AI.
+// Kẹp trong [1, MaxBrowserConcurrency]. Chỉ áp dụng cho lần chạy hàng đợi kế tiếp.
+func (s *Service) SetQueueConcurrency(n int) {
+	s.qm.SetConcurrency(n)
 }
 
 func (s *Service) CheckLogin(provider string) (LoginStatus, error) {
@@ -273,7 +321,7 @@ func (s *Service) Generate(req GenerateRequest) (TaskInfo, error) {
 		if req.Provider == ProviderGemini {
 			filePaths, genErr = GenerateGeminiImage(taskCtx, s.session, s.tm, req)
 		} else {
-			filePaths, genErr = GenerateFlowVideo(taskCtx, s.session, s.tm, req)
+			filePaths, genErr = GenerateFlowVideo(taskCtx, s.session, nil, s.tm, req, nil)
 		}
 
 		if genErr != nil {
@@ -285,15 +333,17 @@ func (s *Service) Generate(req GenerateRequest) (TaskInfo, error) {
 			return
 		}
 
-		// Read file size of the primary/first file
+		// Read file size of all generated files
 		var size int64
 		primaryPath := ""
 		primaryName := ""
 		if len(filePaths) > 0 {
 			primaryPath = filePaths[0]
 			primaryName = filepath.Base(primaryPath)
-			if info, statErr := os.Stat(primaryPath); statErr == nil {
-				size = info.Size()
+			for _, p := range filePaths {
+				if info, statErr := os.Stat(p); statErr == nil {
+					size += info.Size()
+				}
 			}
 		}
 
@@ -423,4 +473,42 @@ func (s *Service) ConfirmSelectedImages(
 	}
 
 	return movedPaths, nil
+}
+
+// decodeBase64ImagesToTemp giải mã danh sách ảnh base64 (data URL từ clipboard)
+// ra file tạm và trả về đường dẫn. idPrefix để đặt tên file duy nhất cho mỗi task
+// tránh nhiều worker song song ghi đè lên nhau. Trả về cả hàm cleanup xóa file tạm.
+func decodeBase64ImagesToTemp(idPrefix string, base64s []string) (paths []string, cleanup func()) {
+	var decoded []string
+	for idx, b64 := range base64s {
+		if b64 == "" {
+			continue
+		}
+		parts := strings.Split(b64, ",")
+		base64Data := b64
+		ext := ".png"
+		if len(parts) > 1 {
+			base64Data = parts[1]
+			header := parts[0]
+			if strings.Contains(header, "image/jpeg") || strings.Contains(header, "image/jpg") {
+				ext = ".jpg"
+			} else if strings.Contains(header, "image/gif") {
+				ext = ".gif"
+			}
+		}
+		data, errDecode := base64.StdEncoding.DecodeString(base64Data)
+		if errDecode != nil {
+			continue
+		}
+		tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("pasted_img_%s_%d%s", idPrefix, idx, ext))
+		if errWrite := os.WriteFile(tempFile, data, 0644); errWrite == nil {
+			decoded = append(decoded, tempFile)
+		}
+	}
+	cleanup = func() {
+		for _, p := range decoded {
+			_ = os.Remove(p)
+		}
+	}
+	return decoded, cleanup
 }

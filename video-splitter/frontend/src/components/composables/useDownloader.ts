@@ -1,5 +1,5 @@
 import { ref, computed, watch, type Ref } from 'vue'
-import { ProbeOnlineURL, DownloadOnlineVideos, CancelDownload, GetDefaultDownloadDir, SelectFolder } from '../../../wailsjs/go/main/App'
+import { ProbeOnlineURL, DownloadOnlineVideos, CancelDownload, GetDefaultDownloadDir, SelectFolder, GetGlobalSettings, SaveGlobalSettings } from '../../../wailsjs/go/main/App'
 import { downloader } from '../../../wailsjs/go/models'
 import { EventsOn } from '../../../wailsjs/runtime/runtime'
 
@@ -59,7 +59,44 @@ export function useDownloader(
   const dlMaxCount = ref(30)         // giới hạn số video khi dò profile/playlist
   const dlFetchOrder = ref<DlFetchOrder>('newest')  // thứ tự lấy: mới nhất / cũ nhất
 
-  // Tự động nhận diện loại link
+  const isSettingsLoaded = ref(false)
+
+  const saveSettings = async () => {
+    if (!isSettingsLoaded.value) return
+    try {
+      const settingsStr = await GetGlobalSettings()
+      let gSettings: any = {}
+      if (settingsStr) {
+        gSettings = JSON.parse(settingsStr)
+      }
+      gSettings.videoDownloaderConfig = {
+        downloadDir: downloadDir.value,
+        cookieBrowser: cookieBrowser.value,
+        dlLinkType: dlLinkType.value,
+        searchSource: searchSource.value,
+        dlMaxCount: dlMaxCount.value,
+        dlFetchOrder: dlFetchOrder.value
+      }
+      await SaveGlobalSettings(JSON.stringify(gSettings))
+    } catch (e) {
+      console.error('Lỗi tự động lưu VideoDownloaderConfig:', e)
+    }
+  }
+
+  let saveTimeout: any = null
+  const triggerSaveSettings = () => {
+    if (!isSettingsLoaded.value) return
+    if (saveTimeout) clearTimeout(saveTimeout)
+    saveTimeout = setTimeout(() => {
+      saveSettings()
+    }, 800)
+  }
+
+  watch([downloadDir, cookieBrowser, dlLinkType, searchSource, dlMaxCount, dlFetchOrder], () => {
+    triggerSaveSettings()
+  })
+
+  // === Computed ===
   const detectedLinkType = computed((): DlLinkType => {
     const url = downloadUrl.value.trim().toLowerCase()
     if (!url) return 'auto'
@@ -153,6 +190,26 @@ export function useDownloader(
 
   const openDownloadPanel = async () => {
     showDownloadPanel.value = true
+    try {
+      const settingsStr = await GetGlobalSettings()
+      if (settingsStr) {
+        const gSettings = JSON.parse(settingsStr)
+        if (gSettings.videoDownloaderConfig) {
+          const cfg = gSettings.videoDownloaderConfig
+          if (cfg.downloadDir) downloadDir.value = cfg.downloadDir
+          if (cfg.cookieBrowser !== undefined) cookieBrowser.value = cfg.cookieBrowser
+          if (cfg.dlLinkType) dlLinkType.value = cfg.dlLinkType
+          if (cfg.searchSource) searchSource.value = cfg.searchSource
+          if (cfg.dlMaxCount) dlMaxCount.value = cfg.dlMaxCount
+          if (cfg.dlFetchOrder) dlFetchOrder.value = cfg.dlFetchOrder
+        }
+      }
+    } catch (e) {
+      console.error('Lỗi nạp cấu hình VideoDownloaderConfig:', e)
+    }
+
+    isSettingsLoaded.value = true
+
     if (!downloadDir.value) {
       try { downloadDir.value = await GetDefaultDownloadDir() } catch (_) {}
     }

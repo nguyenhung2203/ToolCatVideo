@@ -396,7 +396,6 @@ const failedThumbs = ref<Set<string>>(new Set())
     <!-- ── Footer ──────────────────────────────────── -->
     <div class="dl-footer">
       <div class="dl-dir-row">
-        <FolderOpen :size="14" class="dl-dir-icon" />
         <label class="dl-dir-label">Lưu vào:</label>
         <input v-model="downloadDir" type="text" class="dl-dir-input" readonly />
         <button @click="pickDownloadDir" class="btn dl-dir-btn" title="Chọn thư mục">

@@ -25,26 +25,54 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
     ].includes(taskState.value)
   })
 
-  // Sync browser status
+  // Sync browser status & active task info
   const updateBrowserStatus = async () => {
     try {
       const status = await BrowserAIService.GetBrowserStatus()
       browserOpen.value = status.isOpen
       browserProvider.value = status.currentProvider
+
+      // Sync active task from backend if Vue component re-rendered
+      if (typeof (BrowserAIService as any).GetActiveTaskInfo === 'function') {
+        const activeInfo = await (BrowserAIService as any).GetActiveTaskInfo()
+        if (activeInfo && activeInfo.state && activeInfo.state !== 'idle') {
+          taskId.value = activeInfo.taskId || taskId.value
+          taskState.value = activeInfo.state
+          if (activeInfo.message) message.value = activeInfo.message
+          if (activeInfo.progress) progress.value = activeInfo.progress
+          if (activeInfo.previews && activeInfo.previews.length > 0) {
+            selectionPreviews.value = activeInfo.previews
+          }
+        }
+      }
     } catch (_) {}
+  }
+
+  const getEventTaskId = (event: any) => {
+    return event?.taskId || event?.TaskID || ""
+  }
+
+  const matchesCurrentTask = (event: any) => {
+    const evId = getEventTaskId(event)
+    if (!taskId.value && evId) {
+      taskId.value = evId
+      return true
+    }
+    return !evId || evId === taskId.value
   }
 
   // Wails Event Handlers
   const handleStatus = (event: any) => {
-    if (event.taskId === taskId.value) {
-      taskState.value = event.state
-      message.value = event.message
-      progress.value = event.progress
+    if (matchesCurrentTask(event)) {
+      const evState = event.state || event.State
+      if (evState) taskState.value = evState
+      if (event.message !== undefined || event.Message !== undefined) message.value = event.message || event.Message
+      if (event.progress !== undefined || event.Progress !== undefined) progress.value = event.progress !== undefined ? event.progress : event.Progress
     }
   }
 
   const handleResult = (event: any) => {
-    if (event.taskId === taskId.value) {
+    if (matchesCurrentTask(event)) {
       taskState.value = "completed"
       progress.value = 100
       message.value = "Tác vụ hoàn thành!"
@@ -55,17 +83,18 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
   }
 
   const handleError = (event: any) => {
-    if (event.taskId === taskId.value) {
+    if (matchesCurrentTask(event)) {
       taskState.value = "failed"
-      errorMsg.value = event.message
-      message.value = "Lỗi: " + event.message
-      showToast("Tạo nội dung AI thất bại: " + event.message, "error")
+      const msg = event.message || event.Message || String(event)
+      errorMsg.value = msg
+      message.value = "Lỗi: " + msg
+      showToast("Tạo nội dung AI thất bại: " + msg, "error")
       updateBrowserStatus()
     }
   }
 
   const handleLoginRequired = (event: any) => {
-    if (event.taskId === taskId.value) {
+    if (matchesCurrentTask(event)) {
       taskState.value = "login_required"
       message.value = "Yêu cầu đăng nhập tài khoản Google."
       showToast("Vui lòng hoàn tất đăng nhập tài khoản Google trên Chrome.", "warning")
@@ -74,11 +103,11 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
   }
 
   const handleSelectionRequired = (event: any) => {
-    if (event.taskId === taskId.value) {
+    if (matchesCurrentTask(event)) {
       taskState.value = "selection_required"
       message.value = "Vui lòng chọn các ảnh bạn muốn tải về máy."
       progress.value = 75
-      selectionPreviews.value = event.previews || []
+      selectionPreviews.value = event.previews || event.Previews || []
       showToast("Đã tạo ảnh xong! Hãy tích chọn những ảnh bạn muốn tải.", "info")
       updateBrowserStatus()
     }
@@ -181,11 +210,12 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
         inputImagePath: req.inputImagePath || "",
         inputImageBase64: req.inputImageBase64 || "",
         inputImagePaths: req.inputImagePaths || [],
-        inputImageBase64s: req.inputImageBase64s || []
+        inputImageBase64s: req.inputImageBase64s || [],
+        logPrefix: ""
       })
 
       taskId.value = taskInfo.taskId
-      if (taskInfo.state && taskInfo.state !== 'idle') {
+      if (taskInfo.state && taskInfo.state !== 'idle' && taskState.value === 'launching') {
         taskState.value = taskInfo.state
       }
       if (taskInfo.message) {

@@ -1536,6 +1536,18 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: var(--wx-space-3);
+  position: relative;
+}
+
+.clip-drag-box {
+  position: absolute;
+  border: 1.5px solid var(--accent-color, #3b82f6);
+  background: color-mix(in srgb, var(--accent-color, #3b82f6) 18%, transparent);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 100;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent-color, #3b82f6) 40%, transparent);
+  backdrop-filter: blur(2px);
 }
 
 .clip-modern-card {
@@ -2022,23 +2034,24 @@
 /* ── Export Publisher Bar ───────────────────────────────── */
 .clips-export-publisher-bar {
   position: fixed;
-  bottom: 20px;
+  bottom: 16px;
   left: 50%;
   transform: translateX(-50%);
-  width: calc(100% - 40px);
-  max-width: 1300px;
+  width: calc(100% - 24px);
+  max-width: 1550px;
   z-index: var(--wx-z-sticky, 100);
-  background: var(--wx-glass-heavy-bg, color-mix(in srgb, #1e293b 90%, transparent));
+  background: var(--wx-glass-heavy-bg, color-mix(in srgb, #1e293b 92%, transparent));
   backdrop-filter: blur(16px);
   border: 1px solid var(--wx-border-default);
   border-radius: var(--wx-radius-lg);
-  padding: var(--wx-space-3) var(--wx-space-5);
+  padding: 8px 16px;
   box-shadow: var(--wx-shadow-2xl);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: var(--wx-space-4);
+  gap: 12px;
   animation: slideUpBar var(--d-normal) var(--wx-ease-bounce, cubic-bezier(0.34, 1.56, 0.64, 1)) both;
+  box-sizing: border-box;
 }
 
 @keyframes slideUpBar {
@@ -2120,7 +2133,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all 150ms ease;
+  transition: all var(--wx-d-fast) var(--wx-ease-standard);
   flex-shrink: 0;
   box-sizing: border-box;
 }

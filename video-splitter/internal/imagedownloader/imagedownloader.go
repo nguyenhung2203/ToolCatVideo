@@ -77,7 +77,7 @@ func addCommonHeaders(req *http.Request) {
 // ─── SEARCH DISPATCHER ─────────────────────────────────────────────────────────
 
 // SearchImages tìm kiếm ảnh từ nguồn được chỉ định.
-// source: "duckduckgo" | "pixabay" | "unsplash" | "pexels"
+// source: "duckduckgo" | "pinterest" | "pixabay" | "unsplash" | "pexels"
 // apiKey: API key cho Pixabay/Unsplash/Pexels (bỏ trống nếu không cần)
 func SearchImages(ctx context.Context, query string, source string, apiKey string, maxCount int) (*ImageSearchResult, error) {
 	if maxCount <= 0 {
@@ -89,6 +89,8 @@ func SearchImages(ctx context.Context, query string, source string, apiKey strin
 	}
 
 	switch source {
+	case "pinterest":
+		return searchPinterest(ctx, query, apiKey, maxCount)
 	case "pixabay":
 		return searchPixabay(ctx, query, apiKey, maxCount)
 	case "unsplash":
@@ -261,6 +263,432 @@ func searchDuckDuckGo(ctx context.Context, query string, maxCount int) (*ImageSe
 
 	return &ImageSearchResult{
 		Source:  "duckduckgo",
+		Query:   query,
+		Total:   len(entries),
+		Entries: entries,
+	}, nil
+}
+
+// ─── PINTEREST SEARCH ──────────────────────────────────────────────────────────
+
+func findAndExtractPins(data interface{}, cb func(map[string]interface{})) {
+	switch v := data.(type) {
+	case map[string]interface{}:
+		if _, hasImages := v["images"]; hasImages {
+			cb(v)
+		}
+		for _, child := range v {
+			findAndExtractPins(child, cb)
+		}
+	case []interface{}:
+		for _, item := range v {
+			findAndExtractPins(item, cb)
+		}
+	}
+}
+
+func extractCSRFToken(cookieStr string) string {
+	re := regexp.MustCompile(`csrftoken=([a-zA-Z0-9_-]+)`)
+	m := re.FindStringSubmatch(cookieStr)
+	if len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
+const defaultPinterestCookie = `csrftoken=169a70558a5447a815243ce08ee3c915; _b="AZbju7svdUxC0Jl5KT4PvYBgyFr8oAxRW8i5ou4Gf8gVQuLs9W32zJgdee5KjQhOaMo="; _routing_id="07489393-6845-4e41-bd08-e194c3ed193d"; sessionFunnelEventLogged=1; _auth=1; _pinterest_sess=TWc9PSZoTGtzVWVicS8yYXR0Z09mRTdqTU5uemk0T3ZCaU13dzFTMzNuVjNyeHB1bzBjaFVwalBQYm9FUi9lekpzNCs5QkFJNGMxVUNDbEhuQU1XallXODJxMTNITXcwSHpuYVd2dXB4Y1JxK1pzOHdrUmtxQWlDd2dZMUxFM21jVkIrZnBkY1VxcHpuRUg1QXNodEJVRU83dVVsTEFvK1plaWhHK3kwV1RtdXRYejF4aEJOaWtua1hNMHpUNWRrWmdncjVMU21ZSFVkeTJhT01PdWpKL0pDdEY5cWtJSWtQeFBQaktNQlhxWExrd1VsamwvdytCcWZobXZTdG1HK25VaHFGclBieDcydUFsaytueGNkWG9QYkQ4N0ZXelZEa20yUGJ3WGcyWkIxTzBzQ0dCTlRKRDZqUW1TZUlmdXExSWxpdWNheHlDU1YyYmF4UU53ZEVkWUlqSkx4clpFTG84R1JqNEo0TGh1MGRMUktZY21wODBDOEw4bWl2RU5NNFpjOW1RWDNhVk1Pb1lseFVhbXFzUnl5eG95Tnk2eFlrUk5DelFwbThNWk8vMitTcXc1SDJJTlk2ZkRBdE9XOGhJRXRQY2VjMU5kcCt1dnJmVDNIbjhYakdraHJqMitDQ3dVbHpqYUp3RDVEaTE5RTVTbFhWNFNZQzJjQjgvKzNxSUxNU1FMdndlUmU2Q3pzcXNIbjFPQjBuaTNDbXQrRklFekJ5UHJYTG0vSlNQM2RGOTZSMjd3VVpBMDBrcnNPajV2NFgvM0pxWEsvR3lycUlNeGZnZ3VqRThsOEhaUzJvalRsTDdwaEtoS3I4cUxwNXJFYUd2VTNPOGoyNEplNXlyTDk2SUVWc013SjBDNFI4MkNFaUQzYUZXMVNDYUplcWFpR3g4eXhJVHgwMXpxWGw2WCszcVhKZDVpUHJ4cnZqdEdtYnZKQ0w3SzQzU2ZKS3ZkdXZpZks3OVltQkdxRUk0VDBCZjFOcElRbUgxOENzU2dYSHVhb094VDdGVnV1cElnZ1lpZFFhM1JLczJtLy8wcGtVbGlEUDdrZVFYa1VwTm5odzdOamYxWmRqejM1a1J3QjV0VHFMbVg0bWNzSnNGVGxjWmJIczUrWjdBTG40ZFFBeFhvc2p0a2NaL0Z4Mnh3bzJHclNIMEordVExbUZOQVUzNFdReCtVU1VuTzFXdnNUd09jWVF0d0UvUVQyR29Lb0szbTE1UFI4S0lRRmlENU8xaEViNC9UZjMrd0U4Q1Jxb25mM1l3bytOYzJWWkdRd0JLbHZ4VG5ZYXhQR0F3dStQMlhPSEdSNFJwRmlMSnI3SElYK3ZBbVVqbEFFNHJTL2pLd2JESWhJN2ppR2NSVWxGeXpCTUthd3JlcW15TWg3bW1KaUkyQkVQeFU0ejlKKzZldGVpamswcHFQMjN5N0daMCtFOTM2VC9KbnpVTWI2OUVxMXdwRk5jTHo5dHpLRXg3VklHcEd1SysvQ3Q3T3J1V2NPUHFxMitVL1hWaUJSUlg3QnJ0S0dLOEZBRXBNRDV5UHJuTzFKd1c4OWVHR0dEKzJiaEQ0RCswNWZDRlIwcXFEcUc0N1lXb2poeHdUam05QTQwYWVsR3ZhUTFRdEZwdDh1Z3Qwd2YxOE9ncnlaRW5QVmYxWTUxc0VaV0xCekowUWQvM0tTblpjZHZ0bGFiQXBvMHROL0F4b0w2M0lpcnBlYVpyQXFrZjVGRTFHakhtamVTQmNhUSsyRE1VN0NYak9wcXdGQVUyNk9JY0t0RjV0VXBqOFo1NmUvZUp6TkomaDh4UUtRNEpONWRTTzFuMXJQL0VyeWhJVVdvPQ==; __Secure-s_a=UmV5d3Joc204OFNINUVGeExhajNaV0pybzhqeENtZTA4Z05yVS9FVWtrVmI5dVFYSkJMckR6OWloNUFHbXEwei9SRGRTYjRaYnZKek5qdmsrdVovbW5wTFUwVUx1YndlZDNDS20wOG1pSU84cTdkUzd4RjlrdlA2L1V4T2Jsd0ErdlZJNmM4dXpCUmYzWVVUcVVUMGFpOXlCYkNnNDZaWGpaZ21LNW8xQXlWZHZEWGo4VDRoQUF1M2RZVEtDM3JpYm8wWXh0cklleW91UXNMekdtbXA2V3NaMDZYNmR5MU1uQ1VWRFlTZ3Vja3hvODh6bStnajFHbEZOY2U1LzhReWxSS3FscUdGcG5TZHRwTTRCTG5FNlpoeWh0V2JGRlQzZ1B1UmRXN0llaWsvVUltajUwMStvOVNyWGhaK09JZVlGOVEvY2ZacmY4ZjArVmEwUHhQQXFjZi9jQ0pPRjlUeWxFWGZYTEVMbHNPa0NTWTk1OFp1WVZPa1FZR2NYcEFrVlFHVWxwb29FSFlVMlhSSkJEZytUdGhYYW5HcUxtWmhWbjdHVzNJZS92d2hON0FFTEFCM3pjTUZQY2g4TXNFMzRFd0cwUm5oU3R3ZkkvVldWbmFJSlQzS0D3QnQ5SlpkTUVleUN6ZnFyUlFkelJ0TVVlVjltM2VqME9RSFVsc0tEeUxPd1pja3NhKzh1YUNCSFE4RklSeGdaZms2NHQyYWNuMkh0QWc3ZXFaQk15aVpiT0NsTnpTUFhrOFNuN0hFUzRMQXVYbXdScCs2ck9pNnZLQUpsaytsMmpLSER0QzZKbFcxZ01Gck5MVm44LzVxYSt0TkpKc3h4K1p6Y2NUWG5zSnBJWXlwR2ZmdHRkWnppS1pIOUJsNUE1aXY3VVJ1WEloVEVtV3FkSm5GY2ZBK005M2VlQkE3a3Z1b2RCTnZxVENnYkxvNktmSC9hd0Y4WXdQR1FjUWViN2krWTJzRFM3V2JSSDZBcVRFaExRRUY1aTVXZU9CSVJSa2FPWncxODZEc1d1dGVFOUZCaGxqUlZjQ1ZocnBiTkhLYTQ4cFBvVWhXeHQ1RjVQcUlnekFWTjgxSmJZaE5IVUFLOEVEaVZiblRDbkc3cGlkU1QzR2lvQWNuMHc0b0lNZlpuTmg5YU5HNVE4aktJMUlwNVZKTWpCZ1VGWFY5TmhCUGxqdWdaNlBEZnpVa3pYT3RLSk1mNHBuSmRreXkyQkpCdXZqbXdZTldkR3UxRm10WXgzYzRySmVhbEgzUlR4bW01ck9OT2t3UDlSVkVFRWFvbDVDYkg1bCtQMDJXcjl5dUZpelk3Q3JMTkpldjdhMD0mTlUvcmlEcmNzdUlqSE9oOG9xc1Y4dE0vNVlrPQ==; ujr=1; usersync=%7B%22magnite%22%3A%7B%22id%22%3A%22MQ8YSJ2Z-M-F64B%22%2C%22ts%22%3A1784623031839%7D%7D`
+
+// searchPinterest tìm kiếm ảnh từ Pinterest (hỗ trợ HTML scraping + Cookie API).
+func searchPinterest(ctx context.Context, query string, cookie string, maxCount int) (*ImageSearchResult, error) {
+	client := newHTTPClient()
+	var entries []ImageEntry
+	seenSigs := make(map[string]bool)
+	cookie = strings.TrimSpace(cookie)
+	if cookie == "" {
+		cookie = defaultPinterestCookie
+	}
+
+	addEntry := func(id, origURL, thumbURL, title, author string, width, height int) {
+		if len(entries) >= maxCount {
+			return
+		}
+		if origURL == "" {
+			return
+		}
+		// Bỏ qua ảnh rác / logo Pinterest mặc định (d53b014d86a6b6761bf649a0ed813c2b)
+		if strings.Contains(origURL, "d53b014d86a6b6761bf649a0ed813c2b") || strings.Contains(thumbURL, "d53b014d86a6b6761bf649a0ed813c2b") || strings.Contains(id, "d53b014d86a6b6761bf649a0ed813c2b") {
+			return
+		}
+		if seenSigs[origURL] {
+			return
+		}
+		seenSigs[origURL] = true
+
+		if title == "" {
+			title = query
+		}
+		if id == "" {
+			id = fmt.Sprintf("pin_%d", len(entries))
+		}
+
+		entries = append(entries, ImageEntry{
+			ID:       "pinterest_" + id,
+			URL:      origURL,
+			ThumbURL: thumbURL,
+			Title:    title,
+			Author:   author,
+			Source:   "pinterest",
+			Width:    width,
+			Height:   height,
+			PageURL:  fmt.Sprintf("https://www.pinterest.com/pin/%s/", id),
+		})
+	}
+
+	// 1. Fetch HTML search page
+	htmlURL := fmt.Sprintf("https://www.pinterest.com/search/pins/?q=%s", url.QueryEscape(query))
+	htmlReq, errHtml := http.NewRequestWithContext(ctx, "GET", htmlURL, nil)
+	if errHtml == nil {
+		addCommonHeaders(htmlReq)
+		htmlReq.Header.Set("Referer", "https://www.pinterest.com/")
+		htmlReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		if cookie != "" {
+			htmlReq.Header.Set("Cookie", cookie)
+		}
+
+		htmlResp, errDo := client.Do(htmlReq)
+		if errDo == nil && htmlResp.StatusCode == http.StatusOK {
+			htmlBody, _ := io.ReadAll(htmlResp.Body)
+			htmlResp.Body.Close()
+			bodyStr := string(htmlBody)
+
+			// Parse JSON inside script tags
+			reScript := regexp.MustCompile(`<script[^>]*type="application/json"[^>]*>([\s\S]*?)</script>`)
+			scriptMatches := reScript.FindAllStringSubmatch(bodyStr, -1)
+			for _, sm := range scriptMatches {
+				if len(entries) >= maxCount {
+					break
+				}
+				if len(sm) < 2 {
+					continue
+				}
+				var rawData map[string]interface{}
+				if errJson := json.Unmarshal([]byte(sm[1]), &rawData); errJson != nil {
+					continue
+				}
+
+				findAndExtractPins(rawData, func(pin map[string]interface{}) {
+					id, _ := pin["id"].(string)
+					title, _ := pin["grid_title"].(string)
+					if title == "" {
+						title, _ = pin["title"].(string)
+					}
+					if title == "" {
+						title, _ = pin["description"].(string)
+					}
+					author := ""
+					if pinner, ok := pin["pinner"].(map[string]interface{}); ok {
+						author, _ = pinner["full_name"].(string)
+						if author == "" {
+							author, _ = pinner["username"].(string)
+						}
+					}
+
+					if images, ok := pin["images"].(map[string]interface{}); ok {
+						var fullURL, thumbURL string
+						var w, h int
+
+						resKeys := []string{"orig", "736x", "474x", "236x", "170x"}
+						for _, k := range resKeys {
+							if imgObj, ok := images[k].(map[string]interface{}); ok {
+								if u, ok := imgObj["url"].(string); ok && u != "" {
+									if fullURL == "" {
+										fullURL = u
+										if widthNum, ok := imgObj["width"].(float64); ok {
+											w = int(widthNum)
+										}
+										if heightNum, ok := imgObj["height"].(float64); ok {
+											h = int(heightNum)
+										}
+									}
+								}
+							}
+						}
+
+						if fullURL == "" {
+							for _, imgVal := range images {
+								if imgObj, ok := imgVal.(map[string]interface{}); ok {
+									if u, ok := imgObj["url"].(string); ok && u != "" {
+										fullURL = u
+										if widthNum, ok := imgObj["width"].(float64); ok {
+											w = int(widthNum)
+										}
+										if heightNum, ok := imgObj["height"].(float64); ok {
+											h = int(heightNum)
+										}
+										break
+									}
+								}
+							}
+						}
+
+						thumbKeys := []string{"236x", "170x", "474x"}
+						for _, k := range thumbKeys {
+							if imgObj, ok := images[k].(map[string]interface{}); ok {
+								if u, ok := imgObj["url"].(string); ok && u != "" {
+									thumbURL = u
+									break
+								}
+							}
+						}
+						if thumbURL == "" {
+							thumbURL = fullURL
+						}
+
+						if fullURL != "" {
+							addEntry(id, fullURL, thumbURL, title, author, w, h)
+						}
+					}
+				})
+			}
+
+			// Fallback: Regex scan for image signature paths in HTML
+			if len(entries) < maxCount {
+				rePinImg := regexp.MustCompile(`https:\\?/\\?/i\.pinimg\.com\\?/(originals|[0-9]+x)\\?/([a-f0-9]{2})\\?/([a-f0-9]{2})\\?/([a-f0-9]{2})\\?/([a-f0-9]{32})\.(jpg|png|webp)`)
+				imgMatches := rePinImg.FindAllStringSubmatch(bodyStr, maxCount*10)
+				for _, m := range imgMatches {
+					if len(entries) >= maxCount {
+						break
+					}
+					if len(m) < 7 {
+						continue
+					}
+					p1, p2, p3, sig, ext := m[2], m[3], m[4], m[5], m[6]
+					origURL := fmt.Sprintf("https://i.pinimg.com/originals/%s/%s/%s/%s.%s", p1, p2, p3, sig, ext)
+					thumbURL := fmt.Sprintf("https://i.pinimg.com/236x/%s/%s/%s/%s.jpg", p1, p2, p3, sig)
+
+					addEntry(sig, origURL, thumbURL, query, "", 0, 0)
+				}
+			}
+		}
+	}
+
+	// 2. Fetch via Pinterest BaseSearchResource API (cho phép trang tiếp theo / dùng Cookie người dùng cung cấp)
+	bookmark := ""
+	for len(entries) < maxCount {
+		queryEscaped := strings.ReplaceAll(url.QueryEscape(query), "+", "%20")
+		sourceURL := fmt.Sprintf("/search/pins/?q=%s&rs=typed", queryEscaped)
+
+		optionsMap := map[string]interface{}{
+			"query":                    query,
+			"scope":                    "pins",
+			"appliedProductFilters":    "---",
+			"domains":                  nil,
+			"user":                     nil,
+			"seoDrawerEnabled":         false,
+			"applied_unified_filters":  nil,
+			"auto_correction_disabled": false,
+			"journey_depth":            nil,
+			"source_id":                nil,
+			"source_module_id":         nil,
+			"source_url":               sourceURL,
+			"static_feed":              false,
+			"selected_one_bar_modules":  nil,
+			"query_pin_sigs":           nil,
+			"page_size":                nil,
+			"price_max":                nil,
+			"price_min":                nil,
+			"query_image_pins":         nil,
+			"request_params":           nil,
+			"top_pin_ids":              nil,
+			"article":                  nil,
+			"corpus":                   nil,
+			"filters":                  nil,
+			"rs":                       "typed",
+		}
+		if bookmark != "" {
+			optionsMap["bookmarks"] = []string{bookmark}
+		}
+
+		dataObj := map[string]interface{}{
+			"options": optionsMap,
+			"context": map[string]interface{}{},
+		}
+
+		dataJSON, err := json.Marshal(dataObj)
+		if err != nil {
+			break
+		}
+
+		encodeParam := func(s string) string {
+			return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
+		}
+
+		apiURL := fmt.Sprintf(
+			"https://www.pinterest.com/resource/BaseSearchResource/get/?source_url=%s&data=%s",
+			encodeParam(sourceURL),
+			encodeParam(string(dataJSON)),
+		)
+
+		req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+		if err != nil {
+			break
+		}
+
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
+		req.Header.Set("Accept-Language", "vi,en;q=0.9")
+		req.Header.Set("Referer", "https://www.pinterest.com/")
+		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		req.Header.Set("x-pinterest-appstate", "active")
+		req.Header.Set("x-pinterest-pws-handler", "www/index.js")
+		req.Header.Set("sec-ch-ua", `"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"`)
+		req.Header.Set("sec-ch-ua-mobile", "?0")
+		req.Header.Set("sec-ch-ua-platform", `"Windows"`)
+		req.Header.Set("sec-fetch-dest", "empty")
+		req.Header.Set("sec-fetch-mode", "cors")
+		req.Header.Set("sec-fetch-site", "same-origin")
+
+		if cookie != "" {
+			req.Header.Set("Cookie", cookie)
+			if csrf := extractCSRFToken(cookie); csrf != "" {
+				req.Header.Set("X-CSRFToken", csrf)
+			}
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			break
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			break
+		}
+
+		bodyBytes, errRead := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if errRead != nil {
+			break
+		}
+
+		var pinResp struct {
+			ResourceResponse struct {
+				Bookmark string `json:"bookmark"`
+				Data     struct {
+					Results []struct {
+						ID          string `json:"id"`
+						Title       string `json:"title"`
+						GridTitle   string `json:"grid_title"`
+						Description string `json:"description"`
+						Images      map[string]struct {
+							URL    string `json:"url"`
+							Width  int    `json:"width"`
+							Height int    `json:"height"`
+						} `json:"images"`
+						Pinner struct {
+							FullName string `json:"full_name"`
+							Username string `json:"username"`
+						} `json:"pinner"`
+					} `json:"results"`
+				} `json:"data"`
+			} `json:"resource_response"`
+		}
+
+		if errUnmarshal := json.Unmarshal(bodyBytes, &pinResp); errUnmarshal == nil {
+			results := pinResp.ResourceResponse.Data.Results
+			if len(results) == 0 {
+				fmt.Println("[Pinterest API Debug] status 200 but results count is 0. Body:", string(bodyBytes))
+				break
+			}
+			for _, r := range results {
+				var fullURL, thumbURL string
+				var w, h int
+				resKeys := []string{"orig", "736x", "474x", "236x", "170x"}
+				for _, k := range resKeys {
+					if imgObj, ok := r.Images[k]; ok && imgObj.URL != "" {
+						fullURL = imgObj.URL
+						w = imgObj.Width
+						h = imgObj.Height
+						break
+					}
+				}
+				if fullURL == "" {
+					for _, imgObj := range r.Images {
+						if imgObj.URL != "" {
+							fullURL = imgObj.URL
+							w = imgObj.Width
+							h = imgObj.Height
+							break
+						}
+					}
+				}
+				thumbKeys := []string{"236x", "170x", "474x"}
+				for _, k := range thumbKeys {
+					if imgObj, ok := r.Images[k]; ok && imgObj.URL != "" {
+						thumbURL = imgObj.URL
+						break
+					}
+				}
+				if thumbURL == "" {
+					thumbURL = fullURL
+				}
+
+				title := strings.TrimSpace(r.GridTitle)
+				if title == "" {
+					title = strings.TrimSpace(r.Title)
+				}
+				if title == "" {
+					title = strings.TrimSpace(r.Description)
+				}
+				author := strings.TrimSpace(r.Pinner.FullName)
+				if author == "" {
+					author = strings.TrimSpace(r.Pinner.Username)
+				}
+
+				if fullURL != "" {
+					addEntry(r.ID, fullURL, thumbURL, title, author, w, h)
+				}
+			}
+
+			nextBookmark := pinResp.ResourceResponse.Bookmark
+			if nextBookmark == "" || nextBookmark == bookmark {
+				break
+			}
+			bookmark = nextBookmark
+			time.Sleep(150 * time.Millisecond)
+		} else {
+			break
+		}
+	}
+
+	// 3. Bổ sung nguồn Pinterest qua site:pinterest.com nếu kết quả trực tiếp chưa đủ maxCount
+	if len(entries) < maxCount {
+		ddgQuery := fmt.Sprintf("site:pinterest.com %s", query)
+		ddgRes, errDDG := searchDuckDuckGo(ctx, ddgQuery, maxCount*2)
+		if errDDG == nil && ddgRes != nil {
+			for _, item := range ddgRes.Entries {
+				if len(entries) >= maxCount {
+					break
+				}
+				origURL := item.URL
+				if strings.Contains(origURL, "pinimg.com") {
+					for _, sizeKey := range []string{"/736x/", "/474x/", "/236x/", "/170x/", "/136x136/"} {
+						if strings.Contains(origURL, sizeKey) {
+							origURL = strings.Replace(origURL, sizeKey, "/originals/", 1)
+							break
+						}
+					}
+				}
+				addEntry(item.ID, origURL, item.ThumbURL, item.Title, item.Author, item.Width, item.Height)
+			}
+		}
+	}
+
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("không tìm thấy ảnh nào cho từ khóa '%s' trên Pinterest", query)
+	}
+
+	return &ImageSearchResult{
+		Source:  "pinterest",
 		Query:   query,
 		Total:   len(entries),
 		Entries: entries,
@@ -688,7 +1116,11 @@ func downloadSingleImage(ctx context.Context, entry ImageEntry, outputDir string
 		return result
 	}
 	addCommonHeaders(req)
-	req.Header.Set("Referer", "https://www.google.com/")
+	if entry.Source == "pinterest" || strings.Contains(entry.URL, "pinimg.com") {
+		req.Header.Set("Referer", "https://www.pinterest.com/")
+	} else {
+		req.Header.Set("Referer", "https://www.google.com/")
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -741,7 +1173,7 @@ func isImageURL(rawURL string) bool {
 		}
 	}
 	// Các domain thường chứa ảnh
-	domains := []string{"i.imgur.com", "images.unsplash.com", "cdn.pixabay.com", "images.pexels.com"}
+	domains := []string{"i.imgur.com", "images.unsplash.com", "cdn.pixabay.com", "images.pexels.com", "i.pinimg.com"}
 	for _, d := range domains {
 		if strings.Contains(lower, d) {
 			return true
