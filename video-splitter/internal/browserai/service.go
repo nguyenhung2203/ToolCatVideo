@@ -321,7 +321,7 @@ func (s *Service) Generate(req GenerateRequest) (TaskInfo, error) {
 		if req.Provider == ProviderGemini {
 			filePaths, genErr = GenerateGeminiImage(taskCtx, s.session, s.tm, req)
 		} else {
-			filePaths, genErr = GenerateFlowVideo(taskCtx, s.session, nil, s.tm, req)
+			filePaths, genErr = GenerateFlowVideo(taskCtx, s.session, nil, s.tm, req, nil)
 		}
 
 		if genErr != nil {

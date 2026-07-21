@@ -277,10 +277,46 @@ const generateAIThumbnailImg = async () => {
   }
 }
 
+// === QUẢN LÝ PROMPT THUMBNAIL MẪU (PRESETS) ===
+interface PromptPreset {
+  id: string
+  name: string
+  content: string
+}
+
+const promptPresets = ref<PromptPreset[]>([
+  { id: 'default_auto', name: '✨ Tối ưu tự động', content: 'A premium, eye-catching, and highly engaging thumbnail with a professional modern look, vibrant colors, clean lighting, and clear focal point.' },
+  { id: '1', name: '🎬 Kịch tính / Điện ảnh', content: 'Dramatic cinematic scene, high suspense, emotional facial expression, extreme close-up, vivid colors, neon lighting accents, dark background, YouTube Shorts thumbnail style.' },
+  { id: '2', name: '🎨 Hoạt họa / Anime', content: 'Vibrant anime visual style, cute character, colorful background, soft lighting, 4k digital art illustration, highly detailed, eye-catching style.' },
+  { id: '3', name: '📸 Vlog / Đời thường', content: 'Modern casual lifestyle vlog style, bright natural lighting, happy emotion, clean background, high clarity, realistic mobile-first photography.' },
+  { id: '4', name: '🔥 Xu hướng / Viral', content: 'High contrast trending vertical thumbnail, ultra-clear visual detail, bold composition, dynamic lighting, optimized for mobile screens, premium aesthetics.' }
+])
+
 // === Cấu hình dự án ===
 const showAdvancedCutSettings = ref(false)
 const analyzeJobs = ref(1)
 const exportJobs = ref(2)
+
+// === Cấu hình Đặt tên file xuất ===
+const namingConfig = reactive({
+  autoNaming: true, // Mặc định tick = Tự động đặt tên theo Tên video & index
+  customPrefix: ''  // Khi bỏ tick = Nhập tên tùy chỉnh (vd: Short_Tiktok_)
+})
+
+const loadNamingConfig = () => {
+  const saved = localStorage.getItem('splitter_naming_config')
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved)
+      if (typeof parsed.autoNaming === 'boolean') namingConfig.autoNaming = parsed.autoNaming
+      if (typeof parsed.customPrefix === 'string') namingConfig.customPrefix = parsed.customPrefix
+    } catch (e) {}
+  }
+}
+
+watch(namingConfig, () => {
+  localStorage.setItem('splitter_naming_config', JSON.stringify(namingConfig))
+}, { deep: true })
 
 // Trạng thái hiển thị ở thanh đáy workspace.
 const statusText = ref('Sẵn sàng')
@@ -459,6 +495,10 @@ const saveGlobalSettings = async () => {
     gSettings.geminiAPIKey = geminiAPIKey.value
     gSettings.browserAIShowChrome = browserAIShowChrome.value
     gSettings.browserAIConcurrency = browserAIConcurrency.value
+    gSettings.namingConfig = JSON.parse(JSON.stringify(namingConfig))
+    gSettings.promptPresets = JSON.parse(JSON.stringify(promptPresets.value))
+    gSettings.namedProjects = JSON.parse(JSON.stringify(namedProjects.value))
+    gSettings.activeProjectId = activeProjectId.value
 
     await SaveGlobalSettings(JSON.stringify(gSettings))
     globalSettingsConfig.value = JSON.parse(JSON.stringify(analyzerConfig))
@@ -468,7 +508,7 @@ const saveGlobalSettings = async () => {
 }
 
 let saveTimeout: any = null
-watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, autoCreateSubfolders, exportWithThumbnails, geminiAPIKey, browserAIShowChrome, browserAIConcurrency], () => {
+watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, autoCreateSubfolders, exportWithThumbnails, geminiAPIKey, browserAIShowChrome, browserAIConcurrency, namingConfig, promptPresets, namedProjects, activeProjectId], () => {
   if (!isSettingsLoaded.value) return
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(() => {
@@ -539,20 +579,6 @@ const computedVideoSrc = computed(() => {
 })
 
 // === QUẢN LÝ PROMPT THUMBNAIL MẪU (PRESETS) ===
-interface PromptPreset {
-  id: string
-  name: string
-  content: string
-}
-
-const promptPresets = ref<PromptPreset[]>([
-  { id: 'default_auto', name: '✨ Tối ưu tự động', content: 'A premium, eye-catching, and highly engaging thumbnail with a professional modern look, vibrant colors, clean lighting, and clear focal point.' },
-  { id: '1', name: '🎬 Kịch tính / Điện ảnh', content: 'Dramatic cinematic scene, high suspense, emotional facial expression, extreme close-up, vivid colors, neon lighting accents, dark background, YouTube Shorts thumbnail style.' },
-  { id: '2', name: '🎨 Hoạt họa / Anime', content: 'Vibrant anime visual style, cute character, colorful background, soft lighting, 4k digital art illustration, highly detailed, eye-catching style.' },
-  { id: '3', name: '📸 Vlog / Đời thường', content: 'Modern casual lifestyle vlog style, bright natural lighting, happy emotion, clean background, high clarity, realistic mobile-first photography.' },
-  { id: '4', name: '🔥 Xu hướng / Viral', content: 'High contrast trending vertical thumbnail, ultra-clear visual detail, bold composition, dynamic lighting, optimized for mobile screens, premium aesthetics.' }
-])
-
 const selectedPromptPresetId = ref('')
 const newPresetName = ref('')
 const showAddPresetForm = ref(false)
@@ -649,7 +675,6 @@ const addNewPreset = () => {
 
 
 onMounted(async () => {
-  loadPromptPresets()
   // 1. Tải cấu hình cài đặt chung toàn cục (settings.json)
   try {
     const globalSettingsStr = await GetGlobalSettings()
@@ -688,30 +713,60 @@ onMounted(async () => {
       if (gSettings.browserAIConcurrency !== undefined) {
         browserAIConcurrency.value = gSettings.browserAIConcurrency
       }
+
+      // Đặt tên file clip
+      if (gSettings.namingConfig) {
+        Object.assign(namingConfig, gSettings.namingConfig)
+      } else {
+        loadNamingConfig()
+      }
+
+      // Mẫu Prompt
+      if (Array.isArray(gSettings.promptPresets) && gSettings.promptPresets.length > 0) {
+        promptPresets.value = gSettings.promptPresets
+      } else {
+        loadPromptPresets()
+      }
+
+      // Projects
+      if (Array.isArray(gSettings.namedProjects) && gSettings.namedProjects.length > 0) {
+        namedProjects.value = gSettings.namedProjects
+      } else {
+        const savedProjs = localStorage.getItem('namedProjectsList')
+        if (savedProjs) {
+          try { namedProjects.value = JSON.parse(savedProjs) } catch (e) {}
+        }
+      }
+
+      if (gSettings.activeProjectId) {
+        activeProjectId.value = gSettings.activeProjectId
+      } else {
+        const savedActiveId = localStorage.getItem('activeProjectId')
+        if (savedActiveId) activeProjectId.value = savedActiveId
+      }
+
       import('../../wailsjs/go/browserai/Service').then((srv) => {
         srv.SetQueueConcurrency(browserAIConcurrency.value)
       }).catch(() => {})
     } else {
       await loadDefaultConfig()
+      loadNamingConfig()
+      loadPromptPresets()
+      const savedProjs = localStorage.getItem('namedProjectsList')
+      if (savedProjs) {
+        try { namedProjects.value = JSON.parse(savedProjs) } catch (e) {}
+      }
+      const savedActiveId = localStorage.getItem('activeProjectId')
+      if (savedActiveId) activeProjectId.value = savedActiveId
     }
   } catch (e) {
     console.error('Lỗi tải cấu hình toàn cục:', e)
     await loadDefaultConfig()
+    loadNamingConfig()
+    loadPromptPresets()
   }
 
   isSettingsLoaded.value = true // Đã load xong, bắt đầu tự động theo dõi và lưu cài đặt từ đây
-
-  // Tải danh sách project
-  const savedProjs = localStorage.getItem('namedProjectsList')
-  const savedActiveId = localStorage.getItem('activeProjectId')
-  
-  if (savedProjs) {
-    try {
-      namedProjects.value = JSON.parse(savedProjs)
-    } catch (e) {
-      console.error("Lỗi parse namedProjectsList:", e)
-    }
-  }
   
   if (namedProjects.value.length === 0) {
     const defaultId = 'proj_default'
@@ -743,9 +798,7 @@ onMounted(async () => {
       analyzeJobs: 1,
       createdAt: Date.now()
     }]
-    activeProjectId.value = defaultId
-  } else {
-    activeProjectId.value = savedActiveId || namedProjects.value[0].id
+    activeProjectId.value = activeProjectId.value || namedProjects.value[0].id
   }
 
   // Load dự án hoạt động đầu tiên (ghi đè cấu hình toàn cục nếu dự án đã lưu cấu hình riêng)
@@ -844,12 +897,35 @@ onMounted(async () => {
         })
         if (found) {
           found.thumbnail = task.resultPath;
-          (found as any).hasAIThumb = true
+          (found as any).hasAIThumb = true;
+          // Tạo lại thành công → xóa cờ lỗi cũ (nếu clip này từng lỗi).
+          (found as any).aiThumbFailed = false;
+          (found as any).aiThumbError = ''
           break
         }
       }
       addLog(`✓ ${task.clipName || 'Clip'}: Đã tạo thành công và cập nhật ảnh bìa AI!`)
     }
+  })
+
+  // Clip KHÔNG tạo được thumbnail AI → đánh dấu lỗi ngay trên card để người dùng biết
+  // clip nào cần tạo lại (đã bỏ frame gốc dự phòng nên clip này hiện chưa có ảnh bìa).
+  EventsOn('clip_ai_thumb_failed', (task: any) => {
+    if (!task) return
+    for (const path of Object.keys(clipsMap.value)) {
+      const clips = clipsMap.value[path] || []
+      const found = clips.find((c: any) => {
+        if (!task.id) return false
+        if (task.id.includes(c.id)) return true
+        return typeof task.clipName === 'string' && new RegExp(`#${c.index}(?!\\d)`).test(task.clipName)
+      })
+      if (found) {
+        (found as any).aiThumbFailed = true;
+        (found as any).aiThumbError = task.errorMessage || 'Không tạo được ảnh bìa AI'
+        break
+      }
+    }
+    showToast(`⚠ ${task.clipName || 'Clip'}: Không tạo được ảnh bìa AI. Clip này chưa có ảnh bìa.`, 'warning', 5000)
   })
 
   // Đếm ngược thời gian hoàn tất & Cập nhật tiến độ mượt mà (interpolation)
@@ -1434,6 +1510,112 @@ const videosForBatch = () =>
 
 const selectedClips = ref<Set<string>>(new Set())
 
+// === DRAG BOX SELECTION SYSTEM CHO CLIPS GRID ===
+const clipsGridRef = ref<HTMLElement | null>(null)
+const clipDragBox = reactive({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 })
+const clipDragBoxStyle = ref<Record<string, string>>({})
+let clipDragStartSelected = new Set<string>()
+let clipDragMode: 'select' | 'deselect' | null = null
+
+function updateClipDragBoxStyle() {
+  const x = Math.min(clipDragBox.x1, clipDragBox.x2)
+  const y = Math.min(clipDragBox.y1, clipDragBox.y2)
+  const w = Math.abs(clipDragBox.x2 - clipDragBox.x1)
+  const h = Math.abs(clipDragBox.y2 - clipDragBox.y1)
+  clipDragBoxStyle.value = {
+    left: x + 'px',
+    top: y + 'px',
+    width: w + 'px',
+    height: h + 'px',
+    display: w < 4 && h < 4 ? 'none' : 'block',
+  }
+}
+
+function updateClipSelectionFromDrag() {
+  const grid = clipsGridRef.value
+  if (!grid) return
+
+  const selX1 = Math.min(clipDragBox.x1, clipDragBox.x2)
+  const selY1 = Math.min(clipDragBox.y1, clipDragBox.y2)
+  const selX2 = Math.max(clipDragBox.x1, clipDragBox.x2)
+  const selY2 = Math.max(clipDragBox.y1, clipDragBox.y2)
+
+  if (selX2 - selX1 < 4 && selY2 - selY1 < 4) return
+
+  const gridRect = grid.getBoundingClientRect()
+  const currentSet = new Set(selectedClips.value)
+
+  const cards = grid.querySelectorAll<HTMLElement>('[data-clip-id]')
+  cards.forEach(card => {
+    const cr = card.getBoundingClientRect()
+    const cardX1 = cr.left - gridRect.left + grid.scrollLeft
+    const cardY1 = cr.top - gridRect.top + grid.scrollTop
+    const cardX2 = cardX1 + cr.width
+    const cardY2 = cardY1 + cr.height
+
+    const overlaps = cardX1 < selX2 && cardX2 > selX1 && cardY1 < selY2 && cardY2 > selY1
+    const clipId = card.dataset.clipId
+    if (!clipId) return
+
+    if (overlaps) {
+      if (clipDragMode === null) {
+        clipDragMode = clipDragStartSelected.has(clipId) ? 'deselect' : 'select'
+      }
+
+      if (clipDragMode === 'select') currentSet.add(clipId)
+      if (clipDragMode === 'deselect') currentSet.delete(clipId)
+    } else {
+      const wasSelected = clipDragStartSelected.has(clipId)
+      if (wasSelected) {
+        currentSet.add(clipId)
+      } else {
+        currentSet.delete(clipId)
+      }
+    }
+  })
+
+  selectedClips.value = currentSet
+}
+
+function onClipsGridMouseDown(e: MouseEvent) {
+  if (e.button !== 0 || isExporting.value) return
+  const target = e.target as HTMLElement
+  if (target.closest('button, input, a, select, textarea, .btn-remove-clip, .btn-action-small, label')) return
+
+  const grid = clipsGridRef.value
+  if (!grid) return
+
+  clipDragMode = null
+  clipDragStartSelected = new Set(selectedClips.value)
+
+  const rect = grid.getBoundingClientRect()
+  clipDragBox.x1 = e.clientX - rect.left + grid.scrollLeft
+  clipDragBox.y1 = e.clientY - rect.top + grid.scrollTop
+  clipDragBox.x2 = clipDragBox.x1
+  clipDragBox.y2 = clipDragBox.y1
+  clipDragBox.active = false
+
+  const onMove = (me: MouseEvent) => {
+    clipDragBox.x2 = me.clientX - rect.left + grid.scrollLeft
+    clipDragBox.y2 = me.clientY - rect.top + grid.scrollTop
+    clipDragBox.active = true
+    updateClipDragBoxStyle()
+    updateClipSelectionFromDrag()
+    me.preventDefault()
+  }
+
+  const onUp = () => {
+    clipDragBox.active = false
+    clipDragBoxStyle.value = {}
+    clipDragMode = null
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
+
 const toggleClipSelected = (clipId: string) => {
   const s = new Set(selectedClips.value)
   if (s.has(clipId)) {
@@ -1594,7 +1776,10 @@ const exportClips = async () => {
   
   try {
     const proj = namedProjects.value.find(p => p.id === activeProjectId.value)
-    const projName = proj ? proj.name : 'Project'
+    let projName = proj ? proj.name : 'Project'
+    if (!namingConfig.autoNaming && namingConfig.customPrefix.trim()) {
+      projName = namingConfig.customPrefix.trim()
+    }
 
     let globalDone = 0
     let okCount = 0
@@ -1683,7 +1868,10 @@ const exportSelectedVideos = async () => {
   let okTotal = 0, clipTotal = 0
   try {
     const proj = namedProjects.value.find(p => p.id === activeProjectId.value)
-    const projName = proj ? proj.name : 'Project'
+    let projName = proj ? proj.name : 'Project'
+    if (!namingConfig.autoNaming && namingConfig.customPrefix.trim()) {
+      projName = namingConfig.customPrefix.trim()
+    }
 
     for (const path of videos) {
       const clips = clipsMap.value[path] || []
@@ -2686,7 +2874,7 @@ const formatSize = (bytes: number) => {
             <ChevronDown v-else :size="12" />
           </button>
         </div>
-        <div class="empty-videos-placeholder" v-else style="height: 48px; display: flex; align-items: center; justify-content: center; padding: 0 16px; box-sizing: border-box;">
+        <div class="empty-videos-placeholder" v-if="videoPaths.length === 0" style="height: 48px; display: flex; align-items: center; justify-content: center; padding: 0 16px; box-sizing: border-box;">
           <div class="placeholder-content" style="display:flex; flex-direction:row; align-items:center; justify-content:center; gap:16px; width: 100%; height: 100%;">
             <div style="display: flex; align-items: center; gap: 8px;">
               <FileVideo :size="16" style="opacity: 0.5; color: var(--accent-color);" />
@@ -2730,6 +2918,28 @@ const formatSize = (bytes: number) => {
             <div class="compact-setting-row" v-else>
               <label class="setting-title-lbl">Thời lượng mỗi clip (giây):</label>
               <input type="number" v-model.number="analyzerConfig.maxClipDuration" min="5" max="600" @change="analyzerConfig.maxClipDuration = clampValue(analyzerConfig.maxClipDuration, 5, 600, 15)" class="compact-input" style="width: 100%;" />
+            </div>
+
+            <!-- Đặt tên file xuất -->
+            <div class="compact-setting-row" style="margin-top: 6px; background: var(--wx-surface-sunken); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 6px;">
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span class="setting-title-lbl" style="font-weight: 700; color: var(--wx-brand-accent); font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;">
+                  <Tag :size="12" /> Đặt tên file xuất
+                </span>
+                <label style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; color: var(--l-text); user-select: none; font-weight: 600;">
+                  <input type="checkbox" v-model="namingConfig.autoNaming" style="width: 14px; height: 14px; accent-color: var(--wx-brand-primary);" />
+                  <span>Tự động</span>
+                </label>
+              </div>
+              <input
+                type="text"
+                v-model="namingConfig.customPrefix"
+                :disabled="namingConfig.autoNaming"
+                class="compact-input"
+                style="width: 100%; box-sizing: border-box; font-size: 11.5px; height: 28px; transition: all 0.2s;"
+                :style="{ opacity: namingConfig.autoNaming ? '0.6' : '1', cursor: namingConfig.autoNaming ? 'not-allowed' : 'text' }"
+                :placeholder="namingConfig.autoNaming ? 'Tự động theo tên Video ({Tên_Video}_#1.mp4)' : 'Nhập tên clip (VD: Short_Tiktok_)...'"
+              />
             </div>
 
             <!-- Cài đặt nâng cao link -->
@@ -3079,9 +3289,19 @@ const formatSize = (bytes: number) => {
         </div>
 
         <div class="clips-view-container">
-          <div v-if="displayClipsCount > 0" class="clips-grid">
+          <div
+            v-if="displayClipsCount > 0"
+            ref="clipsGridRef"
+            class="clips-grid"
+            @mousedown.left="onClipsGridMouseDown"
+            style="position: relative; user-select: none;"
+          >
+            <!-- Khung bôi đen quét chọn -->
+            <div v-if="clipDragBox.active" class="clip-drag-box" :style="clipDragBoxStyle"></div>
+
             <div v-for="(clip, idx) in displayClips" :key="clip.id"
               class="clip-modern-card"
+              :data-clip-id="clip.id"
               :class="{ 'clip-selected': selectedClips.has(clip.id), 'clip-done': clip.status === 'completed' }">
               
               <div class="clip-card-header-bar">
@@ -3092,6 +3312,9 @@ const formatSize = (bytes: number) => {
                   <span class="clip-title-tag">Clip #{{ clip.index }}</span>
                   <span class="status-dot done" v-if="clip.status === 'completed'" title="Đã xuất"></span>
                   <span class="status-dot pending" v-else title="Chờ xuất"></span>
+                  <span v-if="(clip as any).aiThumbFailed" class="ai-thumb-fail-badge" :title="(clip as any).aiThumbError || 'Không tạo được ảnh bìa AI'" style="display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 700; color: #fca5a5; background: rgba(239,68,68,0.14); border: 1px solid rgba(239,68,68,0.35); border-radius: 4px; padding: 1px 6px;">
+                    ⚠ Lỗi ảnh AI
+                  </span>
                 </div>
                 <span class="clip-duration-tag" style="display: inline-flex; align-items: center; gap: 4px;">
                   <Clock :size="12" />

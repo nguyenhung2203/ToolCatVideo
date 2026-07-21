@@ -29,11 +29,19 @@ func GenerateFlowVideo(
 	workerPage *rod.Page,
 	tm *TaskManager,
 	req GenerateRequest,
+	milestone func(step string),
 ) ([]string, error) {
 	// logDebug gắn LogPrefix (ví dụ "[W1 Clip #2] ") vào đầu mỗi dòng để phân biệt
 	// luồng nào khi nhiều tab chạy song song. Rỗng → log như cũ.
 	logDebug := func(msg string, args ...interface{}) {
 		flowLogf(req.LogPrefix+msg, args...)
+	}
+	// mile phát một bước tiến trình NGẮN GỌN ra card log ở giao diện (nếu có callback).
+	// Khác với logDebug (ghi chi tiết vào file): mile chỉ báo mốc quan trọng cho người dùng.
+	mile := func(step string) {
+		if milestone != nil {
+			milestone(step)
+		}
 	}
 
 	// Chuẩn hóa danh sách ảnh đính kèm: tự động nạp InputImagePath vào InputImagePaths nếu chưa có
@@ -384,6 +392,7 @@ func GenerateFlowVideo(
 		}
 	}
 	logDebug("Đã vào dự án thành công!")
+	mile("Đã vào dự án Flow")
 
 	// Detect if flow feature is visible/available
 	mediaText := "Video"
@@ -584,9 +593,29 @@ func GenerateFlowVideo(
 		// Đưa cửa sổ này lên foreground để Ctrl+V thật ăn đúng vào nó.
 		_, _ = page.Activate()
 
-		// 1. Dán ảnh bằng phím tắt Ctrl+V thật từ bàn phím hệ thống (Windows Clipboard + CDP Keyboard)
+		// THỨ TỰ QUAN TRỌNG: ĐIỀN PROMPT TRƯỚC, DÁN ẢNH SAU.
+		// Trước đây dán ảnh trước → ô Slate có thẻ ảnh (void node) → caret kẹt tại đó
+		// → mọi cách chèn text đều bị Slate từ chối ("Slate không nhận text") → retry
+		// làm loạn/mất ảnh. Điền text khi ô CÒN TRỐNG thì Slate nhận dễ nhất; sau đó
+		// mới dán ảnh (giống người thật: gõ mô tả xong mới đính ảnh) nên text không bị phá.
+
+		// 1. Điền văn bản prompt vào ô nhập liệu (khi ô còn trống)
+		logDebug("Bắt đầu điền prompt vào ô nhập liệu: '%s'...", req.Prompt)
+		tm.EmitStatus(TaskStateSubmitting, "Đang điền prompt...", 35)
+		mile("Đang điền prompt...")
+		err = FillFlowPrompt(page, promptInput, req.Prompt, logDebug)
+		if err != nil {
+			unlockInput()
+			logDebug("Lỗi khi điền prompt: %v", err)
+			mile("✗ Không điền được prompt (Slate không nhận text)")
+			finalErr = fmt.Errorf("fill prompt: %w", err)
+			continue
+		}
+
+		// 2. Dán ảnh bằng Ctrl+V thật (sau khi prompt đã yên vị trong ô)
 		if len(req.InputImagePaths) > 0 {
 			logDebug("Phát hiện yêu cầu gửi kèm ảnh (%d ảnh). Đang nạp vào Clipboard Windows và bấm Ctrl+V thật...", len(req.InputImagePaths))
+			mile(fmt.Sprintf("Đang đính %d ảnh đầu vào...", len(req.InputImagePaths)))
 
 			for _, imgPath := range req.InputImagePaths {
 				_ = PasteImageNativeCtrlV(ctx, page, promptInput, imgPath, logDebug)
@@ -600,20 +629,10 @@ func GenerateFlowVideo(
 			promptInput, err = FindFirstVisible(ctx, page, FlowSelectors.PromptInputs, 5*time.Second)
 			if err != nil {
 				unlockInput()
+				mile("✗ Không tìm thấy ô nhập sau khi đính ảnh")
 				finalErr = fmt.Errorf("không tìm thấy ô nhập liệu sau khi upload ảnh: %w", err)
 				continue
 			}
-		}
-
-		// 2. Điền văn bản prompt vào ô nhập liệu (sau khi đã đính kèm ảnh)
-		logDebug("Bắt đầu điền prompt vào ô nhập liệu: '%s'...", req.Prompt)
-		tm.EmitStatus(TaskStateSubmitting, "Đang điền prompt...", 35)
-		err = FillFlowPrompt(page, promptInput, req.Prompt, logDebug)
-		if err != nil {
-			unlockInput()
-			logDebug("Lỗi khi điền prompt: %v", err)
-			finalErr = fmt.Errorf("fill prompt: %w", err)
-			continue
 		}
 		logDebug("Đã điền prompt xong thành công!")
 		sleep(1000 * time.Millisecond)
@@ -733,6 +752,7 @@ func GenerateFlowVideo(
 		// Đã bấm gửi xong: nhả khóa nhập liệu để worker khác bắt đầu dán ảnh/điền
 		// prompt của nó. Phần còn lại (chờ tạo ảnh 30-90s) chạy song song thoải mái.
 		unlockInput()
+		mile("Đã gửi prompt, đang chờ AI tạo ảnh...")
 
 		generationFailed := false
 

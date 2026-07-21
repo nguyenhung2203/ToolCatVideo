@@ -413,9 +413,25 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			LogPrefix:           fmt.Sprintf("[W%d %s] ", workerID+1, task.ClipName),
 		}
 
+		// emitLog phát 1 dòng log NGẮN GỌN ra card log ở giao diện (kèm nhãn W# + clip).
+		// level: "info" | "success" | "error" để frontend tô màu.
+		emitLog := func(level, step string) {
+			if qm.ctx != nil {
+				runtime.EventsEmit(qm.ctx, "browser-ai:queue-log", map[string]interface{}{
+					"worker": workerID + 1,
+					"name":   task.ClipName,
+					"level":  level,
+					"step":   step,
+				})
+			}
+		}
+		emitLog("info", "Bắt đầu")
+
 		// Mỗi task chạy trong timeout riêng để một task treo không chặn worker mãi.
 		taskCtx, cancel := context.WithTimeout(ctx, ImageGenerateTimeout)
-		filePaths, genErr := GenerateFlowVideo(taskCtx, qm.service.session, page, nil, genReq)
+		filePaths, genErr := GenerateFlowVideo(taskCtx, qm.service.session, page, nil, genReq, func(step string) {
+			emitLog("info", step)
+		})
 		cancel()
 		if cleanupTemp != nil {
 			cleanupTemp()
@@ -434,13 +450,21 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 		if genErr != nil {
 			qm.tasks[idx].State = QueueStateFailed
 			qm.tasks[idx].ErrorMessage = genErr.Error()
-			flowLogf("Worker #%d: task %s thất bại: %v", workerID, task.ID, genErr)
+			failedTask := qm.tasks[idx]
+			flowLogf("[W%d %s] KHÔNG tạo được thumbnail: %v", workerID+1, task.ClipName, genErr)
+			emitLog("error", "Thất bại: "+genErr.Error())
+			// Cảnh báo người dùng: clip này KHÔNG còn ảnh dự phòng (đã bỏ frame gốc).
+			if qm.ctx != nil {
+				runtime.EventsEmit(qm.ctx, "export_log", fmt.Sprintf("⚠ %s: KHÔNG tạo được ảnh thumbnail AI (%v). Clip này hiện chưa có ảnh bìa.", task.ClipName, genErr))
+				runtime.EventsEmit(qm.ctx, "clip_ai_thumb_failed", failedTask)
+			}
 		} else {
 			qm.tasks[idx].State = QueueStateCompleted
 			if len(filePaths) > 0 {
 				qm.tasks[idx].ResultPath = filePaths[0]
 			}
 			completedTask := qm.tasks[idx]
+			emitLog("success", "Đã tạo xong ảnh")
 			if qm.ctx != nil {
 				runtime.EventsEmit(qm.ctx, "clip_ai_thumb_completed", completedTask)
 			}

@@ -111,11 +111,88 @@ function applyBrand(hex: string | null, prefix: 'brand' | 'accent') {
   }
 }
 
+import { GetGlobalSettings, SaveGlobalSettings } from '../../../wailsjs/go/main/App'
+
+const syncThemeToSettings = async () => {
+  if (!isBrowser()) return
+  try {
+    const settingsStr = await GetGlobalSettings()
+    let gSettings: any = {}
+    if (settingsStr) {
+      gSettings = JSON.parse(settingsStr)
+    }
+    gSettings.themeConfig = {
+      colorScheme: colorScheme.value,
+      variant: variant.value,
+      brandColor: brandColor.value,
+      accentColor: accentColor.value
+    }
+    await SaveGlobalSettings(JSON.stringify(gSettings))
+  } catch (e) {
+    console.error('Lỗi lưu theme vào settings.json:', e)
+  }
+}
+
+const syncThemeFromSettings = async () => {
+  if (!isBrowser()) return
+  try {
+    const settingsStr = await GetGlobalSettings()
+    if (settingsStr) {
+      const gSettings = JSON.parse(settingsStr)
+      if (gSettings.themeConfig) {
+        const t = gSettings.themeConfig
+        if (t.colorScheme) {
+          colorScheme.value = t.colorScheme
+          applyColorScheme(resolveColorScheme(t.colorScheme))
+        }
+        if (t.variant) {
+          applyVariant(t.variant)
+        }
+        if (t.brandColor !== undefined) {
+          brandColor.value = t.brandColor
+          applyBrand(t.brandColor, 'brand')
+        }
+        if (t.accentColor !== undefined) {
+          accentColor.value = t.accentColor
+          applyBrand(t.accentColor, 'accent')
+        }
+        return
+      }
+    }
+  } catch (e) {
+    console.error('Lỗi đọc theme từ settings.json:', e)
+  }
+
+  // Fallback migration từ localStorage nếu chưa có trong settings.json
+  const storedScheme = localStorage.getItem(STORAGE_KEY) as ColorScheme | null
+  if (storedScheme && ['light', 'dark', 'system'].includes(storedScheme)) {
+    colorScheme.value = storedScheme
+  }
+  applyColorScheme(resolveColorScheme(colorScheme.value))
+
+  const storedVariant = localStorage.getItem(STORAGE_KEY_VARIANT) as Variant | null
+  if (storedVariant && ['default', 'flat'].includes(storedVariant)) {
+    applyVariant(storedVariant)
+  }
+
+  const storedBrand = localStorage.getItem(STORAGE_KEY_BRAND)
+  if (storedBrand) {
+    brandColor.value = storedBrand
+    applyBrand(storedBrand, 'brand')
+  }
+  const storedAccent = localStorage.getItem(STORAGE_KEY_ACCENT)
+  if (storedAccent) {
+    accentColor.value = storedAccent
+    applyBrand(storedAccent, 'accent')
+  }
+}
+
 export function useTheme() {
   function setColorScheme(t: ColorScheme) {
     colorScheme.value = t
     if (isBrowser()) localStorage.setItem(STORAGE_KEY, t)
     applyColorScheme(resolveColorScheme(t))
+    syncThemeToSettings()
   }
 
   function toggleColorScheme() {
@@ -125,6 +202,7 @@ export function useTheme() {
   function setVariant(v: Variant) {
     if (isBrowser()) localStorage.setItem(STORAGE_KEY_VARIANT, v)
     applyVariant(v)
+    syncThemeToSettings()
   }
 
   function setBrandColor(hex: string | null) {
@@ -134,6 +212,7 @@ export function useTheme() {
       else localStorage.removeItem(STORAGE_KEY_BRAND)
     }
     applyBrand(hex, 'brand')
+    syncThemeToSettings()
   }
 
   function setAccentColor(hex: string | null) {
@@ -143,6 +222,7 @@ export function useTheme() {
       else localStorage.removeItem(STORAGE_KEY_ACCENT)
     }
     applyBrand(hex, 'accent')
+    syncThemeToSettings()
   }
 
   function resetColors() {
@@ -152,28 +232,7 @@ export function useTheme() {
 
   onMounted(() => {
     if (!isBrowser()) return
-
-    const storedScheme = localStorage.getItem(STORAGE_KEY) as ColorScheme | null
-    if (storedScheme && ['light', 'dark', 'system'].includes(storedScheme)) {
-      colorScheme.value = storedScheme
-    }
-    applyColorScheme(resolveColorScheme(colorScheme.value))
-
-    const storedVariant = localStorage.getItem(STORAGE_KEY_VARIANT) as Variant | null
-    if (storedVariant && ['default', 'flat'].includes(storedVariant)) {
-      applyVariant(storedVariant)
-    }
-
-    const storedBrand = localStorage.getItem(STORAGE_KEY_BRAND)
-    if (storedBrand) {
-      brandColor.value = storedBrand
-      applyBrand(storedBrand, 'brand')
-    }
-    const storedAccent = localStorage.getItem(STORAGE_KEY_ACCENT)
-    if (storedAccent) {
-      accentColor.value = storedAccent
-      applyBrand(storedAccent, 'accent')
-    }
+    syncThemeFromSettings()
 
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
     mq.addEventListener('change', (e) => {

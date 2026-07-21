@@ -168,8 +168,11 @@
           </div>
 
           <div style="padding: 6px 0 10px; width: 100%;">
-            <div style="height: 8px; border-radius: 4px; background: var(--wx-glass-light-bg); overflow: hidden;">
-              <div :style="{ width: queueStatus.total > 0 ? ((queueStatus.completed + queueStatus.failed) / queueStatus.total * 100) + '%' : '0%', height: '100%', background: 'var(--wx-brand-accent)', transition: 'width 0.3s' }"></div>
+            <div style="position: relative; height: 18px; border-radius: 9px; background: var(--wx-glass-light-bg); overflow: hidden;">
+              <div :style="{ width: queuePercent + '%', height: '100%', background: 'var(--wx-brand-accent)', transition: 'width 0.3s' }"></div>
+              <span style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: var(--wx-text-primary, #f8fafc); text-shadow: 0 1px 2px rgba(0,0,0,0.5);">
+                {{ queuePercent }}%
+              </span>
             </div>
             <div style="font-size: 11.5px; color: var(--l-text-muted); margin-top: 6px;">
               Thành công: {{ queueStatus.completed }} · Lỗi: {{ queueStatus.failed }} · Tổng: {{ queueStatus.total }}
@@ -185,6 +188,34 @@
                 style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 160px; background: var(--wx-glass-light-bg); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 6px; box-shadow: var(--wx-shadow-md);"
               >
                 <img :src="rPath" style="width: 100%; height: 160px; object-fit: cover; border-radius: var(--wx-radius-sm);" draggable="false" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Card log tiến trình: mỗi dòng 1 bước ngắn gọn, có nút thu nhỏ -->
+          <div v-if="queueLogs.length > 0" style="flex-shrink: 0; margin-top: 8px; border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); background: var(--wx-surface-sunken, #0e1626); overflow: hidden;">
+            <button
+              type="button"
+              @click="queueLogCollapsed = !queueLogCollapsed"
+              style="display: flex; align-items: center; justify-content: space-between; width: 100%; background: none; border: none; cursor: pointer; padding: 8px 10px;"
+              :title="queueLogCollapsed ? 'Mở rộng log' : 'Thu nhỏ log'"
+            >
+              <span style="font-size: 11.5px; font-weight: 700; color: var(--wx-brand-accent); display: inline-flex; align-items: center; gap: 6px;">
+                Nhật ký tiến trình ({{ queueLogs.length }})
+              </span>
+              <ChevronDown v-if="queueLogCollapsed" :size="16" style="color: var(--wx-brand-accent);" />
+              <ChevronUp v-else :size="16" style="color: var(--wx-brand-accent);" />
+            </button>
+            <div v-show="!queueLogCollapsed" ref="queueLogBox" style="max-height: 300px; overflow-y: auto; padding: 4px 10px 8px; font-size: 11px; font-family: 'Consolas', monospace; line-height: 1.55;">
+              <div
+                v-for="line in queueLogs"
+                :key="line.id"
+                :style="{ color: line.level === 'error' ? '#fca5a5' : (line.level === 'success' ? '#86efac' : 'var(--l-text-muted)'), whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }"
+                :title="`[W${line.worker} ${line.name}] ${line.step}`"
+              >
+                <span style="opacity: 0.6;">{{ line.time }}</span>
+                <span style="opacity: 0.85; font-weight: 600;"> W{{ line.worker }}</span>
+                <span> · {{ line.step }}</span>
               </div>
             </div>
           </div>
@@ -379,7 +410,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted, onUnmounted, computed } from 'vue'
+import { ref, reactive, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useBrowserAI } from './composables/useBrowserAI'
 import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, CheckCircle, RefreshCw, ImageIcon, Check, Download, ChevronDown, ChevronUp } from 'lucide-vue-next'
 // @ts-ignore
@@ -665,6 +696,33 @@ const queueMode = ref(false)
 const queueStatus = reactive({ total: 0, completed: 0, failed: 0, isRunning: false })
 const queueResultPaths = ref<string[]>([])
 
+// Phần trăm hoàn tất hàng đợi (đã xong / tổng), làm tròn để hiển thị trên thanh tiến độ.
+const queuePercent = computed(() =>
+  queueStatus.total > 0 ? Math.round((queueStatus.completed + queueStatus.failed) / queueStatus.total * 100) : 0
+)
+
+// Card log tiến trình Hàng Đợi AI: mỗi dòng 1 bước ngắn gọn (info/success/error).
+interface QueueLogLine {
+  id: number
+  time: string
+  worker: number
+  name: string
+  level: string
+  step: string
+}
+const queueLogs = ref<QueueLogLine[]>([])
+const queueLogCollapsed = ref(false)
+const queueLogBox = ref<HTMLElement | null>(null)
+let queueLogSeq = 0
+
+// Tự cuộn xuống dòng log mới nhất khi có bước mới (chỉ khi đang mở).
+watch(() => queueLogs.value.length, () => {
+  if (queueLogCollapsed.value) return
+  nextTick(() => {
+    if (queueLogBox.value) queueLogBox.value.scrollTop = queueLogBox.value.scrollHeight
+  })
+})
+
 watch(() => result.value, () => {
   const list = (previewURLs.value && previewURLs.value.length > 0) ? previewURLs.value : (previewURL.value ? [previewURL.value] : [])
   selectedCompletedIndexes.value = new Set(list.map((_, i) => i))
@@ -914,10 +972,29 @@ onMounted(async () => {
       showToast(`Hoàn tất Hàng Đợi AI: ${ok} thành công, ${fail} lỗi.`, fail > 0 ? 'warning' : 'success')
     }
   })
+
+  // Card log: mỗi bước ngắn gọn từ worker (bắt đầu/vào dự án/điền prompt/đính ảnh/đã gửi/xong/lỗi).
+  EventsOn('browser-ai:queue-log', (e: any) => {
+    if (!e) return
+    const d = new Date()
+    queueLogs.value.push({
+      id: queueLogSeq++,
+      time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`,
+      worker: e.worker || 0,
+      name: e.name || '',
+      level: e.level || 'info',
+      step: e.step || ''
+    })
+    // Giới hạn 200 dòng gần nhất để tránh phình bộ nhớ khi chạy nhiều task.
+    if (queueLogs.value.length > 200) {
+      queueLogs.value.splice(0, queueLogs.value.length - 200)
+    }
+  })
 })
 
 onUnmounted(() => {
   EventsOff('browser-ai:queue-progress')
+  EventsOff('browser-ai:queue-log')
 })
 
 const pickOutputDir = async () => {

@@ -1,6 +1,7 @@
 package browserai
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,7 +42,41 @@ const debugLogFileName = "flow_submit_debug.log"
 var (
 	debugLogPathOnce sync.Once
 	debugLogPath     string
+	debugLogMu       sync.Mutex // tuần tự hóa ghi + rotation khi nhiều worker log song song
 )
+
+// maxDebugLogSize là ngưỡng kích thước file log (10MB). Vượt ngưỡng thì cắt bớt,
+// chỉ giữ lại nửa cuối gần nhất để file không phình vô hạn theo thời gian dùng.
+const maxDebugLogSize = 10 * 1024 * 1024
+
+// rotateDebugLogIfNeeded cắt file log khi vượt ngưỡng: đọc toàn bộ, giữ lại nửa
+// sau (bỏ phần cũ nhất), rồi ghi đè. Gọi trong debugLogMu nên an toàn đồng thời.
+func rotateDebugLogIfNeeded(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < maxDebugLogSize {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	// Giữ nửa cuối; cắt tới đầu dòng kế tiếp để không bỏ dở giữa một dòng.
+	half := data[len(data)/2:]
+	if idx := indexByte(half, '\n'); idx >= 0 && idx+1 < len(half) {
+		half = half[idx+1:]
+	}
+	_ = os.WriteFile(path, half, 0644)
+}
+
+// indexByte trả về vị trí byte b đầu tiên trong s, hoặc -1. Tránh import bytes.
+func indexByte(s []byte, b byte) int {
+	for i := range s {
+		if s[i] == b {
+			return i
+		}
+	}
+	return -1
+}
 
 // resolveDebugLogPath trả về đường dẫn file log nằm trong thư mục cấu hình của
 // người dùng (không hard-code ổ đĩa) để hoạt động trên mọi máy.
@@ -63,12 +98,54 @@ func resolveDebugLogPath() string {
 // trong package thay cho các closure logDebug hard-code trước đây.
 func flowLogf(msg string, args ...interface{}) {
 	formatted := fmt.Sprintf(msg, args...)
-	fmt.Println("[FlowDebug]", formatted)
+	// Không in ra stdout nữa để tránh spam CMD; chỉ ghi vào file log debug.
 
-	f, err := os.OpenFile(resolveDebugLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	path := resolveDebugLogPath()
+	debugLogMu.Lock()
+	defer debugLogMu.Unlock()
+
+	rotateDebugLogIfNeeded(path)
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return
 	}
 	defer f.Close()
 	_, _ = f.WriteString(time.Now().Format("2006-01-02 15:04:05") + " - " + formatted + "\n")
+}
+
+// getSettingsFilePath trả về đường dẫn file settings.json tập trung
+func getSettingsFilePath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil || dir == "" {
+		dir = os.TempDir()
+	}
+	appDir := filepath.Join(dir, "video-splitter")
+	_ = os.MkdirAll(appDir, 0755)
+	return filepath.Join(appDir, "settings.json")
+}
+
+// GlobalConfigData biểu diễn thông số cấu hình tập trung liên quan tới AI
+type GlobalConfigData struct {
+	BrowserAIConcurrency int  `json:"browserAIConcurrency"`
+	BrowserAIShowChrome  bool `json:"browserAIShowChrome"`
+}
+
+// LoadGlobalSettingsConfig đọc cấu hình tập trung từ settings.json cho package browserai
+func LoadGlobalSettingsConfig() GlobalConfigData {
+	cfg := GlobalConfigData{
+		BrowserAIConcurrency: DefaultBrowserConcurrency,
+		BrowserAIShowChrome:  true,
+	}
+	data, err := os.ReadFile(getSettingsFilePath())
+	if err == nil && len(data) > 0 {
+		_ = json.Unmarshal(data, &cfg)
+	}
+	if cfg.BrowserAIConcurrency <= 0 {
+		cfg.BrowserAIConcurrency = DefaultBrowserConcurrency
+	}
+	if cfg.BrowserAIConcurrency > MaxBrowserConcurrency {
+		cfg.BrowserAIConcurrency = MaxBrowserConcurrency
+	}
+	return cfg
 }

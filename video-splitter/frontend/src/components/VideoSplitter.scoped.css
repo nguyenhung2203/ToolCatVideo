@@ -1536,6 +1536,18 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: var(--wx-space-3);
+  position: relative;
+}
+
+.clip-drag-box {
+  position: absolute;
+  border: 1.5px solid var(--accent-color, #3b82f6);
+  background: color-mix(in srgb, var(--accent-color, #3b82f6) 18%, transparent);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 100;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent-color, #3b82f6) 40%, transparent);
+  backdrop-filter: blur(2px);
 }
 
 .clip-modern-card {

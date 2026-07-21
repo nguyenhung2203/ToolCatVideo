@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -598,19 +599,34 @@ func (a *App) CancelExport() {
 }
 
 func sanitizeFilename(s string) string {
-	r := strings.NewReplacer(
-		`\`, "_",
-		`/`, "_",
-		`:`, "_",
-		`*`, "_",
-		`?`, "_",
-		`"`, "_",
-		`<`, "_",
-		`>`, "_",
-		`|`, "_",
-		` `, "_",
-	)
-	return r.Replace(s)
+	// 1. Loại bỏ các từ khóa rác / thẻ trong ngoặc như [Full HD], (Official Music Video),...
+	reBrackets := regexp.MustCompile(`(?i)\[.*?\]|\(.*?\)|- \w+ official|4k|1080p|full hd|hd|short|shorts`)
+	s = reBrackets.ReplaceAllString(s, "")
+
+	// 2. Thay thế ký tự đặc biệt không hợp lệ trong Windows path bằng khoảng trắng
+	reInvalid := regexp.MustCompile(`[\\/:*?"<>|~!@#$%^&*()+=,\-\[\]{};.]`)
+	s = reInvalid.ReplaceAllString(s, " ")
+
+	// 3. Tách từ và loại bỏ khoảng trắng thừa
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return "video"
+	}
+
+	// 4. Nếu tên video quá dài (nhiều hơn 4 từ), tự động rút gọn lấy 4 từ đầu tiên để tên file ngắn gọn & đẹp
+	if len(words) > 4 {
+		words = words[:4]
+	}
+	result := strings.Join(words, "_")
+	if len(result) > 28 {
+		result = result[:28]
+		result = strings.TrimRight(result, "_")
+	}
+
+	if result == "" {
+		return "video"
+	}
+	return result
 }
 
 // ExportClips xuất nhiều clip song song sử dụng ffmpeg.
@@ -673,7 +689,16 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 			cleanProjName := sanitizeFilename(projectName)
 			cleanVideoName := sanitizeFilename(videoName)
 
-			outName := fmt.Sprintf("%s_%s_%d.mp4", cleanProjName, cleanVideoName, clip.Index)
+			var outName string
+			if cleanProjName == "" || cleanProjName == "Project" || cleanProjName == "Du_an_mac_dinh" || cleanProjName == "Dự án mặc định" {
+				outName = fmt.Sprintf("%s_%d.mp4", cleanVideoName, clip.Index)
+			} else {
+				if strings.HasSuffix(cleanProjName, "_") || strings.HasSuffix(cleanProjName, "-") {
+					outName = fmt.Sprintf("%s%d.mp4", cleanProjName, clip.Index)
+				} else {
+					outName = fmt.Sprintf("%s_%d.mp4", cleanProjName, clip.Index)
+				}
+			}
 			outPath := filepath.Join(outDir, outName)
 			res := ExportResult{ClipID: clip.ID, Index: clip.Index, OutPath: outPath}
 			threads := 0
@@ -723,8 +748,10 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 					extractedFrame, errFrame := media.ExtractClearFrame(clipCtx, sourcePath, clipDuration, clearFramePath)
 
 					if errFrame == nil && extractedFrame != "" {
-						// Tạo ảnh thumbnail mặc định ban đầu từ frame cắt được
-						_ = copyFile(extractedFrame, destThumbPath)
+						// KHÔNG copy frame gốc vào thư mục image nữa (theo yêu cầu: chỉ giữ
+						// ảnh AI, không lẫn frame chưa có chữ). Đánh đổi: nếu AI tạo lỗi thì
+						// clip này KHÔNG có thumbnail nào trong thư mục — worker sẽ phát cảnh
+						// báo qua export_log để người dùng biết clip nào cần tạo lại.
 
 						theme := cfg.Prompt
 						if theme == "" {
@@ -1047,27 +1074,26 @@ func (a *App) analyzeFixed(sourcePath string, cfg project.AnalyzerConfig) ([]pro
 	return clips, nil
 }
 
-// SaveGlobalSettings lưu cấu hình cài đặt chung của người dùng vào file settings.json
-func (a *App) SaveGlobalSettings(settingsJSON string) error {
+func getSettingsFilePath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil || dir == "" {
 		dir = os.TempDir()
 	}
 	appDir := filepath.Join(dir, "video-splitter")
 	_ = os.MkdirAll(appDir, 0755)
+	return filepath.Join(appDir, "settings.json")
+}
 
-	settingsPath := filepath.Join(appDir, "settings.json")
+// SaveGlobalSettings lưu cấu hình cài đặt chung của người dùng vào file settings.json
+func (a *App) SaveGlobalSettings(settingsJSON string) error {
+	settingsPath := getSettingsFilePath()
 	return os.WriteFile(settingsPath, []byte(settingsJSON), 0644)
 }
 
 // GetGlobalSettings đọc cấu hình cài đặt chung của người dùng từ file settings.json.
 // Trả về chuỗi rỗng nếu file chưa tồn tại.
 func (a *App) GetGlobalSettings() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil || dir == "" {
-		dir = os.TempDir()
-	}
-	settingsPath := filepath.Join(dir, "video-splitter", "settings.json")
+	settingsPath := getSettingsFilePath()
 	if _, err := os.Stat(settingsPath); os.IsNotExist(err) {
 		return "", nil
 	}
