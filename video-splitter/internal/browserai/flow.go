@@ -23,17 +23,7 @@ func GenerateFlowVideo(
 	tm *TaskManager,
 	req GenerateRequest,
 ) ([]string, error) {
-	logDebug := func(msg string, args ...interface{}) {
-		formatted := fmt.Sprintf(msg, args...)
-		fmt.Println("[FlowDebug]", formatted)
-		
-		// Write to a local log file in workspace for the user to view
-		f, err := os.OpenFile("d:\\CongTy\\ToolCatVideoNgan\\flow_submit_debug.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-		if err == nil {
-			defer f.Close()
-			_, _ = f.WriteString(time.Now().Format("2006-01-02 15:04:05") + " - " + formatted + "\n")
-		}
-	}
+	logDebug := flowLogf
 
 	sleep := func(base time.Duration) {
 		delayMult := req.DelaySecond
@@ -303,7 +293,7 @@ func GenerateFlowVideo(
 		logDebug("Lưu link dự án mới vào settings.json: %s", info.URL)
 		saveProjectURL(info.URL)
 	} else {
-		// Kiểm tra xem dự án cũ có vượt quá 50 ảnh hay không
+		// Kiểm tra xem dự án cũ có vượt quá ngưỡng ảnh cho phép hay không
 		totalCardsCountObj, errTotalCount := page.Eval(`() => {
 			const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
 				const src = img.getAttribute('src') || '';
@@ -314,8 +304,8 @@ func GenerateFlowVideo(
 		if errTotalCount == nil && totalCardsCountObj != nil {
 			totalCount := totalCardsCountObj.Value.Int()
 			logDebug("Số lượng hình ảnh hiện có trong dự án cũ: %d", totalCount)
-			if totalCount >= 30 {
-				logDebug("Dự án hiện tại đã có %d hình ảnh (vượt quá ngưỡng 50 ảnh để tránh lag). Tiến hành xóa link dự án cũ để lần tới tự động tạo dự án mới...", totalCount)
+			if totalCount >= MaxProjectImages {
+				logDebug("Dự án hiện tại đã có %d hình ảnh (vượt ngưỡng %d ảnh để tránh lag). Tiến hành xóa link dự án cũ để lần tới tự động tạo dự án mới...", totalCount, MaxProjectImages)
 				saveProjectURL("")
 			}
 		}
@@ -446,7 +436,7 @@ func GenerateFlowVideo(
 		logDebug("Số lượng nút tải video cũ đã có: %d", initialVideoButtonsCount)
 	}
 
-	maxAttempts := 3
+	maxAttempts := MaxGenerateAttempts
 	var finalErr error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -601,9 +591,8 @@ func GenerateFlowVideo(
 			
 			var previewBase64s []string
 			tickerImg := time.NewTicker(2 * time.Second)
-			defer tickerImg.Stop()
-			
-			deadlineImg := time.Now().Add(10 * time.Minute)
+
+			deadlineImg := time.Now().Add(ImageGenerateTimeout)
 			pollCount := 0
 			
 			for {
@@ -794,8 +783,8 @@ func GenerateFlowVideo(
 							if errTotalCount == nil && totalCardsCountObj != nil {
 								totalCount := totalCardsCountObj.Value.Int()
 								logDebug("Tổng số lượng hình ảnh đang có trong dự án: %d", totalCount)
-								if totalCount >= 50 {
-									logDebug("Dự án hiện tại có %d hình ảnh (vượt ngưỡng 50 ảnh để tránh lag Chrome). Tiến hành xóa link dự án cũ để lần sau tự động tạo dự án mới...", totalCount)
+								if totalCount >= MaxProjectImages {
+									logDebug("Dự án hiện tại có %d hình ảnh (vượt ngưỡng %d ảnh để tránh lag Chrome). Tiến hành xóa link dự án cũ để lần sau tự động tạo dự án mới...", totalCount, MaxProjectImages)
 									saveProjectURL("") // Xóa link project để lần sau tạo dự án mới tinh!
 								}
 							}
@@ -842,6 +831,8 @@ func GenerateFlowVideo(
 					}
 				}
 			}
+
+			tickerImg.Stop()
 
 			if generationFailed {
 				continue
@@ -1028,10 +1019,8 @@ func GenerateFlowVideo(
 			// Video generation and download flow
 			var downloadBtn *rod.Element
 			ticker := time.NewTicker(3 * time.Second)
-			defer ticker.Stop()
 
-			// Timeout for video generation is 20 minutes
-			deadline := time.Now().Add(20 * time.Minute)
+			deadline := time.Now().Add(VideoGenerateTimeout)
 
 			for {
 				select {
@@ -1174,6 +1163,7 @@ func GenerateFlowVideo(
 					}
 				}
 			}
+			ticker.Stop()
 
 			if generationFailed {
 				continue
@@ -1200,16 +1190,7 @@ func GenerateFlowVideo(
 }
 
 func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequest, tm *TaskManager) error {
-	logDebug := func(msg string, args ...interface{}) {
-		formatted := fmt.Sprintf(msg, args...)
-		fmt.Println("[FlowDebug]", formatted)
-		
-		f, err := os.OpenFile("d:\\CongTy\\ToolCatVideoNgan\\flow_submit_debug.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-		if err == nil {
-			defer f.Close()
-			_, _ = f.WriteString(time.Now().Format("2006-01-02 15:04:05") + " - " + formatted + "\n")
-		}
-	}
+	logDebug := flowLogf
 
 	// Lấy hệ số delay multiplier từ yêu cầu của người dùng (ví dụ Độ trễ: 2 giây)
 	delayMult := req.DelaySecond
@@ -1860,56 +1841,155 @@ func DismissWelcomeModals(ctx context.Context, page *rod.Page) {
 	}
 }
 
-func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) error {
-	// 1. Luôn Focus vào ô promptInput trước để đảm bảo Chrome có điểm tập trung bàn phím
-	_ = promptInput.Focus()
-	time.Sleep(150 * time.Millisecond)
-
-	// 2. Kiểm tra xem trong ô prompt có thẻ ảnh đính kèm hay không
-	hasAttachedCard, _ := promptInput.Eval(`() => {
-		const cards = this.querySelectorAll('img, canvas, div[data-tile-id], [aria-label*="remove"], [aria-label*="xóa"]');
-		return cards.length > 0;
+// promptTextContent đọc phần văn bản người dùng đã nhập trong ô prompt Slate,
+// bỏ qua nội dung của thẻ ảnh đính kèm (alt/aria) để verify prompt đã vào thật hay chưa.
+func promptTextContent(promptInput *rod.Element) string {
+	res, err := promptInput.Eval(`() => {
+		// Slate lưu text trong các node [data-slate-string]; nếu không có thì lấy textContent.
+		const spans = this.querySelectorAll('[data-slate-string="true"]');
+		if (spans.length > 0) {
+			return Array.from(spans).map(s => s.textContent || '').join('');
+		}
+		return this.textContent || '';
 	}`)
+	if err != nil || res == nil {
+		return ""
+	}
+	return strings.TrimSpace(res.Value.Str())
+}
 
-	if hasAttachedCard != nil && hasAttachedCard.Value.Bool() {
-		// TRƯỜNG HỢP 1: Có ảnh đính kèm -> Đặt con trỏ sau thẻ ảnh & chèn prompt qua CDP InsertText
-		_, _ = promptInput.Eval(`() => {
-			this.focus();
-			try {
-				const range = document.createRange();
+// promptContainsText kiểm tra prompt đã thực sự nằm trong ô nhập liệu chưa.
+// So khớp linh hoạt: Slate có thể chèn thêm khoảng trắng/xuống dòng quanh thẻ ảnh.
+func promptContainsText(promptInput *rod.Element, prompt string) bool {
+	want := strings.TrimSpace(prompt)
+	if want == "" {
+		return true
+	}
+	got := promptTextContent(promptInput)
+	if got == "" {
+		return false
+	}
+	// Khớp trực tiếp, hoặc bỏ mọi khoảng trắng hai bên để tránh sai lệch do Slate chèn whitespace.
+	if strings.Contains(got, want) {
+		return true
+	}
+	normalize := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	return strings.Contains(normalize(got), normalize(want))
+}
+
+// moveCaretToEnd đặt con trỏ về cuối nội dung ô prompt (sau thẻ ảnh nếu có).
+func moveCaretToEnd(promptInput *rod.Element) {
+	_, _ = promptInput.Eval(`() => {
+		this.focus();
+		try {
+			const textNodes = [];
+			const walk = document.createTreeWalker(this, NodeFilter.SHOW_TEXT, null, false);
+			let n;
+			while (n = walk.nextNode()) {
+				textNodes.push(n);
+			}
+			const range = document.createRange();
+			const sel = window.getSelection();
+			if (textNodes.length > 0) {
+				const lastText = textNodes[textNodes.length - 1];
+				range.setStart(lastText, lastText.nodeValue.length);
+				range.setEnd(lastText, lastText.nodeValue.length);
+			} else {
 				range.selectNodeContents(this);
 				range.collapse(false);
-				const sel = window.getSelection();
-				sel.removeAllRanges();
-				sel.addRange(range);
-			} catch (e) {}
+			}
+			sel.removeAllRanges();
+			sel.addRange(range);
+		} catch (e) {}
+	}`)
+}
+
+// CopyTextToClipboardWindows nạp xâu văn bản trực tiếp vào Clipboard của hệ thống Windows qua PowerShell
+func CopyTextToClipboardWindows(text string) error {
+	escaped := strings.ReplaceAll(text, "'", "''")
+	cmdStr := fmt.Sprintf(`Add-Type -Assembly System.Windows.Forms; [System.Windows.Forms.Clipboard]::SetText('%s')`, escaped)
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", cmdStr)
+	return cmd.Run()
+}
+
+// FillFlowPrompt điền văn bản prompt vào ô nhập liệu Slate của Google Flow.
+func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) error {
+	if strings.TrimSpace(prompt) == "" {
+		return nil
+	}
+
+	dispatchInputEvents := func() {
+		_, _ = promptInput.Eval(`() => {
+			this.dispatchEvent(new Event('input', { bubbles: true }));
+			this.dispatchEvent(new Event('change', { bubbles: true }));
 		}`)
-		time.Sleep(150 * time.Millisecond)
-		_ = page.InsertText(prompt)
-	} else {
-		// TRƯỜNG HỢP 2: KHÔNG có ảnh đính kèm (Chỉ nhập câu lệnh văn bản thường) -> Click & Gõ prompt
-		_ = HumanClick(page, promptInput)
+	}
+
+	// Cách 1: CDP InsertText tại cuối nội dung (giữ nguyên thẻ ảnh đính kèm nếu có).
+	_ = promptInput.Focus()
+	time.Sleep(150 * time.Millisecond)
+	moveCaretToEnd(promptInput)
+	time.Sleep(150 * time.Millisecond)
+	_ = page.InsertText(prompt)
+	time.Sleep(300 * time.Millisecond)
+	dispatchInputEvents()
+	time.Sleep(200 * time.Millisecond)
+	if promptContainsText(promptInput, prompt) {
+		return nil
+	}
+
+	// Cách 2: document.execCommand('insertText') - Chèn text chuẩn HTML5/Chrome rich-text
+	flowLogf("Prompt chưa vào ô sau InsertText. Thử chèn bằng execCommand('insertText')...")
+	_ = promptInput.Focus()
+	time.Sleep(150 * time.Millisecond)
+	moveCaretToEnd(promptInput)
+	time.Sleep(150 * time.Millisecond)
+	_, _ = promptInput.Eval(`(txt) => {
+		this.focus();
+		document.execCommand('insertText', false, txt);
+	}`, prompt)
+	time.Sleep(300 * time.Millisecond)
+	dispatchInputEvents()
+	time.Sleep(200 * time.Millisecond)
+	if promptContainsText(promptInput, prompt) {
+		return nil
+	}
+
+	// Cách 3: Dán prompt qua OS Clipboard + CDP Ctrl+V (Cách dán 100% Slate nhận diện)
+	flowLogf("Prompt chưa vào ô sau execCommand. Thử dán prompt bằng OS Clipboard + Ctrl+V...")
+	if err := CopyTextToClipboardWindows(prompt); err == nil {
 		_ = promptInput.Focus()
 		time.Sleep(150 * time.Millisecond)
-		
-		_ = promptInput.SelectAllText()
-		_ = promptInput.Input("")
-		
-		errInput := promptInput.Input(prompt)
-		if errInput != nil {
-			_ = page.InsertText(prompt)
+		moveCaretToEnd(promptInput)
+		time.Sleep(150 * time.Millisecond)
+		_ = page.KeyActions().Press(input.ControlLeft).Press(input.KeyV).Do()
+		time.Sleep(400 * time.Millisecond)
+		dispatchInputEvents()
+		time.Sleep(200 * time.Millisecond)
+		if promptContainsText(promptInput, prompt) {
+			return nil
 		}
 	}
 
-	time.Sleep(400 * time.Millisecond)
-
-	// 3. Kích hoạt event input/change để React cập nhật state và ẩn chữ mờ placeholder
-	_, _ = promptInput.Eval(`() => {
-		this.dispatchEvent(new Event('input', { bubbles: true }));
-		this.dispatchEvent(new Event('change', { bubbles: true }));
+	// Cách 4: Nếu không có ảnh đính kèm, thử gõ trực tiếp bằng promptInput.Input()
+	hasAttachedCard, _ := promptInput.Eval(`() => {
+		return this.querySelector('div[data-tile-id], div[role="button"][aria-roledescription="draggable"]') !== null;
 	}`)
+	if hasAttachedCard == nil || !hasAttachedCard.Value.Bool() {
+		flowLogf("Không có ảnh đính kèm, thử gõ trực tiếp bằng Input()...")
+		_ = promptInput.Focus()
+		_ = promptInput.SelectAllText()
+		_ = promptInput.Input("")
+		if err := promptInput.Input(prompt); err == nil {
+			time.Sleep(300 * time.Millisecond)
+			dispatchInputEvents()
+			if promptContainsText(promptInput, prompt) {
+				return nil
+			}
+		}
+	}
 
-	return nil
+	return fmt.Errorf("không điền được prompt vào ô nhập liệu sau 4 cách thử (Slate không nhận text)")
 }
 
 func getSettingsPath() string {
