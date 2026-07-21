@@ -15,7 +15,7 @@ const emit = defineEmits<{
 }>()
 
 const {
-  imageQuery, imageSource, imageApiKey, imageMaxCount,
+  imageQuery, imageSource, imageApiKey, imageMaxCount, showFilters,
   isSearching: isImageSearching, isDownloading: isImageDownloading, searchResult: imageSearchResult,
   imageDir, selectedImageIds, progressMap: imageProgressMap, searchLog: imageSearchLog,
   downloadDoneCount, downloadTotalCount, downloadProgress: imageDownloadProgress,
@@ -25,8 +25,6 @@ const {
   searchImages, startImageDownload, cancelImageDl, pickImageDir, initImageEvents,
   removeSelectedImages,
 } = useImageDownloader(props.showToast)
-
-const showFilters = ref(false)
 
 onMounted(async () => {
   await openImagePanel()

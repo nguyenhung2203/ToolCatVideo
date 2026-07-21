@@ -1,5 +1,5 @@
 import { ref, computed, watch, type Ref } from 'vue'
-import { SearchImages, DownloadImages, CancelImageDownload, GetDefaultImageDownloadDir, SelectFolder } from '../../../wailsjs/go/main/App'
+import { SearchImages, DownloadImages, CancelImageDownload, GetDefaultImageDownloadDir, SelectFolder, GetGlobalSettings, SaveGlobalSettings } from '../../../wailsjs/go/main/App'
 import { imagedownloader } from '../../../wailsjs/go/models'
 import { EventsOn } from '../../../wailsjs/runtime/runtime'
 
@@ -77,6 +77,47 @@ export function useImageDownloader(
   const downloadDoneCount = ref(0)
   const downloadTotalCount = ref(0)
 
+  // Map riêng lưu key/cookie theo từng provider
+  const imageApiKeys = ref<Record<string, string>>({
+    duckduckgo: '',
+    pinterest: '',
+    pixabay: '',
+    unsplash: '',
+    pexels: ''
+  })
+  const showFilters = ref(false)
+  const isSettingsLoaded = ref(false)
+
+  const saveSettings = async () => {
+    if (!isSettingsLoaded.value) return
+    try {
+      const settingsStr = await GetGlobalSettings()
+      let gSettings: any = {}
+      if (settingsStr) {
+        gSettings = JSON.parse(settingsStr)
+      }
+      gSettings.imageDownloaderConfig = {
+        source: imageSource.value,
+        maxCount: imageMaxCount.value,
+        imageDir: imageDir.value,
+        showFilters: showFilters.value,
+        apiKeys: JSON.parse(JSON.stringify(imageApiKeys.value))
+      }
+      await SaveGlobalSettings(JSON.stringify(gSettings))
+    } catch (e) {
+      console.error('Lỗi tự động lưu ImageDownloaderConfig:', e)
+    }
+  }
+
+  let saveTimeout: any = null
+  const triggerSaveSettings = () => {
+    if (!isSettingsLoaded.value) return
+    if (saveTimeout) clearTimeout(saveTimeout)
+    saveTimeout = setTimeout(() => {
+      saveSettings()
+    }, 800)
+  }
+
   // === Computed ===
   const selectedSource = computed(() => IMAGE_SOURCES.find(s => s.value === imageSource.value))
   const sourceNeedsKey = computed(() => selectedSource.value?.needsKey ?? false)
@@ -102,8 +143,19 @@ export function useImageDownloader(
   })
 
   watch(imageSource, (newSource) => {
-    imageApiKey.value = getEnvKeyForSource(newSource)
-  }, { immediate: true })
+    const storedKey = imageApiKeys.value[newSource]
+    imageApiKey.value = storedKey !== undefined && storedKey !== '' ? storedKey : getEnvKeyForSource(newSource)
+    triggerSaveSettings()
+  })
+
+  watch(imageApiKey, (newKey) => {
+    imageApiKeys.value[imageSource.value] = newKey
+    triggerSaveSettings()
+  })
+
+  watch([imageMaxCount, imageDir, showFilters], () => {
+    triggerSaveSettings()
+  })
 
   // === Helpers ===
   const addLog = (msg: string) => {
@@ -129,6 +181,29 @@ export function useImageDownloader(
 
   const openImagePanel = async () => {
     showImagePanel.value = true
+    try {
+      const settingsStr = await GetGlobalSettings()
+      if (settingsStr) {
+        const gSettings = JSON.parse(settingsStr)
+        if (gSettings.imageDownloaderConfig) {
+          const cfg = gSettings.imageDownloaderConfig
+          if (cfg.source) imageSource.value = cfg.source
+          if (cfg.maxCount) imageMaxCount.value = cfg.maxCount
+          if (cfg.imageDir) imageDir.value = cfg.imageDir
+          if (cfg.showFilters !== undefined) showFilters.value = cfg.showFilters
+          if (cfg.apiKeys) {
+            imageApiKeys.value = { ...imageApiKeys.value, ...cfg.apiKeys }
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Lỗi nạp cấu hình ImageDownloaderConfig:', e)
+    }
+
+    const storedKey = imageApiKeys.value[imageSource.value]
+    imageApiKey.value = storedKey !== undefined && storedKey !== '' ? storedKey : getEnvKeyForSource(imageSource.value)
+    isSettingsLoaded.value = true
+
     if (!imageDir.value) {
       try {
         imageDir.value = await GetDefaultImageDownloadDir()
@@ -252,6 +327,7 @@ export function useImageDownloader(
     imageSource,
     imageApiKey,
     imageMaxCount,
+    showFilters,
     isSearching,
     isDownloading,
     searchResult,

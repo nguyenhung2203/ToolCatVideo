@@ -716,8 +716,19 @@ const queueLogBox = ref<HTMLElement | null>(null)
 let queueLogSeq = 0
 
 // Tự cuộn xuống dòng log mới nhất khi có bước mới (chỉ khi đang mở).
-watch(() => queueLogs.value.length, () => {
+// Watch theo id dòng CUỐI (luôn tăng) thay vì .length — vì khi log đạt trần 200
+// dòng (push rồi splice), length giữ nguyên 200 nên watch .length sẽ không kích
+// hoạt và mất auto-scroll. id dòng cuối luôn thay đổi nên cuộn không bao giờ chết.
+watch(() => queueLogs.value.length > 0 ? queueLogs.value[queueLogs.value.length - 1].id : -1, () => {
   if (queueLogCollapsed.value) return
+  nextTick(() => {
+    if (queueLogBox.value) queueLogBox.value.scrollTop = queueLogBox.value.scrollHeight
+  })
+})
+
+// Khi mở lại card từ trạng thái thu nhỏ → cuộn ngay xuống dòng mới nhất.
+watch(queueLogCollapsed, (collapsed) => {
+  if (collapsed) return
   nextTick(() => {
     if (queueLogBox.value) queueLogBox.value.scrollTop = queueLogBox.value.scrollHeight
   })
