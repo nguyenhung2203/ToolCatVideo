@@ -1851,13 +1851,54 @@ func DismissWelcomeModals(ctx context.Context, page *rod.Page) {
 }
 
 func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) error {
-	// KHÔNG thực hiện bất kỳ câu lệnh Eval JS Range/Selection nào (tránh làm React Slate.js reset mất thẻ ảnh)
-	// Trực tiếp gửi văn bản bằng CDP InsertText vì con trỏ đã nằm sẵn đúng vị trí sau khi dán Ctrl+V
-	err := page.InsertText(prompt)
-	if err != nil {
-		_ = promptInput.Input(prompt)
+	// 1. Luôn Focus vào ô promptInput trước để đảm bảo Chrome có điểm tập trung bàn phím
+	_ = promptInput.Focus()
+	time.Sleep(150 * time.Millisecond)
+
+	// 2. Kiểm tra xem trong ô prompt có thẻ ảnh đính kèm hay không
+	hasAttachedCard, _ := promptInput.Eval(`() => {
+		const cards = this.querySelectorAll('img, canvas, div[data-tile-id], [aria-label*="remove"], [aria-label*="xóa"]');
+		return cards.length > 0;
+	}`)
+
+	if hasAttachedCard != nil && hasAttachedCard.Value.Bool() {
+		// TRƯỜNG HỢP 1: Có ảnh đính kèm -> Đặt con trỏ sau thẻ ảnh & chèn prompt qua CDP InsertText
+		_, _ = promptInput.Eval(`() => {
+			this.focus();
+			try {
+				const range = document.createRange();
+				range.selectNodeContents(this);
+				range.collapse(false);
+				const sel = window.getSelection();
+				sel.removeAllRanges();
+				sel.addRange(range);
+			} catch (e) {}
+		}`)
+		time.Sleep(150 * time.Millisecond)
+		_ = page.InsertText(prompt)
+	} else {
+		// TRƯỜNG HỢP 2: KHÔNG có ảnh đính kèm (Chỉ nhập câu lệnh văn bản thường) -> Click & Gõ prompt
+		_ = HumanClick(page, promptInput)
+		_ = promptInput.Focus()
+		time.Sleep(150 * time.Millisecond)
+		
+		_ = promptInput.SelectAllText()
+		_ = promptInput.Input("")
+		
+		errInput := promptInput.Input(prompt)
+		if errInput != nil {
+			_ = page.InsertText(prompt)
+		}
 	}
-	time.Sleep(500 * time.Millisecond)
+
+	time.Sleep(400 * time.Millisecond)
+
+	// 3. Kích hoạt event input/change để React cập nhật state và ẩn chữ mờ placeholder
+	_, _ = promptInput.Eval(`() => {
+		this.dispatchEvent(new Event('input', { bubbles: true }));
+		this.dispatchEvent(new Event('change', { bubbles: true }));
+	}`)
+
 	return nil
 }
 
