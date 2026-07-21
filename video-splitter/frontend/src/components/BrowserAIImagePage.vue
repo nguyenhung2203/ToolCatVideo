@@ -238,20 +238,16 @@
             </span>
           </div>
 
-          <!-- Previews Compact Grid Area -->
-          <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 6px 0; width: 100%;">
-            <div class="media-preview-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; justify-items: center; width: 100%;">
+          <!-- Previews Compact Grid Area (Identical layout to Selection Card Grid) -->
+          <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 10px 0; width: 100%;">
+            <div class="img-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; width: 100%; justify-items: center;">
               <div 
                 v-for="(pUrl, pIdx) in (previewURLs.length > 0 ? previewURLs : (previewURL ? [previewURL] : []))" 
                 :key="pIdx" 
-                class="media-preview-card" 
-                style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 170px; background: var(--wx-glass-light-bg); backdrop-filter: blur(var(--wx-glass-light-blur)); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 8px; box-shadow: var(--wx-shadow-md); transition: all 0.2s ease; position: relative;"
+                class="img-card" 
+                style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 160px; background: var(--wx-glass-light-bg); backdrop-filter: blur(var(--wx-glass-light-blur)); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 6px; box-shadow: var(--wx-shadow-md); position: relative;"
               >
-                <img :src="pUrl" style="width: 100%; height: 140px; object-fit: cover; border-radius: var(--wx-radius-sm);" draggable="false" />
-                
-                <span style="font-size: 11px; margin-top: 6px; color: var(--wx-text-secondary); word-break: break-all; text-align: center; font-weight: 500; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; width: 100%;">
-                  {{ result.filePaths && result.filePaths[pIdx] ? getFilename(result.filePaths[pIdx]) : result.fileName }}
-                </span>
+                <img :src="pUrl" style="width: 100%; height: 160px; object-fit: cover; border-radius: var(--wx-radius-sm);" draggable="false" />
               </div>
             </div>
           </div>
