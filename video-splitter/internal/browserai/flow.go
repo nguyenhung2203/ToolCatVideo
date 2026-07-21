@@ -824,21 +824,28 @@ func GenerateFlowVideo(
 				continue
 			}
 
-			// Gửi preview về frontend và chờ người dùng chọn
+			// Gửi preview về frontend và chờ người dùng chọn (Nếu là tác vụ tự động hàng đợi thì tự động chọn)
 			taskID := "temp"
 			if active := tm.GetActiveTask(); active != nil {
 				taskID = active.ID
 			}
 
-			logDebug("Đang gửi yêu cầu chọn ảnh lên UI...")
-			tm.EmitSelectionRequired(taskID, previewBase64s)
-
 			var selectedIndexes []int
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case selectedIndexes = <-tm.GetActiveTask().SelectionChan:
-				logDebug("Đã nhận được danh sách ảnh được chọn từ UI: %v", selectedIndexes)
+			if req.ConfirmBeforeCreate == "auto" {
+				logDebug("Tác vụ tự động từ Hàng Đợi (ConfirmBeforeCreate=auto): Tự động chọn tải ảnh...")
+				for i := 0; i < len(previewBase64s); i++ {
+					selectedIndexes = append(selectedIndexes, i)
+				}
+			} else {
+				logDebug("Đang gửi yêu cầu chọn ảnh lên UI...")
+				tm.EmitSelectionRequired(taskID, previewBase64s)
+
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case selectedIndexes = <-tm.GetActiveTask().SelectionChan:
+					logDebug("Đã nhận được danh sách ảnh được chọn từ UI: %v", selectedIndexes)
+				}
 			}
 
 			if len(selectedIndexes) == 0 {

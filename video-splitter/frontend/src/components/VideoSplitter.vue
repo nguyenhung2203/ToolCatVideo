@@ -809,6 +809,21 @@ onMounted(async () => {
     }
   })
 
+  EventsOn('clip_ai_thumb_completed', (task: any) => {
+    if (task && task.resultPath) {
+      for (const path of Object.keys(clipsMap.value)) {
+        const clips = clipsMap.value[path] || []
+        const found = clips.find((c: any) => task.id && (task.id.includes(c.id) || task.clipName.includes(`#${c.index}`)))
+        if (found) {
+          found.thumbnail = task.resultPath
+          found.hasAIThumb = true
+          break
+        }
+      }
+      addLog(`✓ ${task.clipName || 'Clip'}: Đã tạo thành công và cập nhật ảnh bìa AI!`)
+    }
+  })
+
   // Đếm ngược thời gian hoàn tất & Cập nhật tiến độ mượt mà (interpolation)
   timerInterval = setInterval(() => {
     const now = Date.now()

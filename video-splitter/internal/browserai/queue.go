@@ -191,17 +191,18 @@ func (qm *AIQueueManager) processWorker(ctx context.Context) {
 		}
 
 		genReq := GenerateRequest{
-			Provider:       provider,
-			MediaType:      MediaTypeImage,
-			Prompt:         task.Prompt,
-			Model:          model,
-			AspectRatio:    task.AspectRatio,
-			BatchSize:      "1x",
-			OutputDir:      task.OutputDir,
-			FileName:       task.FileName,
-			InputImagePath: task.InputImagePath,
-			TimeoutSecond:  180,
-			ShowChrome:     true,
+			Provider:            provider,
+			MediaType:           MediaTypeImage,
+			Prompt:              task.Prompt,
+			Model:               model,
+			AspectRatio:         task.AspectRatio,
+			BatchSize:           "1x",
+			ConfirmBeforeCreate: "auto",
+			OutputDir:           task.OutputDir,
+			FileName:            task.FileName,
+			InputImagePath:      task.InputImagePath,
+			TimeoutSecond:       180,
+			ShowChrome:          true,
 		}
 
 		taskInfo, err := qm.service.Generate(genReq)
@@ -227,6 +228,9 @@ func (qm *AIQueueManager) processWorker(ctx context.Context) {
 						qm.tasks[nextIdx].State = QueueStateCompleted
 						if active.Result != nil && len(active.Result.FilePaths) > 0 {
 							qm.tasks[nextIdx].ResultPath = active.Result.FilePaths[0]
+						}
+						if qm.ctx != nil {
+							runtime.EventsEmit(qm.ctx, "clip_ai_thumb_completed", qm.tasks[nextIdx])
 						}
 					}
 					qm.mu.Unlock()
