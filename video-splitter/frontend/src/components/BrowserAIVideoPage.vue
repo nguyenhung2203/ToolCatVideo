@@ -223,30 +223,25 @@
 
         <!-- Success Preview panel -->
         <div v-else-if="state === 'completed' && result" class="completed-panel" style="display: flex; flex-direction: column; height: 100%; overflow: hidden; min-height: 0;">
-          <div class="preview-header">
-            <CheckCircle :size="20" class="success-check-icon" />
+          <div class="preview-header" style="padding-bottom: 4px;">
+            <CheckCircle :size="18" class="success-check-icon" />
             <span class="success-title">
               {{ previewURLs.length > 1 ? `Đã tạo thành công ${previewURLs.length} file!` : `Đã tạo thành công file: ${result.fileName}` }}
             </span>
           </div>
 
-          <!-- Previews Area -->
-          <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 10px 0;">
-            <!-- Single Media Preview -->
-            <div v-if="previewURLs.length <= 1" class="media-preview-container">
-              <video v-if="previewURL" :src="previewURL" class="preview-media" controls autoplay loop></video>
-              <div v-else class="preview-media flex-center" style="background: var(--wx-surface-sunken); flex-direction: column;">
-                <ImageIcon :size="48" style="color: var(--wx-text-muted);" />
-                <span style="font-size: var(--wx-fs-12); color: var(--wx-text-muted); margin-top: 8px;">Không thể tạo link xem trước cục bộ</span>
-              </div>
-            </div>
-
-            <!-- Multiple Media Preview Grid -->
-            <div v-else class="media-preview-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; justify-items: center; width: 100%; margin: 10px 0;">
-              <div v-for="(pUrl, pIdx) in previewURLs" :key="pIdx" class="media-preview-card" style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 180px; background: var(--wx-glass-light-bg); backdrop-filter: blur(var(--wx-glass-light-blur)); border: 1px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 10px; box-shadow: var(--wx-shadow-md);">
-                <video :src="pUrl" style="width: 100%; height: 160px; object-fit: cover; border-radius: var(--wx-radius-sm);" controls></video>
+          <!-- Previews Compact Grid Area -->
+          <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 6px 0; width: 100%;">
+            <div class="media-preview-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; justify-items: center; width: 100%;">
+              <div 
+                v-for="(pUrl, pIdx) in (previewURLs.length > 0 ? previewURLs : (previewURL ? [previewURL] : []))" 
+                :key="pIdx" 
+                class="media-preview-card" 
+                style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 170px; background: var(--wx-glass-light-bg); backdrop-filter: blur(var(--wx-glass-light-blur)); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 8px; box-shadow: var(--wx-shadow-md); transition: all 0.2s ease; position: relative;"
+              >
+                <video :src="pUrl" style="width: 100%; height: 140px; object-fit: cover; border-radius: var(--wx-radius-sm);" controls></video>
                 
-                <span style="font-size: 11px; margin-top: 8px; color: var(--wx-text-muted); word-break: break-all; text-align: center; font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; height: 32px; line-height: 16px;">
+                <span style="font-size: 11px; margin-top: 6px; color: var(--wx-text-secondary); word-break: break-all; text-align: center; font-weight: 500; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; width: 100%;">
                   {{ result.filePaths && result.filePaths[pIdx] ? getFilename(result.filePaths[pIdx]) : result.fileName }}
                 </span>
               </div>
@@ -254,24 +249,23 @@
           </div>
 
           <!-- File Details & Actions Row -->
-          <div class="file-details" style="flex-shrink: 0; padding: 12px; border-top: 1px solid var(--wx-border-default); display: flex; justify-content: space-between; align-items: center; gap: 16px;">
-            <div style="flex: 1; min-width: 0;">
-              <div v-if="previewURLs.length <= 1" style="word-break: break-all;">Đường dẫn: <code>{{ result.filePath }}</code></div>
-              <div v-else style="word-break: break-all;">Thư mục lưu: <code>{{ outputDir }}</code></div>
-              <div v-if="previewURLs.length <= 1" style="margin-top: 4px;">Kích thước file: <code>{{ formatSize(result.fileSize) }}</code></div>
-              <div v-else style="margin-top: 4px;">Tổng dung lượng ({{ previewURLs.length }} video): <code>{{ formatSize(result.fileSize) }}</code></div>
+          <div class="file-details" style="flex-shrink: 0; padding: 10px 14px; border-top: 1px solid var(--wx-border-default); display: flex; justify-content: space-between; align-items: center; gap: 16px; background: var(--wx-surface-sunken); border-radius: var(--wx-radius-md);">
+            <div style="flex: 1; min-width: 0; font-size: 12px; line-height: 1.4;">
+              <div v-if="previewURLs.length <= 1" style="word-break: break-all; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Đường dẫn: <code style="color: var(--wx-brand-accent);">{{ result.filePath }}</code></div>
+              <div v-else style="word-break: break-all; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Thư mục lưu: <code style="color: var(--wx-brand-accent);">{{ outputDir }}</code></div>
+              <div style="margin-top: 2px;">Kích thước: <code style="color: var(--wx-brand-accent);">{{ formatSize(result.fileSize) }}</code></div>
             </div>
 
             <!-- Quick Action Buttons -->
             <div class="completed-actions" style="flex-shrink: 0; display: flex; gap: 8px; margin-top: 0; justify-content: flex-end; align-items: center;">
-              <button @click="resetForm" class="img-dir-btn" style="height: 36px;">
-                <RefreshCw :size="12" /> Tạo lại
+              <button @click="resetForm" class="img-dir-btn" style="height: 34px; padding: 0 12px; font-size: 12px;">
+                <RefreshCw :size="12" style="margin-right: 4px;" /> Tạo lại
               </button>
-              <button v-if="previewURLs.length <= 1" @click="applyAsSourceVideo(result.filePath)" class="img-action-btn apply-btn" style="height: 36px;">
+              <button v-if="previewURLs.length <= 1" @click="applyAsSourceVideo(result.filePath)" class="img-action-btn apply-btn" style="height: 34px; padding: 0 12px; font-size: 12px;">
                 🎬 Thêm vào video nguồn
               </button>
-              <button @click="openFolder" class="img-dir-btn" style="height: 36px;">
-                <FolderOpen :size="12" /> Mở thư mục
+              <button @click="openFolder" class="img-dir-btn" style="height: 34px; padding: 0 12px; font-size: 12px;">
+                <FolderOpen :size="12" style="margin-right: 4px;" /> Mở thư mục
               </button>
             </div>
           </div>
