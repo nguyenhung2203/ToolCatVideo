@@ -34,17 +34,31 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
     } catch (_) {}
   }
 
+  const getEventTaskId = (event: any) => {
+    return event?.taskId || event?.TaskID || ""
+  }
+
+  const matchesCurrentTask = (event: any) => {
+    const evId = getEventTaskId(event)
+    if (!taskId.value && evId) {
+      taskId.value = evId
+      return true
+    }
+    return !evId || evId === taskId.value
+  }
+
   // Wails Event Handlers
   const handleStatus = (event: any) => {
-    if (event.taskId === taskId.value) {
-      taskState.value = event.state
-      message.value = event.message
-      progress.value = event.progress
+    if (matchesCurrentTask(event)) {
+      const evState = event.state || event.State
+      if (evState) taskState.value = evState
+      if (event.message !== undefined || event.Message !== undefined) message.value = event.message || event.Message
+      if (event.progress !== undefined || event.Progress !== undefined) progress.value = event.progress !== undefined ? event.progress : event.Progress
     }
   }
 
   const handleResult = (event: any) => {
-    if (event.taskId === taskId.value) {
+    if (matchesCurrentTask(event)) {
       taskState.value = "completed"
       progress.value = 100
       message.value = "Tác vụ hoàn thành!"
@@ -55,17 +69,18 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
   }
 
   const handleError = (event: any) => {
-    if (event.taskId === taskId.value) {
+    if (matchesCurrentTask(event)) {
       taskState.value = "failed"
-      errorMsg.value = event.message
-      message.value = "Lỗi: " + event.message
-      showToast("Tạo nội dung AI thất bại: " + event.message, "error")
+      const msg = event.message || event.Message || String(event)
+      errorMsg.value = msg
+      message.value = "Lỗi: " + msg
+      showToast("Tạo nội dung AI thất bại: " + msg, "error")
       updateBrowserStatus()
     }
   }
 
   const handleLoginRequired = (event: any) => {
-    if (event.taskId === taskId.value) {
+    if (matchesCurrentTask(event)) {
       taskState.value = "login_required"
       message.value = "Yêu cầu đăng nhập tài khoản Google."
       showToast("Vui lòng hoàn tất đăng nhập tài khoản Google trên Chrome.", "warning")
@@ -74,11 +89,11 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
   }
 
   const handleSelectionRequired = (event: any) => {
-    if (event.taskId === taskId.value) {
+    if (matchesCurrentTask(event)) {
       taskState.value = "selection_required"
       message.value = "Vui lòng chọn các ảnh bạn muốn tải về máy."
       progress.value = 75
-      selectionPreviews.value = event.previews || []
+      selectionPreviews.value = event.previews || event.Previews || []
       showToast("Đã tạo ảnh xong! Hãy tích chọn những ảnh bạn muốn tải.", "info")
       updateBrowserStatus()
     }
@@ -185,7 +200,7 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
       })
 
       taskId.value = taskInfo.taskId
-      if (taskInfo.state && taskInfo.state !== 'idle') {
+      if (taskInfo.state && taskInfo.state !== 'idle' && taskState.value === 'launching') {
         taskState.value = taskInfo.state
       }
       if (taskInfo.message) {
