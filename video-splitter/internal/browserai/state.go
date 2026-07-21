@@ -66,12 +66,18 @@ func (tm *TaskManager) StartTask(id string, req GenerateRequest, cancel context.
 }
 
 func (tm *TaskManager) GetActiveTask() *activeTask {
+	if tm == nil {
+		return nil
+	}
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	return tm.activeTask
 }
 
 func (tm *TaskManager) EmitStatus(state TaskState, message string, progress int) {
+	if tm == nil {
+		return
+	}
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -94,6 +100,9 @@ func (tm *TaskManager) EmitStatus(state TaskState, message string, progress int)
 }
 
 func (tm *TaskManager) EmitError(err error) {
+	if tm == nil {
+		return
+	}
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -121,6 +130,9 @@ func (tm *TaskManager) EmitError(err error) {
 }
 
 func (tm *TaskManager) EmitResult(result GenerateResult) {
+	if tm == nil {
+		return
+	}
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -146,6 +158,9 @@ func (tm *TaskManager) EmitResult(result GenerateResult) {
 }
 
 func (tm *TaskManager) CancelTask(id string) error {
+	if tm == nil {
+		return nil
+	}
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -173,6 +188,9 @@ func (tm *TaskManager) CancelTask(id string) error {
 }
 
 func (tm *TaskManager) EmitSelectionRequired(taskID string, previews []string) {
+	if tm == nil {
+		return
+	}
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -201,6 +219,9 @@ func (tm *TaskManager) EmitSelectionRequired(taskID string, previews []string) {
 }
 
 func (tm *TaskManager) SubmitSelection(taskID string, selectedIndexes []int) error {
+	if tm == nil {
+		return fmt.Errorf("không có tác vụ đang hoạt động")
+	}
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 

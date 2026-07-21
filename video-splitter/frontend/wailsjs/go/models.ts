@@ -93,6 +93,7 @@ export namespace browserai {
 	    provider: string;
 	    model: string;
 	    aspectRatio: string;
+	    resolution: string;
 	    state: string;
 	    errorMessage: string;
 	    resultPath: string;
@@ -113,6 +114,7 @@ export namespace browserai {
 	        this.provider = source["provider"];
 	        this.model = source["model"];
 	        this.aspectRatio = source["aspectRatio"];
+	        this.resolution = source["resolution"];
 	        this.state = source["state"];
 	        this.errorMessage = source["errorMessage"];
 	        this.resultPath = source["resultPath"];

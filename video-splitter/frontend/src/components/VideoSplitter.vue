@@ -179,7 +179,7 @@ const editClipIdx = ref(-1)
 
 const geminiAPIKey = ref('')
 const browserAIShowChrome = ref(true)
-const browserAIDelay = ref(1.0)
+const browserAIConcurrency = ref(3)
 
 // === AI Thumbnail Generator state and functions ===
 const aiQueueState = reactive({
@@ -448,7 +448,7 @@ const saveGlobalSettings = async () => {
     gSettings.exportWithThumbnails = exportWithThumbnails.value
     gSettings.geminiAPIKey = geminiAPIKey.value
     gSettings.browserAIShowChrome = browserAIShowChrome.value
-    gSettings.browserAIDelay = browserAIDelay.value
+    gSettings.browserAIConcurrency = browserAIConcurrency.value
 
     await SaveGlobalSettings(JSON.stringify(gSettings))
     globalSettingsConfig.value = JSON.parse(JSON.stringify(analyzerConfig))
@@ -458,13 +458,21 @@ const saveGlobalSettings = async () => {
 }
 
 let saveTimeout: any = null
-watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, autoCreateSubfolders, exportWithThumbnails, geminiAPIKey, browserAIShowChrome, browserAIDelay], () => {
+watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, autoCreateSubfolders, exportWithThumbnails, geminiAPIKey, browserAIShowChrome, browserAIConcurrency], () => {
   if (!isSettingsLoaded.value) return
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(() => {
     saveGlobalSettings()
   }, 800)
 }, { deep: true })
+
+// Đổi số luồng trình duyệt → áp dụng ngay vào backend cho lần chạy Hàng Đợi AI kế tiếp.
+watch(browserAIConcurrency, (n) => {
+  if (!isSettingsLoaded.value) return
+  import('../../wailsjs/go/browserai/Service').then((srv) => {
+    srv.SetQueueConcurrency(n)
+  }).catch(() => {})
+})
 
 const videoPlayer = ref<HTMLVideoElement | null>(null)
 const editPlayer = ref<HTMLVideoElement | null>(null)
@@ -667,9 +675,12 @@ onMounted(async () => {
       if (gSettings.browserAIShowChrome !== undefined) {
         browserAIShowChrome.value = gSettings.browserAIShowChrome
       }
-      if (gSettings.browserAIDelay !== undefined) {
-        browserAIDelay.value = gSettings.browserAIDelay
+      if (gSettings.browserAIConcurrency !== undefined) {
+        browserAIConcurrency.value = gSettings.browserAIConcurrency
       }
+      import('../../wailsjs/go/browserai/Service').then((srv) => {
+        srv.SetQueueConcurrency(browserAIConcurrency.value)
+      }).catch(() => {})
     } else {
       await loadDefaultConfig()
     }
@@ -814,7 +825,13 @@ onMounted(async () => {
     if (task && task.resultPath) {
       for (const path of Object.keys(clipsMap.value)) {
         const clips = clipsMap.value[path] || []
-        const found = clips.find((c: any) => task.id && (task.id.includes(c.id) || task.clipName.includes(`#${c.index}`)))
+        const found = clips.find((c: any) => {
+          if (!task.id) return false
+          // Ưu tiên khớp theo clip ID (chính xác tuyệt đối vì ID có hash + số thứ tự)
+          if (task.id.includes(c.id)) return true
+          // Fallback theo #index nhưng có ranh giới để "#5" không khớp nhầm "#50"
+          return typeof task.clipName === 'string' && new RegExp(`#${c.index}(?!\\d)`).test(task.clipName)
+        })
         if (found) {
           found.thumbnail = task.resultPath;
           (found as any).hasAIThumb = true
@@ -3819,20 +3836,21 @@ const formatSize = (bytes: number) => {
                 </label>
               </div>
               
-              <!-- Độ trễ & Đăng nhập chung một dòng -->
+              <!-- Số luồng trình duyệt & Đăng nhập chung một dòng -->
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; width: 100%; margin-top: 5px;">
-                <!-- Độ trễ tự động hóa -->
+                <!-- Số luồng trình duyệt chạy song song -->
                 <div style="display: flex; flex-direction: row; align-items: center; justify-content: space-between;">
-                  <span style="font-size: 12.5px; font-weight: 600; color: var(--text-muted); white-space: nowrap;">Độ trễ:</span>
+                  <span style="font-size: 12.5px; font-weight: 600; color: var(--text-muted); white-space: nowrap;">Số luồng:</span>
                   <div style="display: flex; align-items: center; gap: 6px;">
-                    <input type="number" v-model="browserAIDelay" min="0.1" max="10.0" step="0.1" class="text-content-input" placeholder="Mặc định: 1.0" style="width: 65px; text-align: center; padding: 4px 8px; height: 30px; margin-bottom: 0;" />
-                    <span style="font-size: 12px; color: var(--l-text-muted); white-space: nowrap;">giây</span>
+                    <select v-model.number="browserAIConcurrency" class="custom-select" style="width: 130px; height: 35px; border-radius: 6px; border: 1.5px solid var(--wx-border-default, #2a364f); background: var(--wx-surface-sunken, #0e1626); color: var(--wx-text-primary, #f8fafc); padding: 0 8px; font-size: 12.5px; outline: none; cursor: pointer; margin-bottom: 0;">
+                      <option v-for="n in 16" :key="n" :value="n" style="background: #0e1626; color: #f8fafc; padding: 6px;">{{ n }} luồng{{ n === 1 ? ' (ổn định)' : '' }}</option>
+                    </select>
                   </div>
                 </div>
                 
                 <!-- Quản lý phiên đăng nhập Google -->
                 <div style="display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 8px;">
-                  <span style="font-size: 12.5px; font-weight: 600; color: var(--text-muted); white-space: nowrap;">Đăng nhập Google:</span>
+                  <span style="font-size: 12.5px; font-weight: 600; color: var(--text-muted); white-space: nowrap;">Đăng nhập:</span>
                   <div style="display: flex; gap: 8px; align-items: center;">
                     <button @click="openAILogin('flow')" class="mini-add-btn flex-center" style="padding: 6px 12px; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; height: 30px;">
                       <Chrome :size="13" /> Đăng nhập
@@ -3862,23 +3880,23 @@ const formatSize = (bytes: number) => {
                 
                 <div class="settings-grid" style="grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 5px;">
                   <div>
-                    <label style="font-size: 12.5px; font-weight: 600; white-space: nowrap;">Cắt song song:</label>
-                    <select v-model="analyzeJobs" style="width: 100%; height: 35px; border-radius: 6px; border: 1px solid var(--l-border); background: var(--l-bg); color: var(--l-text);">
-                      <option :value="1">1 video (ổn định)</option>
-                      <option :value="2">2 video</option>
-                      <option :value="3">3 video</option>
-                      <option :value="4">4 video</option>
+                    <label style="font-size: 12.5px; font-weight: 600; white-space: nowrap; display: block; margin-bottom: 4px;">Cắt song song:</label>
+                    <select v-model="analyzeJobs" class="custom-select" style="width: 100%; height: 35px; border-radius: 6px; border: 1.5px solid var(--wx-border-default, #2a364f); background: var(--wx-surface-sunken, #0e1626); color: var(--wx-text-primary, #f8fafc); padding: 0 8px; font-size: 12.5px; outline: none; cursor: pointer;">
+                      <option :value="1" style="background: #0e1626; color: #f8fafc; padding: 6px;">1 video (ổn định)</option>
+                      <option :value="2" style="background: #0e1626; color: #f8fafc; padding: 6px;">2 video</option>
+                      <option :value="3" style="background: #0e1626; color: #f8fafc; padding: 6px;">3 video</option>
+                      <option :value="4" style="background: #0e1626; color: #f8fafc; padding: 6px;">4 video</option>
                     </select>
                   </div>
                   <div>
-                    <label style="font-size: 12.5px; font-weight: 600; white-space: nowrap;">Xuất song song:</label>
-                    <select v-model="exportJobs" style="width: 100%; height: 35px; border-radius: 6px; border: 1px solid var(--l-border); background: var(--l-bg); color: var(--l-text);">
-                      <option :value="1">1 clip</option>
-                      <option :value="2">2 clip</option>
-                      <option :value="3">3 clip</option>
-                      <option :value="4">4 clip</option>
-                      <option :value="6">6 clip</option>
-                      <option :value="8">8 clip (mạnh)</option>
+                    <label style="font-size: 12.5px; font-weight: 600; white-space: nowrap; display: block; margin-bottom: 4px;">Xuất song song:</label>
+                    <select v-model="exportJobs" class="custom-select" style="width: 100%; height: 35px; border-radius: 6px; border: 1.5px solid var(--wx-border-default, #2a364f); background: var(--wx-surface-sunken, #0e1626); color: var(--wx-text-primary, #f8fafc); padding: 0 8px; font-size: 12.5px; outline: none; cursor: pointer;">
+                      <option :value="1" style="background: #0e1626; color: #f8fafc; padding: 6px;">1 clip</option>
+                      <option :value="2" style="background: #0e1626; color: #f8fafc; padding: 6px;">2 clip</option>
+                      <option :value="3" style="background: #0e1626; color: #f8fafc; padding: 6px;">3 clip</option>
+                      <option :value="4" style="background: #0e1626; color: #f8fafc; padding: 6px;">4 clip</option>
+                      <option :value="6" style="background: #0e1626; color: #f8fafc; padding: 6px;">6 clip</option>
+                      <option :value="8" style="background: #0e1626; color: #f8fafc; padding: 6px;">8 clip (mạnh)</option>
                     </select>
                   </div>
                 </div>

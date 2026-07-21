@@ -31,6 +31,8 @@ export function OpenGoogleAI(arg1:string,arg2:boolean):Promise<void>;
 
 export function OpenOutputFolder(arg1:string):Promise<void>;
 
+export function SetQueueConcurrency(arg1:number):Promise<void>;
+
 export function Shutdown(arg1:context.Context):Promise<void>;
 
 export function Startup(arg1:context.Context):Promise<void>;

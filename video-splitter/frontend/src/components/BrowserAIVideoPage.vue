@@ -365,11 +365,6 @@ function toggleSelectAllCompleted() {
   }
 }
 
-watch(() => result.value, () => {
-  const list = (previewURLs.value && previewURLs.value.length > 0) ? previewURLs.value : (previewURL.value ? [previewURL.value] : [])
-  selectedCompletedIndexes.value = new Set(list.map((_, i) => i))
-}, { immediate: true })
-
 // Drag-to-select logic
 const gridRef = ref<HTMLElement | null>(null)
 const dragBox = reactive({ active: false, x1: 0, y1: 0, x2: 0, y2: 0 })
@@ -537,6 +532,11 @@ const outputDir = ref('')
 const fileName = ref('')
 const previewURL = ref('')
 const previewURLs = ref<string[]>([])
+
+watch(() => result.value, () => {
+  const list = (previewURLs.value && previewURLs.value.length > 0) ? previewURLs.value : (previewURL.value ? [previewURL.value] : [])
+  selectedCompletedIndexes.value = new Set(list.map((_, i) => i))
+}, { immediate: true })
 
 interface InputImage {
   id: string
@@ -765,17 +765,6 @@ const startGeneration = async () => {
     finalFileName = `ai_video_${Date.now()}`
   }
 
-  let delayVal = 1.0
-  try {
-    const settingsStr = await GetGlobalSettings()
-    if (settingsStr) {
-      const gSettings = JSON.parse(settingsStr)
-      if (gSettings.browserAIDelay !== undefined) {
-        delayVal = parseFloat(gSettings.browserAIDelay)
-      }
-    }
-  } catch (_) {}
-
   const filePaths = inputImages.value.map(i => i.path).filter(p => p !== '')
   const base64s = inputImages.value.map(i => i.base64).filter(b => b !== '')
 
@@ -792,7 +781,6 @@ const startGeneration = async () => {
     batchSize: selectedBatchSize.value,
     confirmBeforeCreate: confirmBeforeCreate.value,
     resolution: '1K',
-    delaySecond: delayVal,
     inputImagePaths: filePaths,
     inputImageBase64s: base64s
   })

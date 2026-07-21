@@ -58,6 +58,10 @@ export function OpenOutputFolder(arg1) {
   return window['go']['browserai']['Service']['OpenOutputFolder'](arg1);
 }
 
+export function SetQueueConcurrency(arg1) {
+  return window['go']['browserai']['Service']['SetQueueConcurrency'](arg1);
+}
+
 export function Shutdown(arg1) {
   return window['go']['browserai']['Service']['Shutdown'](arg1);
 }

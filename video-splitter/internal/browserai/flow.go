@@ -17,35 +17,51 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
+// GenerateFlowVideo tự động hóa Google Flow để tạo ảnh/video.
+//
+// workerPage: nếu != nil, chạy trên tab đó (dùng cho Hàng Đợi AI song song — mỗi
+// worker một tab riêng) và LUÔN tạo project Flow mới để không lẫn ảnh giữa các tab.
+// Nếu nil, dùng tab chính của session và tái sử dụng project đã lưu (hành vi tạo
+// thủ công như cũ). tm có thể nil khi gọi từ worker queue (queue tự emit tiến độ).
 func GenerateFlowVideo(
 	ctx context.Context,
 	session *BrowserSession,
+	workerPage *rod.Page,
 	tm *TaskManager,
 	req GenerateRequest,
 ) ([]string, error) {
 	logDebug := flowLogf
 
+	// forceNewProject: worker queue (workerPage != nil) luôn tạo project mới riêng.
+	forceNewProject := workerPage != nil
+
 	sleep := func(base time.Duration) {
-		delayMult := req.DelaySecond
-		if delayMult <= 0 {
-			delayMult = 1.0 // default multiplier is 1x
-		}
-		time.Sleep(time.Duration(float64(base) * delayMult))
+		time.Sleep(time.Duration(float64(base) * FlowActionDelayMultiplier))
 	}
 
-	// Đọc link project cũ đã lưu
-	savedURL := readProjectURL()
+	// Đọc link project cũ đã lưu (chỉ dùng cho tab chính; worker luôn tạo mới)
 	targetURL := "https://labs.google/fx/vi/tools/flow"
-	if savedURL != "" && strings.Contains(savedURL, "/project/") {
-		targetURL = savedURL
-		logDebug("Phát hiện link dự án cũ đã lưu: %s. Tiến hành mở dự án này...", savedURL)
+	if !forceNewProject {
+		savedURL := readProjectURL()
+		if savedURL != "" && strings.Contains(savedURL, "/project/") {
+			targetURL = savedURL
+			logDebug("Phát hiện link dự án cũ đã lưu: %s. Tiến hành mở dự án này...", savedURL)
+		} else {
+			logDebug("Không có link dự án cũ hoặc không hợp lệ. Tiến hành mở trang chủ...")
+		}
 	} else {
-		logDebug("Không có link dự án cũ hoặc không hợp lệ. Tiến hành mở trang chủ...")
+		logDebug("Worker song song: luôn tạo dự án Flow mới riêng cho tab này.")
 	}
 
-	page, err := session.GetPage()
-	if err != nil {
-		return nil, err
+	var page *rod.Page
+	var err error
+	if workerPage != nil {
+		page = workerPage
+	} else {
+		page, err = session.GetPage()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Đăng ký script ẩn danh (stealth) để vượt qua bộ quét bot/webdriver của Google
@@ -161,7 +177,13 @@ func GenerateFlowVideo(
 	// Check if we need to click "+ Dự án mới" (New project) to enter project workspace
 	info, err = page.Info()
 	hasProject := err == nil && strings.Contains(info.URL, "/project/")
-	
+
+	// Worker song song luôn tạo project mới riêng → ép hasProject=false dù URL hiện
+	// tại tình cờ đang ở trong một project nào đó.
+	if forceNewProject {
+		hasProject = false
+	}
+
 	// Nếu chúng ta đã mở link project cũ nhưng sau khi load xong nó KHÔNG ở trong project (ví dụ bị đẩy về trang chủ)
 	// Hoặc nếu ta không tìm thấy ô nhập prompt sau 5 giây, ta xem như project đó bị lỗi/bị xóa và cần tạo mới!
 	if hasProject {
@@ -178,50 +200,50 @@ func GenerateFlowVideo(
 		}
 	}
 
-	if !hasProject {
-		logDebug("Dự án cũ không hoạt động hoặc không có. Tiến hành click tạo dự án mới...")
-		tm.EmitStatus(TaskStateReady, "Đang vào không gian làm việc (tạo dự án mới)...", 21)
-		
-		// Hàm tìm nút tạo dự án mới bằng JS, ưu tiên XPath chính xác của người dùng trước
-		findBtnJS := rod.Eval(`() => {
-			// 1. Thử tìm bằng các đường dẫn XPath cụ thể
-			const xpaths = [
-				` + "`" + `//*[@id="__next"]/div[2]/div/div/button` + "`" + `,
-				` + "`" + `//*[@id="__next"]/div[1]/div/div/button` + "`" + `,
-				` + "`" + `//*[@id="__next"]/div/div/div/button` + "`" + `
-			];
-			for (const xpath of xpaths) {
-				try {
-					const res = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-					if (res) {
-						const rect = res.getBoundingClientRect();
-						if (rect.width > 0 && rect.height > 0) {
-							return res;
-						}
+	// Hàm tìm nút tạo dự án mới bằng JS, ưu tiên XPath chính xác của người dùng trước
+	findBtnJS := rod.Eval(`() => {
+		// 1. Thử tìm bằng các đường dẫn XPath cụ thể
+		const xpaths = [
+			` + "`" + `//*[@id="__next"]/div[2]/div/div/button` + "`" + `,
+			` + "`" + `//*[@id="__next"]/div[1]/div/div/button` + "`" + `,
+			` + "`" + `//*[@id="__next"]/div/div/div/button` + "`" + `
+		];
+		for (const xpath of xpaths) {
+			try {
+				const res = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+				if (res) {
+					const rect = res.getBoundingClientRect();
+					if (rect.width > 0 && rect.height > 0) {
+						return res;
 					}
-				} catch(e) {}
-			}
+				}
+			} catch(e) {}
+		}
 
-			// 2. Dự phòng: Tìm theo từ khóa chữ thường không phân biệt hoa thường
-			const tags = ['button', 'div', 'span', 'a', '*'];
-			const keywords = ['dự án mới', 'new project', 'create project'];
-			for (const tag of tags) {
-				const elements = Array.from(document.querySelectorAll(tag));
-				for (const el of elements) {
-					if (!el.textContent) continue;
-					const text = el.textContent.toLowerCase().trim();
-					for (const kw of keywords) {
-						if (text.includes(kw)) {
-							const rect = el.getBoundingClientRect();
-							if (rect.width > 0 && rect.height > 0) {
-								return el;
-							}
+		// 2. Dự phòng: Tìm theo từ khóa chữ thường không phân biệt hoa thường
+		const tags = ['button', 'div', 'span', 'a', '*'];
+		const keywords = ['dự án mới', 'new project', 'create project'];
+		for (const tag of tags) {
+			const elements = Array.from(document.querySelectorAll(tag));
+			for (const el of elements) {
+				if (!el.textContent) continue;
+				const text = el.textContent.toLowerCase().trim();
+				for (const kw of keywords) {
+					if (text.includes(kw)) {
+						const rect = el.getBoundingClientRect();
+						if (rect.width > 0 && rect.height > 0) {
+							return el;
 						}
 					}
 				}
 			}
-			return null;
-		}`)
+		}
+		return null;
+	}`)
+
+	if !hasProject {
+		logDebug("Dự án cũ không hoạt động hoặc không có. Tiến hành click tạo dự án mới...")
+		tm.EmitStatus(TaskStateReady, "Đang vào không gian làm việc (tạo dự án mới)...", 21)
 
 		// Click lần đầu
 		btn, errJS := page.ElementByJS(findBtnJS)
@@ -288,10 +310,16 @@ func GenerateFlowVideo(
 			return nil, fmt.Errorf("không thể vào không gian làm việc của dự án (timeout chuyển hướng URL sang /project/ - URL hiện tại: %s)", urlStr)
 		}
 		
-		// Đã tạo dự án mới thành công! Lưu link project mới này
+		// Đã tạo dự án mới thành công! Lưu link project mới này.
+		// Worker song song KHÔNG ghi đè link chung (mỗi tab một project riêng, không
+		// lưu để tránh các tab tranh chấp cùng một link project trong settings.json).
 		info, _ = page.Info()
-		logDebug("Lưu link dự án mới vào settings.json: %s", info.URL)
-		saveProjectURL(info.URL)
+		if !forceNewProject {
+			logDebug("Lưu link dự án mới vào settings.json: %s", info.URL)
+			saveProjectURL(info.URL)
+		} else {
+			logDebug("Worker song song: đã tạo project riêng %s (không lưu link chung).", info.URL)
+		}
 	} else {
 		// Kiểm tra xem dự án cũ có vượt quá ngưỡng ảnh cho phép hay không
 		totalCardsCountObj, errTotalCount := page.Eval(`() => {
@@ -305,11 +333,46 @@ func GenerateFlowVideo(
 			totalCount := totalCardsCountObj.Value.Int()
 			logDebug("Số lượng hình ảnh hiện có trong dự án cũ: %d", totalCount)
 			if totalCount >= MaxProjectImages {
-				logDebug("Dự án hiện tại đã có %d hình ảnh (vượt ngưỡng %d ảnh để tránh lag). Tiến hành xóa link dự án cũ để lần tới tự động tạo dự án mới...", totalCount, MaxProjectImages)
+				logDebug("Dự án hiện tại đã có %d hình ảnh (vượt ngưỡng %d ảnh để tránh lag). Xóa dự án cũ và tiến hành tự động tạo dự án mới ngay lập tức...", totalCount, MaxProjectImages)
 				saveProjectURL("")
+				
+				// Quay lại trang chủ để bấm Tạo dự án mới ngay lập tức
+				_ = page.Navigate("https://labs.google/fx/vi/tools/flow")
+				_ = page.WaitDOMStable(2*time.Second, 0.5)
+
+				logDebug("Tiến hành click tạo dự án mới thay thế cho dự án cũ quá %d ảnh...", MaxProjectImages)
+				btn, errJS := page.ElementByJS(findBtnJS)
+				if errJS == nil && btn != nil {
+					_ = btn.ScrollIntoView()
+					if errClick := btn.Click(proto.InputMouseButtonLeft, 1); errClick != nil {
+						_, _ = btn.Eval("function() { this.click(); }")
+					}
+				}
+				_ = page.WaitDOMStable(1*time.Second, 0.5)
+
+				// Đợi chuyển hướng sang /project/
+				for idx := 0; idx < 20; idx++ {
+					info, err = page.Info()
+					if err == nil && strings.Contains(info.URL, "/project/") {
+						break
+					}
+					if idx > 0 && idx%3 == 0 {
+						if retryBtn, errRetry := page.ElementByJS(findBtnJS); errRetry == nil && retryBtn != nil {
+							_, _ = retryBtn.Eval("function() { this.click(); }")
+						}
+					}
+					time.Sleep(750 * time.Millisecond)
+				}
+
+				info, _ = page.Info()
+				if strings.Contains(info.URL, "/project/") {
+					logDebug("Đã tạo dự án mới thay thế thành công! URL: %s", info.URL)
+					saveProjectURL(info.URL)
+				}
+			} else {
+				logDebug("Dự án cũ hoạt động bình thường! Tiếp tục sử dụng.")
 			}
 		}
-		logDebug("Dự án cũ hoạt động bình thường! Tiếp tục sử dụng.")
 	}
 	logDebug("Đã vào dự án thành công!")
 
@@ -973,20 +1036,21 @@ func GenerateFlowVideo(
 					continue
 				}
 
-				// Initiate Wails download capturing BEFORE clicking option
-				waitDownload := session.browser.WaitDownload(session.downloadDir)
-				
-				// Click resolution option to trigger download / upscaling
-				_ = optionBtn.Click(proto.InputMouseButtonLeft, 1)
-				logDebug("Đã click chọn độ phân giải %s. Đang chờ file được tải về máy...", strings.ToUpper(targetRes))
-				
 				// Generate unique filename for each image in batch
 				customFileName := req.FileName
 				if len(selectedIndexes) > 1 {
 					customFileName = fmt.Sprintf("%s_%d", req.FileName, idx+1)
 				}
-				
+
+				// Tuần tự hóa đoạn tải: WaitDownload ở cấp browser nên nhiều tab tải
+				// cùng lúc dễ bắt nhầm file của nhau. Chỉ khóa quanh đoạn download ngắn.
+				session.LockDownload()
+				waitDownload := session.browser.WaitDownload(session.downloadDir)
+				// Click resolution option to trigger download / upscaling
+				_ = optionBtn.Click(proto.InputMouseButtonLeft, 1)
+				logDebug("Đã click chọn độ phân giải %s. Đang chờ file được tải về máy...", strings.ToUpper(targetRes))
 				filePath, errMove := WaitAndMoveDownload(ctx, waitDownload, session.downloadDir, req.OutputDir, customFileName, MediaTypeImage)
+				session.UnlockDownload()
 				if errMove == nil {
 					logDebug("Tải ảnh thứ %d/%d thành công (%s): %s", idx+1, len(selectedIndexes), strings.ToUpper(targetRes), filePath)
 					downloadedPaths = append(downloadedPaths, filePath)
@@ -1169,12 +1233,14 @@ func GenerateFlowVideo(
 				continue
 			}
 
-			// Download video
+			// Download video — tuần tự hóa giữa các tab (WaitDownload ở cấp browser).
 			tm.EmitStatus(TaskStateDownloading, "Đang tải video xuống...", 85)
+			session.LockDownload()
 			waitDownload := session.browser.WaitDownload(session.downloadDir)
 			_ = downloadBtn.Click(proto.InputMouseButtonLeft, 1)
 
 			filePath, errMove := WaitAndMoveDownload(ctx, waitDownload, session.downloadDir, req.OutputDir, req.FileName, MediaTypeVideo)
+			session.UnlockDownload()
 			if errMove == nil {
 				logDebug("Tải video thành công: %s", filePath)
 				return []string{filePath}, nil
@@ -1925,10 +1991,8 @@ func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) err
 		}`)
 	}
 
-	// Cách 1: CDP InsertText tại cuối nội dung (giữ nguyên thẻ ảnh đính kèm nếu có).
+	// Cách 1: CDP InsertText tại vị trí con trỏ tự nhiên (do Google Flow tự đặt khi dán ảnh)
 	_ = promptInput.Focus()
-	time.Sleep(150 * time.Millisecond)
-	moveCaretToEnd(promptInput)
 	time.Sleep(150 * time.Millisecond)
 	_ = page.InsertText(prompt)
 	time.Sleep(300 * time.Millisecond)
@@ -1941,8 +2005,6 @@ func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) err
 	// Cách 2: document.execCommand('insertText') - Chèn text chuẩn HTML5/Chrome rich-text
 	flowLogf("Prompt chưa vào ô sau InsertText. Thử chèn bằng execCommand('insertText')...")
 	_ = promptInput.Focus()
-	time.Sleep(150 * time.Millisecond)
-	moveCaretToEnd(promptInput)
 	time.Sleep(150 * time.Millisecond)
 	_, _ = promptInput.Eval(`(txt) => {
 		this.focus();
@@ -1959,8 +2021,6 @@ func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) err
 	flowLogf("Prompt chưa vào ô sau execCommand. Thử dán prompt bằng OS Clipboard + Ctrl+V...")
 	if err := CopyTextToClipboardWindows(prompt); err == nil {
 		_ = promptInput.Focus()
-		time.Sleep(150 * time.Millisecond)
-		moveCaretToEnd(promptInput)
 		time.Sleep(150 * time.Millisecond)
 		_ = page.KeyActions().Press(input.ControlLeft).Press(input.KeyV).Do()
 		time.Sleep(400 * time.Millisecond)

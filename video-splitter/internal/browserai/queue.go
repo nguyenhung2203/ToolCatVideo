@@ -3,7 +3,6 @@ package browserai
 import (
 	"context"
 	"sync"
-	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -29,6 +28,7 @@ type ThumbnailTask struct {
 	Provider       Provider       `json:"provider"`
 	Model          string         `json:"model"`
 	AspectRatio    string         `json:"aspectRatio"`
+	Resolution     string         `json:"resolution"`
 	State          QueueTaskState `json:"state"`
 	ErrorMessage   string         `json:"errorMessage"`
 	ResultPath     string         `json:"resultPath"`
@@ -44,18 +44,20 @@ type QueueStatus struct {
 }
 
 type AIQueueManager struct {
-	mu        sync.Mutex
-	tasks     []ThumbnailTask
-	ctx       context.Context
-	cancel    context.CancelFunc
-	isRunning bool
-	service   *Service
+	mu          sync.Mutex
+	tasks       []ThumbnailTask
+	ctx         context.Context
+	cancel      context.CancelFunc
+	isRunning   bool
+	service     *Service
+	concurrency int // số worker (tab) chạy song song, kẹp trong [1, MaxBrowserConcurrency]
 }
 
 func NewAIQueueManager(service *Service) *AIQueueManager {
 	return &AIQueueManager{
-		tasks:   make([]ThumbnailTask, 0),
-		service: service,
+		tasks:       make([]ThumbnailTask, 0),
+		service:     service,
+		concurrency: DefaultBrowserConcurrency,
 	}
 }
 
@@ -63,6 +65,21 @@ func (qm *AIQueueManager) SetContext(ctx context.Context) {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
 	qm.ctx = ctx
+}
+
+// SetConcurrency đặt số worker (tab) chạy song song cho Hàng Đợi AI.
+// Giá trị được kẹp trong [1, MaxBrowserConcurrency]. Thay đổi chỉ áp dụng cho
+// lần chạy hàng đợi kế tiếp (không tác động tới các worker đang chạy).
+func (qm *AIQueueManager) SetConcurrency(n int) {
+	if n < 1 {
+		n = 1
+	}
+	if n > MaxBrowserConcurrency {
+		n = MaxBrowserConcurrency
+	}
+	qm.mu.Lock()
+	qm.concurrency = n
+	qm.mu.Unlock()
 }
 
 func (qm *AIQueueManager) Enqueue(tasks []ThumbnailTask) {
@@ -80,7 +97,11 @@ func (qm *AIQueueManager) Enqueue(tasks []ThumbnailTask) {
 		qm.isRunning = true
 		ctx, cancel := context.WithCancel(context.Background())
 		qm.cancel = cancel
-		go qm.processWorker(ctx)
+		n := qm.concurrency
+		if n < 1 {
+			n = 1
+		}
+		go qm.runWorkers(ctx, n)
 	}
 }
 
@@ -153,7 +174,24 @@ func (qm *AIQueueManager) emitProgress() {
 	}
 }
 
-func (qm *AIQueueManager) processWorker(ctx context.Context) {
+// claimNextTask lấy task pending kế tiếp, đánh dấu Processing và trả về (bản sao, chỉ số).
+// Trả về idx = -1 nếu không còn task nào. An toàn khi gọi từ nhiều worker.
+func (qm *AIQueueManager) claimNextTask() (ThumbnailTask, int) {
+	qm.mu.Lock()
+	defer qm.mu.Unlock()
+	for i := range qm.tasks {
+		if qm.tasks[i].State == QueueStatePending {
+			qm.tasks[i].State = QueueStateProcessing
+			return qm.tasks[i], i
+		}
+	}
+	return ThumbnailTask{}, -1
+}
+
+// runWorkers khởi chạy n worker song song, mỗi worker mở một tab Chrome riêng
+// (chung profile) và xử lý task tới khi hết. Khi tất cả worker xong thì đặt lại
+// isRunning=false và emit tiến độ cuối.
+func (qm *AIQueueManager) runWorkers(ctx context.Context, n int) {
 	defer func() {
 		qm.mu.Lock()
 		qm.isRunning = false
@@ -161,23 +199,76 @@ func (qm *AIQueueManager) processWorker(ctx context.Context) {
 		qm.emitProgress()
 	}()
 
-	for {
-		qm.mu.Lock()
-		var nextIdx int = -1
-		for i, t := range qm.tasks {
-			if t.State == QueueStatePending {
-				nextIdx = i
-				break
-			}
+	// Không mở nhiều tab hơn số task đang chờ: 3 task + 5 luồng → chỉ mở 3 tab.
+	qm.mu.Lock()
+	pending := 0
+	for i := range qm.tasks {
+		if qm.tasks[i].State == QueueStatePending {
+			pending++
 		}
-		if nextIdx == -1 {
+	}
+	qm.mu.Unlock()
+	if pending == 0 {
+		return
+	}
+	if n > pending {
+		n = pending
+	}
+
+	// Đảm bảo trình duyệt đã mở trước khi các worker tạo tab.
+	if !qm.service.session.IsOpen() {
+		if err := qm.service.OpenGoogleAI(string(ProviderFlow), true); err != nil {
+			// Không mở được trình duyệt → đánh dấu mọi task pending là thất bại.
+			qm.mu.Lock()
+			for i := range qm.tasks {
+				if qm.tasks[i].State == QueueStatePending || qm.tasks[i].State == QueueStateProcessing {
+					qm.tasks[i].State = QueueStateFailed
+					qm.tasks[i].ErrorMessage = err.Error()
+				}
+			}
 			qm.mu.Unlock()
 			return
 		}
+	}
 
-		qm.tasks[nextIdx].State = QueueStateProcessing
-		task := qm.tasks[nextIdx]
-		qm.mu.Unlock()
+	flowLogf("Hàng Đợi AI: %d task chờ, mở %d tab trình duyệt song song.", pending, n)
+
+	var wg sync.WaitGroup
+	for w := 0; w < n; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			qm.worker(ctx, workerID)
+		}(w)
+	}
+	wg.Wait()
+}
+
+// worker mở một tab riêng và xử lý các task cho tới khi hết hoặc ctx bị hủy.
+func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
+	flowURL := "https://labs.google/fx/vi/tools/flow"
+	page, err := qm.service.session.NewPage(flowURL)
+	if err != nil {
+		flowLogf("Worker #%d: không mở được tab mới: %v", workerID, err)
+		return
+	}
+	defer func() {
+		if page != nil {
+			_ = page.Close()
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		task, idx := qm.claimNextTask()
+		if idx == -1 {
+			return // hết task
+		}
 
 		qm.emitProgress()
 
@@ -188,6 +279,10 @@ func (qm *AIQueueManager) processWorker(ctx context.Context) {
 		model := task.Model
 		if model == "" {
 			model = "Nano Banana 2"
+		}
+		resolution := task.Resolution
+		if resolution == "" {
+			resolution = "1K"
 		}
 
 		genReq := GenerateRequest{
@@ -201,53 +296,33 @@ func (qm *AIQueueManager) processWorker(ctx context.Context) {
 			OutputDir:           task.OutputDir,
 			FileName:            task.FileName,
 			InputImagePath:      task.InputImagePath,
+			Resolution:          resolution,
 			TimeoutSecond:       180,
 			ShowChrome:          true,
 		}
 
-		taskInfo, err := qm.service.Generate(genReq)
+		// Mỗi task chạy trong timeout riêng để một task treo không chặn worker mãi.
+		taskCtx, cancel := context.WithTimeout(ctx, ImageGenerateTimeout)
+		filePaths, genErr := GenerateFlowVideo(taskCtx, qm.service.session, page, nil, genReq)
+		cancel()
 
-		if err != nil {
-			qm.mu.Lock()
-			qm.tasks[nextIdx].State = QueueStateFailed
-			qm.tasks[nextIdx].ErrorMessage = err.Error()
-			qm.mu.Unlock()
+		qm.mu.Lock()
+		if genErr != nil {
+			qm.tasks[idx].State = QueueStateFailed
+			qm.tasks[idx].ErrorMessage = genErr.Error()
+			flowLogf("Worker #%d: task %s thất bại: %v", workerID, task.ID, genErr)
 		} else {
-			active := qm.service.tm.GetActiveTask()
-			if active != nil && active.ID == taskInfo.TaskID {
-				select {
-				case <-ctx.Done():
-					_ = qm.service.tm.CancelTask(taskInfo.TaskID)
-					return
-				case <-active.DoneChan:
-					qm.mu.Lock()
-					if active.Err != nil {
-						qm.tasks[nextIdx].State = QueueStateFailed
-						qm.tasks[nextIdx].ErrorMessage = active.Err.Error()
-					} else {
-						qm.tasks[nextIdx].State = QueueStateCompleted
-						if active.Result != nil && len(active.Result.FilePaths) > 0 {
-							qm.tasks[nextIdx].ResultPath = active.Result.FilePaths[0]
-						}
-						if qm.ctx != nil {
-							runtime.EventsEmit(qm.ctx, "clip_ai_thumb_completed", qm.tasks[nextIdx])
-						}
-					}
-					qm.mu.Unlock()
-				}
-			} else {
-				qm.mu.Lock()
-				qm.tasks[nextIdx].State = QueueStateCompleted
-				qm.mu.Unlock()
+			qm.tasks[idx].State = QueueStateCompleted
+			if len(filePaths) > 0 {
+				qm.tasks[idx].ResultPath = filePaths[0]
+			}
+			completedTask := qm.tasks[idx]
+			if qm.ctx != nil {
+				runtime.EventsEmit(qm.ctx, "clip_ai_thumb_completed", completedTask)
 			}
 		}
+		qm.mu.Unlock()
 
 		qm.emitProgress()
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(1 * time.Second):
-		}
 	}
 }

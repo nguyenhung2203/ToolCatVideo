@@ -131,6 +131,12 @@ func (s *Service) GetQueueStatus() QueueStatus {
 	return s.qm.GetStatus()
 }
 
+// SetQueueConcurrency đặt số luồng trình duyệt (tab) chạy song song cho Hàng Đợi AI.
+// Kẹp trong [1, MaxBrowserConcurrency]. Chỉ áp dụng cho lần chạy hàng đợi kế tiếp.
+func (s *Service) SetQueueConcurrency(n int) {
+	s.qm.SetConcurrency(n)
+}
+
 func (s *Service) CheckLogin(provider string) (LoginStatus, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -315,7 +321,7 @@ func (s *Service) Generate(req GenerateRequest) (TaskInfo, error) {
 		if req.Provider == ProviderGemini {
 			filePaths, genErr = GenerateGeminiImage(taskCtx, s.session, s.tm, req)
 		} else {
-			filePaths, genErr = GenerateFlowVideo(taskCtx, s.session, s.tm, req)
+			filePaths, genErr = GenerateFlowVideo(taskCtx, s.session, nil, s.tm, req)
 		}
 
 		if genErr != nil {

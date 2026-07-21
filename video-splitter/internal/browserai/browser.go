@@ -19,6 +19,9 @@ type BrowserSession struct {
 	page        *rod.Page
 	profileDir  string
 	downloadDir string
+	// downloadMu tuần tự hóa đoạn tải file giữa nhiều tab song song: WaitDownload
+	// hoạt động ở cấp browser nên nếu 2 tab tải cùng lúc dễ bắt nhầm file của nhau.
+	downloadMu sync.Mutex
 }
 
 func NewBrowserSession() *BrowserSession {
@@ -198,6 +201,41 @@ func (b *BrowserSession) GetPage() (*rod.Page, error) {
 		return nil, fmt.Errorf("trình duyệt chưa được khởi chạy")
 	}
 	return b.page, nil
+}
+
+// NewPage mở một tab (page) mới trên cùng browser đang chạy và điều hướng tới
+// startURL. Vì mọi tab dùng chung UserDataDir nên chúng chia sẻ profile/đăng nhập.
+// Dùng cho các worker chạy Hàng Đợi AI song song (mỗi worker một tab riêng).
+func (b *BrowserSession) NewPage(startURL string) (*rod.Page, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.browser == nil {
+		return nil, fmt.Errorf("trình duyệt chưa được khởi chạy")
+	}
+	page, err := b.browser.Page(proto.TargetCreateTarget{URL: startURL})
+	if err != nil {
+		return nil, fmt.Errorf("mở tab mới: %w", err)
+	}
+	return page, nil
+}
+
+// LockDownload / UnlockDownload tuần tự hóa đoạn tải file giữa các tab song song.
+func (b *BrowserSession) LockDownload()   { b.downloadMu.Lock() }
+func (b *BrowserSession) UnlockDownload() { b.downloadMu.Unlock() }
+
+// DownloadDir trả về thư mục Chrome tải file tạm về.
+func (b *BrowserSession) DownloadDir() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.downloadDir
+}
+
+// Browser trả về đối tượng rod.Browser đang chạy (nil nếu chưa mở).
+func (b *BrowserSession) Browser() *rod.Browser {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.browser
 }
 
 func (b *BrowserSession) IsOpen() bool {

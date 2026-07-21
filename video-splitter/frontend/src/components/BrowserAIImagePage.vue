@@ -79,11 +79,21 @@
               <span class="char-counter" :class="{ limit: prompt.length > 2000 }">{{ prompt.length }}/2000</span>
             </div>
           </div>
+          <!-- Bật/tắt tự động tải + gợi ý mỗi dòng 1 prompt -->
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px;">
+            <!-- <span style="font-size: 11px; color: var(--l-text-muted);">
+              Mỗi prompt cách nhau 1 dòng trống ({{ promptLines.length }} prompt) — chạy song song.
+            </span> -->
+            <label class="toggle-row inline" style="font-size: 11.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; margin-bottom: 0; white-space: nowrap;" title="Bật: tự động tải mọi ảnh sinh ra. Tắt (chỉ khi 1 prompt): hiện ảnh để bạn chọn rồi mới tải.">
+              <input type="checkbox" v-model="autoDownload" style="width:15px; height:15px;" />
+              Tự động tải ảnh
+            </label>
+          </div>
           <div style="position: relative; flex: 1; display: flex; flex-direction: column;">
             <textarea
               v-model="prompt"
               @paste="handlePasteImage"
-              placeholder="Mô tả bức ảnh bạn muốn Google AI tạo ra... (Mẹo: Có thể nhấn Ctrl+V để dán ảnh trực tiếp từ clipboard vào đây)"
+              placeholder="Mỗi prompt cách nhau bằng 1 DÒNG TRỐNG — Google AI tạo song song mỗi prompt thành 1 ảnh. Một prompt có thể dài nhiều dòng.&#10;Ví dụ:&#10;một chú mèo phi hành gia&#10;trôi giữa dải ngân hà&#10;&#10;thành phố cyberpunk về đêm&#10;mưa neon phản chiếu&#10;&#10;(Mẹo: nhấn Ctrl+V để dán ảnh làm đầu vào)"
               class="img-text-input prompt-textarea"
               maxlength="2000"
               style="padding-bottom: 56px;"
@@ -106,15 +116,56 @@
       <div class="preview-panel">
         
         <!-- Idle State (Wait for generation) -->
-        <div v-if="state === 'idle' || state === 'cancelled'" class="state-placeholder">
+        <div v-if="!queueMode && (state === 'idle' || state === 'cancelled')" class="state-placeholder">
           <Sparkles :size="48" class="placeholder-decor" />
           <h4 class="state-title">Sẵn sàng tạo ảnh AI</h4>
           <p class="state-description">
             Điền mô tả bên trái sau đó nhấn nút <strong>"Bắt đầu tạo"</strong> bên dưới để bắt đầu luồng tự động hóa trình duyệt.
           </p>
-          <button @click="startGeneration" :disabled="!prompt.trim()" class="img-action-btn start-generate-btn">
-            <Play :size="14" /> Bắt đầu tạo
+          <button @click="startGeneration" :disabled="promptLines.length === 0" class="img-action-btn start-generate-btn">
+            <Play :size="14" /> Bắt đầu tạo{{ promptLines.length > 1 ? ` (${promptLines.length} prompt song song)` : '' }}
           </button>
+        </div>
+
+        <!-- Queue Mode State (Chạy nhiều prompt song song qua Hàng Đợi AI) -->
+        <div v-if="queueMode" class="completed-panel" style="display: flex; flex-direction: column; height: 100%; overflow: hidden; min-height: 0; width: 100%;">
+          <div class="preview-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <Sparkles :size="20" style="color: var(--wx-brand-accent);" />
+              <span class="success-title">
+                {{ queueStatus.isRunning ? 'Đang tạo ảnh song song...' : 'Hoàn tất Hàng Đợi AI' }}
+                ({{ queueStatus.completed + queueStatus.failed }}/{{ queueStatus.total }})
+              </span>
+            </div>
+            <button v-if="queueStatus.isRunning" @click="cancelQueue" class="img-source-pill" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px; color: var(--wx-danger-solid);">
+              <StopCircle :size="12" style="margin-right: 3px;" /> Dừng
+            </button>
+            <button v-else @click="resetForm" class="img-source-pill active" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px;">
+              <RefreshCw :size="12" style="margin-right: 3px;" /> Tạo mới
+            </button>
+          </div>
+
+          <div style="padding: 6px 0 10px; width: 100%;">
+            <div style="height: 8px; border-radius: 4px; background: var(--wx-glass-light-bg); overflow: hidden;">
+              <div :style="{ width: queueStatus.total > 0 ? ((queueStatus.completed + queueStatus.failed) / queueStatus.total * 100) + '%' : '0%', height: '100%', background: 'var(--wx-brand-accent)', transition: 'width 0.3s' }"></div>
+            </div>
+            <div style="font-size: 11.5px; color: var(--l-text-muted); margin-top: 6px;">
+              Thành công: {{ queueStatus.completed }} · Lỗi: {{ queueStatus.failed }} · Tổng: {{ queueStatus.total }}
+            </div>
+          </div>
+
+          <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 4px 0; width: 100%;">
+            <div class="img-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; width: 100%; justify-items: center;">
+              <div
+                v-for="(rPath, rIdx) in queueResultPaths"
+                :key="rIdx"
+                class="img-card"
+                style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 160px; background: var(--wx-glass-light-bg); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 6px; box-shadow: var(--wx-shadow-md);"
+              >
+                <img :src="rPath" style="width: 100%; height: 160px; object-fit: cover; border-radius: var(--wx-radius-sm);" draggable="false" />
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- Selection Required State (Choose which images to download) -->
@@ -306,13 +357,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted, computed } from 'vue'
+import { ref, reactive, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useBrowserAI } from './composables/useBrowserAI'
 import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, CheckCircle, RefreshCw, ImageIcon, Check, Download } from 'lucide-vue-next'
 // @ts-ignore
 import { SelectFolder, GetStreamURL, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
 // @ts-ignore
-import { OpenOutputFolder } from '../../wailsjs/go/browserai/Service'
+import { OpenOutputFolder, EnqueueThumbnailTasks, ClearQueue, CancelQueue } from '../../wailsjs/go/browserai/Service'
+import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 
 const mediaType = 'image'
 
@@ -372,11 +424,6 @@ function toggleSelectAllCompleted() {
     selectedCompletedIndexes.value = new Set(list.map((_, i) => i))
   }
 }
-
-watch(() => result.value, () => {
-  const list = (previewURLs.value && previewURLs.value.length > 0) ? previewURLs.value : (previewURL.value ? [previewURL.value] : [])
-  selectedCompletedIndexes.value = new Set(list.map((_, i) => i))
-}, { immediate: true })
 
 // Drag-to-select logic
 const gridRef = ref<HTMLElement | null>(null)
@@ -545,6 +592,30 @@ const outputDir = ref('')
 const fileName = ref('')
 const previewURL = ref('')
 const previewURLs = ref<string[]>([])
+
+// Tự động tải: BẬT → tự tải mọi ảnh sinh ra (không cần chọn tay).
+// TẮT → chế độ cũ: hiện preview cho người dùng chọn rồi mới tải (chỉ áp dụng khi 1 prompt).
+const autoDownload = ref(true)
+
+// Mỗi prompt cách nhau bằng 1 DÒNG TRỐNG (mỗi prompt có thể dài nhiều dòng).
+// Tách theo cụm ≥1 dòng trống → 1 task riêng; gộp các dòng trong cùng cụm lại,
+// bỏ khoảng trắng thừa và cụm rỗng.
+const promptLines = computed(() =>
+  prompt.value
+    .split(/\n\s*\n/)
+    .map(block => block.split('\n').map(l => l.trim()).filter(l => l !== '').join('\n').trim())
+    .filter(block => block !== '')
+)
+
+// Trạng thái Hàng Đợi AI khi chạy nhiều prompt song song trên trang này.
+const queueMode = ref(false)
+const queueStatus = reactive({ total: 0, completed: 0, failed: 0, isRunning: false })
+const queueResultPaths = ref<string[]>([])
+
+watch(() => result.value, () => {
+  const list = (previewURLs.value && previewURLs.value.length > 0) ? previewURLs.value : (previewURL.value ? [previewURL.value] : [])
+  selectedCompletedIndexes.value = new Set(list.map((_, i) => i))
+}, { immediate: true })
 
 interface InputImage {
   id: string
@@ -755,6 +826,35 @@ onMounted(async () => {
   
   isSettingsLoaded.value = true
   updateBrowserStatus()
+
+  // Theo dõi Hàng Đợi AI khi chạy nhiều prompt song song trên trang này.
+  // Lấy resultPath trực tiếp từ status.tasks (không nghe clip_ai_thumb_completed
+  // riêng để tránh xung đột EventsOff với listener cùng tên ở component cha).
+  EventsOn('browser-ai:queue-progress', (status: any) => {
+    queueStatus.total = status.total || 0
+    queueStatus.completed = status.completed || 0
+    queueStatus.failed = status.failed || 0
+    queueStatus.isRunning = status.isRunning || false
+
+    if (queueMode.value && Array.isArray(status.tasks)) {
+      const paths = status.tasks
+        .filter((t: any) => t && t.resultPath)
+        .map((t: any) => t.resultPath)
+      // Chuyển đường dẫn cục bộ sang stream URL để <img> hiển thị được.
+      Promise.all(paths.map((p: string) => GetStreamURL(p).catch(() => '')))
+        .then((urls) => { queueResultPaths.value = urls.filter((u: string) => u !== '') })
+    }
+
+    if (queueMode.value && !status.isRunning && status.total > 0) {
+      const ok = status.completed || 0
+      const fail = status.failed || 0
+      showToast(`Hoàn tất Hàng Đợi AI: ${ok} thành công, ${fail} lỗi.`, fail > 0 ? 'warning' : 'success')
+    }
+  })
+})
+
+onUnmounted(() => {
+  EventsOff('browser-ai:queue-progress')
 })
 
 const pickOutputDir = async () => {
@@ -769,41 +869,71 @@ const pickOutputDir = async () => {
 }
 
 const startGeneration = async () => {
-  if (!prompt.value.trim()) return
+  const lines = promptLines.value
+  if (lines.length === 0) return
 
-  let finalFileName = fileName.value.trim()
-  if (!finalFileName) {
-    finalFileName = `ai_image_${Date.now()}`
+  const baseName = fileName.value.trim() || `ai_image_${Date.now()}`
+  const filePaths = inputImages.value.map(i => i.path).filter(p => p !== '')
+
+  // Nhiều dòng prompt, HOẶC 1 dòng nhưng bật tự động tải → chạy qua Hàng Đợi AI
+  // (song song, mỗi dòng 1 task, tự tải hết). 1 dòng + tắt tự tải → giữ luồng
+  // xem-trước-chọn-tay cũ.
+  const useQueue = lines.length > 1 || (lines.length === 1 && autoDownload.value)
+
+  if (useQueue) {
+    // Mỗi prompt 1 task. Đặt tên file _1, _2... theo thứ tự dòng để dễ tìm.
+    const single = lines.length === 1
+    const inputImagePath = filePaths.length > 0 ? filePaths[0] : ''
+    const tasks = lines.map((line, i) => ({
+      id: `img_prompt_${Date.now()}_${i}`,
+      clipName: `Prompt #${i + 1}`,
+      clipPath: '',
+      outputDir: outputDir.value,
+      fileName: single ? baseName : `${baseName}_${i + 1}`,
+      prompt: line,
+      inputImagePath,
+      provider: provider.value,
+      model: selectedModel.value,
+      aspectRatio: aspectRatio.value,
+      resolution: selectedResolution.value,
+      state: '',
+      errorMessage: '',
+      resultPath: ''
+    }))
+
+    queueResultPaths.value = []
+    queueStatus.total = tasks.length
+    queueStatus.completed = 0
+    queueStatus.failed = 0
+    queueStatus.isRunning = true
+    queueMode.value = true
+
+    try {
+      await EnqueueThumbnailTasks(tasks as any)
+      showToast(`Đã nạp ${tasks.length} prompt vào Hàng Đợi AI. Đang tạo song song...`, 'info')
+    } catch (err: any) {
+      queueMode.value = false
+      queueStatus.isRunning = false
+      showToast('Lỗi nạp hàng đợi: ' + String(err), 'error')
+    }
+    return
   }
 
-  let delayVal = 1.0
-  try {
-    const settingsStr = await GetGlobalSettings()
-    if (settingsStr) {
-      const gSettings = JSON.parse(settingsStr)
-      if (gSettings.browserAIDelay !== undefined) {
-        delayVal = parseFloat(gSettings.browserAIDelay)
-      }
-    }
-  } catch (_) {}
-
-  const filePaths = inputImages.value.map(i => i.path).filter(p => p !== '')
+  // Luồng đơn cũ: 1 prompt, tắt tự tải → hiện preview cho người dùng chọn.
   const base64s = inputImages.value.map(i => i.base64).filter(b => b !== '')
-
   await generate({
     provider: provider.value,
     mediaType: 'image',
-    prompt: prompt.value,
+    prompt: lines[0],
     aspectRatio: aspectRatio.value,
     outputDir: outputDir.value,
-    fileName: finalFileName,
+    fileName: baseName,
     timeoutSecond: 300,
     showChrome: props.showChrome,
     model: selectedModel.value,
     batchSize: selectedBatchSize.value,
     confirmBeforeCreate: confirmBeforeCreate.value,
     resolution: selectedResolution.value,
-    delaySecond: delayVal,
     inputImagePaths: filePaths,
     inputImageBase64s: base64s
   })
@@ -836,6 +966,19 @@ const resetForm = () => {
   previewURL.value = ''
   selectedResolution.value = '1K'
   inputImages.value = []
+  queueMode.value = false
+  queueStatus.total = 0
+  queueStatus.completed = 0
+  queueStatus.failed = 0
+  queueStatus.isRunning = false
+  queueResultPaths.value = []
+  try { ClearQueue() } catch (_) {}
+}
+
+const cancelQueue = () => {
+  try { CancelQueue() } catch (_) {}
+  queueStatus.isRunning = false
+  showToast('Đã dừng Hàng Đợi AI.', 'warning')
 }
 
 const formatSize = (bytes: number) => {

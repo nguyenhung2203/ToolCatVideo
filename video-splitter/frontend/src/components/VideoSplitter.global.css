@@ -193,18 +193,37 @@
   color: var(--l-text-muted);
   min-width: 32px;
 }
-.setting-item select {
-  padding: 7px 10px;
-  background: var(--l-bg);
-  border: 1px solid var(--l-border);
+.setting-item select,
+.settings-modal select,
+.settings-group select,
+select.custom-select {
+  padding: 0 10px;
+  height: 35px;
+  background-color: var(--wx-surface-sunken, #0e1626) !important;
+  border: 1.5px solid var(--wx-border-default, #2a364f) !important;
   border-radius: 6px;
-  color: var(--l-text);
-  font-size: 13px;
+  color: var(--wx-text-primary, #f8fafc) !important;
+  font-size: 12.5px;
+  font-weight: 500;
   cursor: pointer;
-}
-.setting-item select:focus {
-  border-color: var(--l-accent);
   outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.setting-item select:focus,
+.settings-modal select:focus,
+.settings-group select:focus,
+select.custom-select:focus {
+  border-color: var(--wx-brand-primary, #3b82f6) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--wx-brand-primary, #3b82f6) 20%, transparent) !important;
+  outline: none;
+}
+.setting-item select option,
+.settings-modal select option,
+.settings-group select option,
+select.custom-select option {
+  background-color: #0e1626 !important;
+  color: #f8fafc !important;
+  padding: 8px 12px;
 }
 
 /* Buttons in modal */
