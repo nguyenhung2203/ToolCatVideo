@@ -608,7 +608,7 @@ func GenerateFlowVideo(
 		// 2. Điền văn bản prompt vào ô nhập liệu (sau khi đã đính kèm ảnh)
 		logDebug("Bắt đầu điền prompt vào ô nhập liệu: '%s'...", req.Prompt)
 		tm.EmitStatus(TaskStateSubmitting, "Đang điền prompt...", 35)
-		err = FillFlowPrompt(page, promptInput, req.Prompt)
+		err = FillFlowPrompt(page, promptInput, req.Prompt, logDebug)
 		if err != nil {
 			unlockInput()
 			logDebug("Lỗi khi điền prompt: %v", err)
@@ -2068,7 +2068,11 @@ func CopyTextToClipboardWindows(text string) error {
 }
 
 // FillFlowPrompt điền văn bản prompt vào ô nhập liệu Slate của Google Flow.
-func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) error {
+// logDebug có thể nil (mặc định flowLogf); truyền vào để log mang prefix luồng [W#].
+func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string, logDebug func(string, ...interface{})) error {
+	if logDebug == nil {
+		logDebug = flowLogf
+	}
 	if strings.TrimSpace(prompt) == "" {
 		return nil
 	}
@@ -2080,9 +2084,28 @@ func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) err
 		}`)
 	}
 
-	// Cách 1: CDP InsertText tại vị trí con trỏ tự nhiên (do Google Flow tự đặt khi dán ảnh)
-	_ = promptInput.Focus()
-	time.Sleep(150 * time.Millisecond)
+	// Phát hiện có thẻ ảnh đính kèm trong ô không. Selector rộng: thẻ tile của Slate
+	// HOẶC bất kỳ <img> nào nằm trong ô prompt. Trước đây chỉ tìm data-tile-id nên
+	// bỏ sót → cách 4 chạy nhầm SelectAllText+Input("") và XÓA MẤT ảnh đã dán.
+	hasImage := func() bool {
+		r, _ := promptInput.Eval(`() => {
+			return this.querySelector('div[data-tile-id], div[role="button"][aria-roledescription="draggable"], img') !== null;
+		}`)
+		return r != nil && r.Value.Bool()
+	}
+
+	// focusCaretEnd: focus ô rồi đưa con trỏ về CUỐI nội dung (sau thẻ ảnh). Sau khi
+	// dán ảnh, caret kẹt tại void node của ảnh nên Slate từ chối chèn text ngay đó —
+	// đây là lý do mọi cách điền đều trượt khi có ảnh. Đặt caret về cuối trước khi điền.
+	focusCaretEnd := func() {
+		_ = HumanClick(page, promptInput)
+		_ = promptInput.Focus()
+		moveCaretToEnd(promptInput)
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	// Cách 1: CDP InsertText tại cuối nội dung (sau thẻ ảnh)
+	focusCaretEnd()
 	_ = page.InsertText(prompt)
 	time.Sleep(300 * time.Millisecond)
 	dispatchInputEvents()
@@ -2092,9 +2115,8 @@ func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) err
 	}
 
 	// Cách 2: document.execCommand('insertText') - Chèn text chuẩn HTML5/Chrome rich-text
-	flowLogf("Prompt chưa vào ô sau InsertText. Thử chèn bằng execCommand('insertText')...")
-	_ = promptInput.Focus()
-	time.Sleep(150 * time.Millisecond)
+	logDebug("Prompt chưa vào ô sau InsertText. Thử chèn bằng execCommand('insertText')...")
+	focusCaretEnd()
 	_, _ = promptInput.Eval(`(txt) => {
 		this.focus();
 		document.execCommand('insertText', false, txt);
@@ -2107,10 +2129,9 @@ func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) err
 	}
 
 	// Cách 3: Dán prompt qua OS Clipboard + CDP Ctrl+V (Cách dán 100% Slate nhận diện)
-	flowLogf("Prompt chưa vào ô sau execCommand. Thử dán prompt bằng OS Clipboard + Ctrl+V...")
+	logDebug("Prompt chưa vào ô sau execCommand. Thử dán prompt bằng OS Clipboard + Ctrl+V...")
 	if err := CopyTextToClipboardWindows(prompt); err == nil {
-		_ = promptInput.Focus()
-		time.Sleep(150 * time.Millisecond)
+		focusCaretEnd()
 		_ = page.KeyActions().Press(input.ControlLeft).Press(input.KeyV).Do()
 		time.Sleep(400 * time.Millisecond)
 		dispatchInputEvents()
@@ -2120,12 +2141,10 @@ func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) err
 		}
 	}
 
-	// Cách 4: Nếu không có ảnh đính kèm, thử gõ trực tiếp bằng promptInput.Input()
-	hasAttachedCard, _ := promptInput.Eval(`() => {
-		return this.querySelector('div[data-tile-id], div[role="button"][aria-roledescription="draggable"]') !== null;
-	}`)
-	if hasAttachedCard == nil || !hasAttachedCard.Value.Bool() {
-		flowLogf("Không có ảnh đính kèm, thử gõ trực tiếp bằng Input()...")
+	// Cách 4: gõ trực tiếp bằng Input(). CHỈ khi KHÔNG có ảnh — vì SelectAllText+Input("")
+	// sẽ xóa sạch nội dung (gồm cả thẻ ảnh). Có ảnh thì tuyệt đối không chạy nhánh này.
+	if !hasImage() {
+		logDebug("Không có ảnh đính kèm, thử gõ trực tiếp bằng Input()...")
 		_ = promptInput.Focus()
 		_ = promptInput.SelectAllText()
 		_ = promptInput.Input("")
@@ -2136,6 +2155,8 @@ func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) err
 				return nil
 			}
 		}
+	} else {
+		logDebug("Có ảnh đính kèm — bỏ qua cách gõ trực tiếp (tránh xóa mất ảnh).")
 	}
 
 	return fmt.Errorf("không điền được prompt vào ô nhập liệu sau 4 cách thử (Slate không nhận text)")

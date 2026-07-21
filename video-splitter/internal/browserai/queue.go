@@ -42,7 +42,16 @@ type ThumbnailTask struct {
 	State          QueueTaskState `json:"state"`
 	ErrorMessage   string         `json:"errorMessage"`
 	ResultPath     string         `json:"resultPath"`
+	// Source: nguồn tạo task, dùng để lập lịch luân phiên công bằng giữa 2 nguồn.
+	// "video-cut" = thumbnail tự sinh từ luồng cắt video; "ai-image" = tạo ảnh AI
+	// độc lập ở trang Tạo Ảnh. Rỗng → coi như "ai-image" (tương thích task cũ).
+	Source string `json:"source"`
 }
+
+const (
+	SourceVideoCut = "video-cut"
+	SourceAIImage  = "ai-image"
+)
 
 type QueueStatus struct {
 	Total     int             `json:"total"`
@@ -57,8 +66,13 @@ type AIQueueManager struct {
 	mu          sync.Mutex
 	tasks       []ThumbnailTask
 	ctx         context.Context
+	runCtx      context.Context // ctx của lần chạy hàng đợi hiện tại (worker dùng)
 	cancel      context.CancelFunc
 	isRunning   bool
+	activeWorkers int          // số worker (tab) đang sống — dùng để scale động
+	nextWorkerID  int          // ID tăng dần để gắn nhãn log [W1]/[W2]... cho từng tab
+	lastSource    string       // nguồn của task vừa claim — để luân phiên công bằng
+	spawnMu     sync.Mutex     // serialize việc mở browser + sinh thêm worker
 	service     *Service
 	concurrency int // số worker (tab) chạy song song, kẹp trong [1, MaxBrowserConcurrency]
 }
@@ -94,24 +108,77 @@ func (qm *AIQueueManager) SetConcurrency(n int) {
 
 func (qm *AIQueueManager) Enqueue(tasks []ThumbnailTask) {
 	qm.mu.Lock()
-	defer qm.mu.Unlock()
-
 	for _, t := range tasks {
 		if t.State == "" {
 			t.State = QueueStatePending
 		}
 		qm.tasks = append(qm.tasks, t)
 	}
-
-	if !qm.isRunning {
-		qm.isRunning = true
+	qm.isRunning = true
+	if qm.runCtx == nil {
 		ctx, cancel := context.WithCancel(context.Background())
+		qm.runCtx = ctx
 		qm.cancel = cancel
-		n := qm.concurrency
-		if n < 1 {
-			n = 1
+	}
+	qm.mu.Unlock()
+
+	// Sinh thêm worker (tab) nếu còn thiếu so với số task chờ. Đây là mấu chốt cho
+	// "vừa xuất vừa gửi": các clip enqueue dần dần, mỗi lần đều top-up để tab mới mở
+	// ra chạy song song thay vì chỉ 1 tab đã chốt lúc task đầu tiên vào.
+	qm.topUpWorkers()
+}
+
+// topUpWorkers mở browser (nếu chưa) rồi sinh thêm worker cho tới khi số worker
+// đang sống = min(concurrency, activeWorkers + pending). Gọi mỗi lần Enqueue.
+// spawnMu tuần tự hóa việc mở browser + quyết định sinh worker để tránh mở dư.
+func (qm *AIQueueManager) topUpWorkers() {
+	qm.spawnMu.Lock()
+	defer qm.spawnMu.Unlock()
+
+	if !qm.service.session.IsOpen() {
+		if err := qm.service.OpenGoogleAI(string(ProviderFlow), true); err != nil {
+			qm.mu.Lock()
+			for i := range qm.tasks {
+				if qm.tasks[i].State == QueueStatePending || qm.tasks[i].State == QueueStateProcessing {
+					qm.tasks[i].State = QueueStateFailed
+					qm.tasks[i].ErrorMessage = err.Error()
+				}
+			}
+			qm.isRunning = false
+			qm.runCtx = nil
+			qm.cancel = nil
+			qm.mu.Unlock()
+			qm.emitProgress()
+			return
 		}
-		go qm.runWorkers(ctx, n)
+	}
+
+	qm.mu.Lock()
+	pending := 0
+	for i := range qm.tasks {
+		if qm.tasks[i].State == QueueStatePending {
+			pending++
+		}
+	}
+	target := qm.concurrency
+	if target > qm.activeWorkers+pending {
+		target = qm.activeWorkers + pending
+	}
+	toSpawn := target - qm.activeWorkers
+	ctx := qm.runCtx
+	spawned := 0
+	for k := 0; k < toSpawn && ctx != nil; k++ {
+		qm.activeWorkers++
+		wid := qm.nextWorkerID
+		qm.nextWorkerID++
+		spawned++
+		go qm.worker(ctx, wid)
+	}
+	total := qm.activeWorkers
+	qm.mu.Unlock()
+
+	if spawned > 0 {
+		flowLogf("Hàng Đợi AI: %d task chờ, sinh thêm %d tab (tổng %d tab song song).", pending, spawned, total)
 	}
 }
 
@@ -121,6 +188,11 @@ func (qm *AIQueueManager) Cancel() {
 		qm.cancel()
 	}
 	qm.isRunning = false
+	// Xóa run-state để lần Enqueue sau tạo run mới. Worker cũ đang chạy sẽ thấy
+	// ctx.Err() != nil nên tự thoát, và guard runCtx==ctx ở retireWorker chặn
+	// chúng nil nhầm run-state mới.
+	qm.runCtx = nil
+	qm.cancel = nil
 	for i := range qm.tasks {
 		if qm.tasks[i].State == QueueStatePending || qm.tasks[i].State == QueueStateProcessing {
 			qm.tasks[i].State = QueueStateCancelled
@@ -136,6 +208,8 @@ func (qm *AIQueueManager) Clear() {
 		qm.cancel()
 	}
 	qm.isRunning = false
+	qm.runCtx = nil
+	qm.cancel = nil
 	qm.tasks = make([]ThumbnailTask, 0)
 	qm.mu.Unlock()
 	qm.emitProgress()
@@ -186,72 +260,72 @@ func (qm *AIQueueManager) emitProgress() {
 
 // claimNextTask lấy task pending kế tiếp, đánh dấu Processing và trả về (bản sao, chỉ số).
 // Trả về idx = -1 nếu không còn task nào. An toàn khi gọi từ nhiều worker.
+//
+// LUÂN PHIÊN CÔNG BẰNG theo nguồn (Source): ưu tiên task có nguồn KHÁC với task vừa
+// claim gần nhất. Nhờ vậy khi cắt video nạp 50 task rồi tạo ảnh AI, ảnh AI không phải
+// đợi hết 50 mà chen vào xen kẽ (video, ảnh, video, ảnh...). Nếu chỉ còn 1 nguồn thì
+// chạy tuần tự nguồn đó — không lãng phí luồng.
 func (qm *AIQueueManager) claimNextTask() (ThumbnailTask, int) {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
+
+	firstPending := -1
+	altPending := -1 // task pending đầu tiên có nguồn KHÁC lastSource
 	for i := range qm.tasks {
-		if qm.tasks[i].State == QueueStatePending {
-			qm.tasks[i].State = QueueStateProcessing
-			return qm.tasks[i], i
+		if qm.tasks[i].State != QueueStatePending {
+			continue
+		}
+		if firstPending == -1 {
+			firstPending = i
+		}
+		if qm.tasks[i].Source != qm.lastSource {
+			altPending = i
+			break
 		}
 	}
-	return ThumbnailTask{}, -1
+
+	pick := altPending
+	if pick == -1 {
+		pick = firstPending
+	}
+	if pick == -1 {
+		return ThumbnailTask{}, -1
+	}
+
+	qm.tasks[pick].State = QueueStateProcessing
+	qm.lastSource = qm.tasks[pick].Source
+	return qm.tasks[pick], pick
 }
 
-// runWorkers khởi chạy n worker song song, mỗi worker mở một tab Chrome riêng
-// (chung profile) và xử lý task tới khi hết. Khi tất cả worker xong thì đặt lại
-// isRunning=false và emit tiến độ cuối.
-func (qm *AIQueueManager) runWorkers(ctx context.Context, n int) {
-	defer func() {
-		qm.mu.Lock()
-		qm.isRunning = false
-		qm.mu.Unlock()
-		qm.emitProgress()
-	}()
-
-	// Không mở nhiều tab hơn số task đang chờ: 3 task + 5 luồng → chỉ mở 3 tab.
+// retireWorker giảm activeWorkers khi một worker thoát. Nếu vẫn còn task pending
+// (trường hợp hiếm: worker thoát đúng lúc task mới vừa vào) thì respawn để không
+// bỏ sót. Khi worker cuối cùng thoát và không còn pending → reset run-state.
+func (qm *AIQueueManager) retireWorker(ctx context.Context, workerID int) {
 	qm.mu.Lock()
+	qm.activeWorkers--
 	pending := 0
 	for i := range qm.tasks {
 		if qm.tasks[i].State == QueueStatePending {
 			pending++
 		}
 	}
-	qm.mu.Unlock()
-	if pending == 0 {
+	// Còn task chờ nhưng worker này sắp chết → hồi sinh chính nó (chống orphan).
+	if pending > 0 && ctx.Err() == nil {
+		qm.activeWorkers++
+		qm.mu.Unlock()
+		go qm.worker(ctx, workerID)
 		return
 	}
-	if n > pending {
-		n = pending
+	// Worker cuối cùng thoát → dọn run-state để lần Enqueue sau khởi động lại sạch.
+	// Guard qm.runCtx == ctx: nếu Cancel/Clear đã tạo (hoặc xóa) một run mới thì
+	// worker cũ này KHÔNG được nil nhầm run-state mới.
+	if qm.activeWorkers == 0 && qm.runCtx == ctx {
+		qm.isRunning = false
+		qm.runCtx = nil
+		qm.cancel = nil
 	}
-
-	// Đảm bảo trình duyệt đã mở trước khi các worker tạo tab.
-	if !qm.service.session.IsOpen() {
-		if err := qm.service.OpenGoogleAI(string(ProviderFlow), true); err != nil {
-			// Không mở được trình duyệt → đánh dấu mọi task pending là thất bại.
-			qm.mu.Lock()
-			for i := range qm.tasks {
-				if qm.tasks[i].State == QueueStatePending || qm.tasks[i].State == QueueStateProcessing {
-					qm.tasks[i].State = QueueStateFailed
-					qm.tasks[i].ErrorMessage = err.Error()
-				}
-			}
-			qm.mu.Unlock()
-			return
-		}
-	}
-
-	flowLogf("Hàng Đợi AI: %d task chờ, mở %d tab trình duyệt song song.", pending, n)
-
-	var wg sync.WaitGroup
-	for w := 0; w < n; w++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			qm.worker(ctx, workerID)
-		}(w)
-	}
-	wg.Wait()
+	qm.mu.Unlock()
+	qm.emitProgress()
 }
 
 // worker mở một tab riêng và xử lý các task cho tới khi hết hoặc ctx bị hủy.
@@ -260,12 +334,14 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 	page, err := qm.service.session.NewPage(flowURL)
 	if err != nil {
 		flowLogf("Worker #%d: không mở được tab mới: %v", workerID, err)
+		qm.retireWorker(ctx, workerID)
 		return
 	}
 	defer func() {
 		if page != nil {
 			_ = page.Close()
 		}
+		qm.retireWorker(ctx, workerID)
 	}()
 
 	for {

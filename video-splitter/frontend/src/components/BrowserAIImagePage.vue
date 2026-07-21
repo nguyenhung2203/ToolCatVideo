@@ -959,7 +959,8 @@ const startGeneration = async () => {
       resolution: selectedResolution.value,
       state: '',
       errorMessage: '',
-      resultPath: ''
+      resultPath: '',
+      source: 'ai-image'
     }))
 
     queueResultPaths.value = []

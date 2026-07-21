@@ -755,6 +755,7 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 							Provider:       browserai.ProviderFlow,
 							Model:          "Nano Banana 2",
 							AspectRatio:    aspectRatio,
+							Source:         "video-cut",
 						}
 
 						// Nạp task vào Hàng Đợi AI NGAY khi clip này cắt xong (vừa xuất

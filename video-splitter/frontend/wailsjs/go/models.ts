@@ -101,6 +101,7 @@ export namespace browserai {
 	    state: string;
 	    errorMessage: string;
 	    resultPath: string;
+	    source: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ThumbnailTask(source);
@@ -124,6 +125,7 @@ export namespace browserai {
 	        this.state = source["state"];
 	        this.errorMessage = source["errorMessage"];
 	        this.resultPath = source["resultPath"];
+	        this.source = source["source"];
 	    }
 	}
 	export class QueueStatus {
