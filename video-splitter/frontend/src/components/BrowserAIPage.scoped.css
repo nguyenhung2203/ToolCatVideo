@@ -94,10 +94,31 @@
 
 .prompt-textarea {
   flex: 1;
-  height: auto !important;
-  resize: none;
+  height: auto;
+  resize: vertical;
   font-family: var(--wx-font-primary);
   line-height: var(--wx-lh-normal);
+}
+
+.prompt-auto-textarea {
+  display: block;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  resize: vertical;
+  line-height: 1.45;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.prompt-auto-textarea::-webkit-scrollbar {
+  width: 5px;
+}
+.prompt-auto-textarea::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03);
+}
+.prompt-auto-textarea::-webkit-scrollbar-thumb {
+  background: var(--wx-brand-accent, #3b82f6);
+  border-radius: 4px;
 }
 
 .read-only-input {

@@ -73,10 +73,12 @@
           <div style="position: relative; flex: 1; display: flex; flex-direction: column;">
             <textarea
               v-model="prompt"
+              @input="onPromptInput"
               @paste="handlePasteImage"
               placeholder="Mô tả cảnh video bạn muốn Google AI tạo ra... (Mẹo: Có thể nhấn Ctrl+V để dán ảnh trực tiếp từ clipboard vào đây)"
-              class="img-text-input prompt-textarea"
+              class="img-text-input prompt-textarea prompt-auto-textarea"
               maxlength="2000"
+              rows="1"
               style="padding-bottom: 56px;"
             ></textarea>
 
@@ -298,7 +300,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted, computed } from 'vue'
+import { ref, reactive, watch, onMounted, computed, nextTick } from 'vue'
 import { useBrowserAI } from './composables/useBrowserAI'
 import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, CheckCircle, RefreshCw, ImageIcon, Check, Download } from 'lucide-vue-next'
 // @ts-ignore
@@ -526,6 +528,28 @@ const provider = computed<'gemini' | 'flow'>(() => {
 })
 
 const prompt = ref('')
+
+// Tự động co giãn chiều cao ô prompt theo nội dung (Min 56px, Max 180px + scroll)
+const autoResizeTextarea = (el: HTMLElement | null) => {
+  if (!el || !(el instanceof HTMLTextAreaElement)) return
+  el.style.height = 'auto'
+  const minH = 56
+  const maxH = 180
+  const computedH = Math.min(Math.max(el.scrollHeight, minH), maxH)
+  el.style.height = `${computedH}px`
+  el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden'
+}
+
+const onPromptInput = (e: Event) => {
+  autoResizeTextarea(e.target as HTMLElement)
+}
+
+watch(prompt, () => {
+  nextTick(() => {
+    const el = document.querySelector('.prompt-auto-textarea')
+    if (el) autoResizeTextarea(el as HTMLElement)
+  })
+}, { immediate: true })
 const ratios = ['16:9', '9:16']
 const aspectRatio = ref('9:16')
 const outputDir = ref('')

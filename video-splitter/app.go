@@ -700,6 +700,18 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 				}
 			}
 			outPath := filepath.Join(outDir, outName)
+			// Tránh tuyệt đối việc trùng tên hoặc đè file đã có sẵn trong thư mục xuất
+			ext := filepath.Ext(outName)
+			baseNameWithoutExt := strings.TrimSuffix(outName, ext)
+			counter := 1
+			for {
+				if _, err := os.Stat(outPath); os.IsNotExist(err) {
+					break
+				}
+				outName = fmt.Sprintf("%s_%d%s", baseNameWithoutExt, counter, ext)
+				outPath = filepath.Join(outDir, outName)
+				counter++
+			}
 			res := ExportResult{ClipID: clip.ID, Index: clip.Index, OutPath: outPath}
 			threads := 0
 			if jobs > 1 {

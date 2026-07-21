@@ -110,12 +110,13 @@
               </div>
               <textarea
                 v-model="card.text"
+                @input="onPromptInput"
                 @paste="handlePasteImageToCard(card.id, $event)"
                 placeholder="Mô tả ảnh bạn muốn tạo... (Mẹo: nhấn Ctrl+V để dán ảnh đầu vào cho riêng prompt này)"
-                class="img-text-input"
+                class="img-text-input prompt-auto-textarea"
                 maxlength="2000"
-                :rows="configCollapsed ? 8 : 3"
-                :style="{ width: '100%', resize: 'vertical', minHeight: configCollapsed ? '180px' : '64px' }"
+                rows="1"
+                style="width: 100%; box-sizing: border-box; display: block;"
               ></textarea>
               <div v-if="card.images.length > 0" style="display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap;">
                 <div v-for="img in card.images" :key="img.id" style="position: relative; width: 44px; height: 44px; border-radius: 4px; border: 1px solid var(--wx-border-default); background: #000; box-shadow: 0 2px 6px rgba(0,0,0,0.4);">
@@ -668,6 +669,32 @@ interface PromptCard {
 const promptCards = ref<PromptCard[]>([
   { id: `card_${Date.now()}`, text: '', images: [] }
 ])
+
+// Tự động co giãn chiều cao ô prompt theo nội dung (Min 44px, Max 180px + scroll)
+const autoResizeTextarea = (el: HTMLElement | null) => {
+  if (!el || !(el instanceof HTMLTextAreaElement)) return
+  el.style.height = 'auto'
+  const minH = 44
+  const maxH = 180
+  const computedH = Math.min(Math.max(el.scrollHeight, minH), maxH)
+  el.style.height = `${computedH}px`
+  el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden'
+}
+
+const onPromptInput = (e: Event) => {
+  autoResizeTextarea(e.target as HTMLElement)
+}
+
+watch(
+  promptCards,
+  () => {
+    nextTick(() => {
+      const els = document.querySelectorAll('.prompt-auto-textarea')
+      els.forEach((el) => autoResizeTextarea(el as HTMLElement))
+    })
+  },
+  { deep: true, immediate: true }
+)
 
 // Danh sách task thực tế sẽ chạy:
 // - Nếu CHỈ có 1 card và card đó KHÔNG có ảnh → tách text theo dòng trống thành
