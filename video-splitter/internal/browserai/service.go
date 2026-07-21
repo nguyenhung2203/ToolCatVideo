@@ -285,15 +285,17 @@ func (s *Service) Generate(req GenerateRequest) (TaskInfo, error) {
 			return
 		}
 
-		// Read file size of the primary/first file
+		// Read file size of all generated files
 		var size int64
 		primaryPath := ""
 		primaryName := ""
 		if len(filePaths) > 0 {
 			primaryPath = filePaths[0]
 			primaryName = filepath.Base(primaryPath)
-			if info, statErr := os.Stat(primaryPath); statErr == nil {
-				size = info.Size()
+			for _, p := range filePaths {
+				if info, statErr := os.Stat(p); statErr == nil {
+					size += info.Size()
+				}
 			}
 		}
 

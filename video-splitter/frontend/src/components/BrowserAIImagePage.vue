@@ -257,32 +257,31 @@
                 <span style="font-size: 11px; margin-top: 8px; color: var(--wx-text-muted); word-break: break-all; text-align: center; font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; height: 32px; line-height: 16px;">
                   {{ result.filePaths && result.filePaths[pIdx] ? getFilename(result.filePaths[pIdx]) : result.fileName }}
                 </span>
-                
-                <button @click="applyAsThemeImage(result.filePaths[pIdx])" class="img-action-btn apply-btn" style="font-size: 11.5px; padding: 4px 8px; margin-top: 8px; background: var(--wx-brand-primary); color: var(--wx-text-inverse); border: none; height: 28px; border-radius: var(--wx-radius-sm); width: 100%; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;">
-                  🎨 Chọn ảnh này
-                </button>
               </div>
             </div>
           </div>
 
-          <!-- File Details -->
-          <div class="file-details" style="flex-shrink: 0; padding-top: 8px; border-top: 1px solid var(--wx-border-default);">
-            <div v-if="previewURLs.length <= 1">Đường dẫn: <code>{{ result.filePath }}</code></div>
-            <div v-else>Thư mục lưu: <code>{{ outputDir }}</code></div>
-            <div>Kích thước file chính: <code>{{ formatSize(result.fileSize) }}</code></div>
-          </div>
+          <!-- File Details & Actions Row -->
+          <div class="file-details" style="flex-shrink: 0; padding: 12px; border-top: 1px solid var(--wx-border-default); display: flex; justify-content: space-between; align-items: center; gap: 16px;">
+            <div style="flex: 1; min-width: 0;">
+              <div v-if="previewURLs.length <= 1" style="word-break: break-all;">Đường dẫn: <code>{{ result.filePath }}</code></div>
+              <div v-else style="word-break: break-all;">Thư mục lưu: <code>{{ outputDir }}</code></div>
+              <div v-if="previewURLs.length <= 1" style="margin-top: 4px;">Kích thước file: <code>{{ formatSize(result.fileSize) }}</code></div>
+              <div v-else style="margin-top: 4px;">Tổng dung lượng ({{ previewURLs.length }} ảnh): <code>{{ formatSize(result.fileSize) }}</code></div>
+            </div>
 
-          <!-- Quick Action Buttons -->
-          <div class="completed-actions" style="flex-shrink: 0; margin-top: 10px;">
-            <button @click="resetForm" class="img-dir-btn">
-              <RefreshCw :size="12" /> Tạo lại
-            </button>
-            <button v-if="previewURLs.length <= 1" @click="applyAsThemeImage(result.filePath)" class="img-action-btn apply-btn">
-              🎨 Dùng làm ảnh chủ đề
-            </button>
-            <button @click="openFolder" class="img-dir-btn">
-              <FolderOpen :size="12" /> Mở thư mục
-            </button>
+            <!-- Quick Action Buttons -->
+            <div class="completed-actions" style="flex-shrink: 0; display: flex; gap: 8px; margin-top: 0; justify-content: flex-end; align-items: center;">
+              <button @click="resetForm" class="img-dir-btn" style="height: 36px;">
+                <RefreshCw :size="12" /> Tạo lại
+              </button>
+              <button v-if="previewURLs.length <= 1" @click="applyAsThemeImage(result.filePath)" class="img-action-btn apply-btn" style="height: 36px;">
+                🎨 Dùng làm ảnh chủ đề
+              </button>
+              <button @click="openFolder" class="img-dir-btn" style="height: 36px;">
+                <FolderOpen :size="12" /> Mở thư mục
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -296,6 +295,8 @@ import { useBrowserAI } from './composables/useBrowserAI'
 import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, CheckCircle, RefreshCw, ImageIcon, Check, Download } from 'lucide-vue-next'
 // @ts-ignore
 import { SelectFolder, GetStreamURL, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
+// @ts-ignore
+import { OpenOutputFolder } from '../../wailsjs/go/browserai/Service'
 
 const mediaType = 'image'
 
@@ -777,14 +778,15 @@ const applyAsThemeImage = (path?: string) => {
 }
 
 const openFolder = async () => {
-  if (result.value && result.value.filePath) {
+  const dir = outputDir.value || (result.value && (result.value.filePath || (result.value.filePaths && result.value.filePaths[0])))
+  if (dir) {
     try {
-      const dir = outputDir.value
-      // @ts-ignore
-      import('../../wailsjs/go/browserai/Service').then(async (srv) => {
-        await srv.OpenOutputFolder(dir)
-      })
-    } catch (_) {}
+      await OpenOutputFolder(dir)
+    } catch (err) {
+      showToast("Lỗi mở thư mục: " + err, "error")
+    }
+  } else {
+    showToast("Không tìm thấy đường dẫn thư mục", "warning")
   }
 }
 

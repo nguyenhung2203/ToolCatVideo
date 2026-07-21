@@ -327,7 +327,6 @@ function updateSelectionFromDrag() {
     <div class="img-footer">
       <!-- Save folder -->
       <div class="img-dir-row">
-        <FolderOpen :size="14" class="img-dir-icon" />
         <span class="img-dir-label">Lưu vào:</span>
         <input v-model="imageDir" class="img-text-input img-dir-input" readonly placeholder="Thư mục lưu ảnh..." />
         <button @click="pickImageDir" class="btn img-dir-btn">
@@ -402,7 +401,7 @@ function updateSelectionFromDrag() {
 /* ── Scrollable body ────────────────────────────────────── */
 .img-body {
   flex: 1;
-  overflow-y: auto;
+  overflow: hidden; /* Chỉ cho grid cuộn, không cho body cuộn */
   display: flex;
   flex-direction: column;
   gap: var(--wx-space-4);
@@ -842,12 +841,15 @@ function updateSelectionFromDrag() {
 }
 
 .img-card {
+  position: relative;
   border-radius: var(--wx-radius-md);
   overflow: hidden;
   cursor: pointer;
   border: 2px solid var(--wx-border-default);
   background: color-mix(in srgb, var(--wx-surface-base) 3%, transparent);
   transition: all 150ms ease;
+  height: 120px; /* Chiều cao cố định của thẻ (giúp ảnh cao ráo, đều đẹp) */
+  min-height: 120px;
 }
 
 .img-card:hover { border-color: var(--wx-border-subtle); }
@@ -860,7 +862,8 @@ function updateSelectionFromDrag() {
 
 .img-card-thumb {
   position: relative;
-  aspect-ratio: 4/3;
+  height: 100%; /* Lấp đầy toàn bộ thẻ ảnh */
+  width: 100%;
   overflow: hidden;
   background: rgba(0,0,0,.3);
 }
@@ -891,12 +894,19 @@ function updateSelectionFromDrag() {
 }
 
 .img-card-author {
-  padding: 5px var(--wx-space-2);
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+  color: rgba(255, 255, 255, 0.9);
+  padding: 4px var(--wx-space-2);
   font-size: 10px;
-  color: var(--wx-text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  pointer-events: none;
 }
 
 

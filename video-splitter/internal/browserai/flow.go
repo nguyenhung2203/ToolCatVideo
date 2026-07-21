@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,41 @@ func GenerateFlowVideo(
 	if err != nil {
 		return nil, err
 	}
+
+	// Đăng ký script ẩn danh (stealth) để vượt qua bộ quét bot/webdriver của Google
+	_, _ = page.EvalOnNewDocument(`() => {
+		// 1. Ghi đè navigator.webdriver thành undefined để chống phát hiện tự động
+		Object.defineProperty(navigator, 'webdriver', {
+			get: () => undefined
+		});
+
+		// 2. Xóa các biến signature ẩn của Chrome DevTools Protocol
+		try {
+			delete window.cdc_adoQyhkntgdgCwRuuFormiP_Array;
+			delete window.cdc_adoQyhkntgdgCwRuuFormiP_Promise;
+		} catch (e) {}
+
+		// 3. Giả lập chrome object giống trình duyệt người dùng bình thường
+		window.chrome = {
+			runtime: {},
+			loadTimes: function() {},
+			csi: function() {},
+			app: {}
+		};
+
+		// 4. Khai báo plugins giả
+		Object.defineProperty(navigator, 'plugins', {
+			get: () => [
+				{ name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+				{ name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
+			]
+		});
+
+		// 5. Khai báo danh sách ngôn ngữ chuẩn
+		Object.defineProperty(navigator, 'languages', {
+			get: () => ['vi-VN', 'vi', 'en-US', 'en']
+		});
+	}`)
 
 	logDebug("Bắt đầu mở trang Google Flow: %s", targetURL)
 	tm.EmitStatus(TaskStateLaunching, "Đang mở trang Google Flow...", 10)
@@ -138,10 +174,11 @@ func GenerateFlowVideo(
 	// Hoặc nếu ta không tìm thấy ô nhập prompt sau 5 giây, ta xem như project đó bị lỗi/bị xóa và cần tạo mới!
 	if hasProject {
 		logDebug("Xác minh dự án cũ có hoạt động bình thường không...")
-		_, errCheckPrompt := FindFirstVisible(ctx, page, FlowSelectors.PromptInputs, 5*time.Second)
+		_, errCheckPrompt := FindFirstVisible(ctx, page, FlowSelectors.PromptInputs, 30*time.Second)
 		if errCheckPrompt != nil {
-			logDebug("Không tìm thấy ô nhập liệu trong dự án cũ sau 5 giây. Có vẻ dự án này đã bị lỗi hoặc bị xóa. Tiến hành mở trang chủ để tạo dự án mới...")
+			logDebug("Không tìm thấy ô nhập liệu trong dự án cũ sau 30 giây. Có vẻ dự án này đã bị lỗi hoặc bị xóa. Tiến hành mở trang chủ để tạo dự án mới...")
 			hasProject = false
+			saveProjectURL("") // Xóa link dự án cũ bị lỗi/bị xóa để lần sau không thử lại nữa
 			errNavigateHome := page.Navigate("https://labs.google/fx/vi/tools/flow")
 			if errNavigateHome == nil {
 				_ = page.WaitDOMStable(2*time.Second, 0.5)
@@ -153,51 +190,77 @@ func GenerateFlowVideo(
 		logDebug("Dự án cũ không hoạt động hoặc không có. Tiến hành click tạo dự án mới...")
 		tm.EmitStatus(TaskStateReady, "Đang vào không gian làm việc (tạo dự án mới)...", 21)
 		
-		// 1. Try JS-based clicker with xpath and case-insensitive text fallback
-		_, _ = page.Eval(`() => {
-			try {
-				const xpathResult = document.evaluate("//*[@id='__next']/div[2]/div/div/button", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-				const xpathBtn = xpathResult.singleNodeValue;
-				if (xpathBtn) {
-					xpathBtn.click();
-					return;
-				}
-			} catch (e) {}
+		// Hàm tìm nút tạo dự án mới bằng JS, ưu tiên XPath chính xác của người dùng trước
+		findBtnJS := rod.Eval(`() => {
+			// 1. Thử tìm bằng các đường dẫn XPath cụ thể
+			const xpaths = [
+				` + "`" + `//*[@id="__next"]/div[2]/div/div/button` + "`" + `,
+				` + "`" + `//*[@id="__next"]/div[1]/div/div/button` + "`" + `,
+				` + "`" + `//*[@id="__next"]/div/div/div/button` + "`" + `
+			];
+			for (const xpath of xpaths) {
+				try {
+					const res = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+					if (res) {
+						const rect = res.getBoundingClientRect();
+						if (rect.width > 0 && rect.height > 0) {
+							return res;
+						}
+					}
+				} catch(e) {}
+			}
 
-			const elements = Array.from(document.querySelectorAll('button, div[role="button"], [class*="project"], [class*="Project"]'));
-			for (const el of elements) {
-				const txt = el.textContent.toLowerCase();
-				if (txt.includes('dự án mới') || txt.includes('new project') || txt.includes('create project') || txt.includes('dự án')) {
-					el.click();
-					return;
+			// 2. Dự phòng: Tìm theo từ khóa chữ thường không phân biệt hoa thường
+			const tags = ['button', 'div', 'span', 'a', '*'];
+			const keywords = ['dự án mới', 'new project', 'create project'];
+			for (const tag of tags) {
+				const elements = Array.from(document.querySelectorAll(tag));
+				for (const el of elements) {
+					if (!el.textContent) continue;
+					const text = el.textContent.toLowerCase().trim();
+					for (const kw of keywords) {
+						if (text.includes(kw)) {
+							const rect = el.getBoundingClientRect();
+							if (rect.width > 0 && rect.height > 0) {
+								return el;
+							}
+						}
+					}
 				}
 			}
+			return null;
 		}`)
-		_ = page.WaitDOMStable(2*time.Second, 0.5)
 
-		// 2. Fallback to original rod method if URL is still not in a project workspace
-		info, err = page.Info()
-		if err != nil || !strings.Contains(info.URL, "/project/") {
+		// Click lần đầu
+		btn, errJS := page.ElementByJS(findBtnJS)
+		if errJS == nil && btn != nil {
+			logDebug("Đã tìm thấy nút Tạo dự án mới. Đang mô phỏng click chuột thật...")
+			_ = btn.ScrollIntoView()
+			if errClick := btn.Click(proto.InputMouseButtonLeft, 1); errClick != nil {
+				logDebug("Click chuột thật thất bại, dùng JS click dự phòng: %v", errClick)
+				_, _ = btn.Eval("function() { this.click(); }")
+			}
+		} else {
+			logDebug("Không tìm thấy nút tạo dự án mới qua JS. Thử tìm qua Selector...")
 			newProjectBtn, errBtn := FindFirstVisible(ctx, page, []SelectorCandidate{
 				{Selector: "button:contains('Dự án mới')"},
-				{Selector: "div:contains('Dự án mới')"},
-				{Selector: "span:contains('Dự án mới')"},
+				{Selector: "button:contains('Dự Án Mới')"},
 				{Selector: "button:contains('New project')"},
-				{Selector: "div:contains('New project')"},
-				{Selector: "span:contains('New project')"},
-				{Selector: "*:contains('Dự án mới')"},
-				{Selector: "*:contains('New project')"},
+				{Selector: "button:contains('New Project')"},
+				{Selector: "button"},
+				{Selector: "div[role='button']"},
 			}, 5*time.Second)
 			if errBtn == nil && newProjectBtn != nil {
-				_, _ = newProjectBtn.Eval("el => el.click()")
-				_ = page.WaitDOMStable(2*time.Second, 0.5)
+				_ = newProjectBtn.ScrollIntoView()
+				_, _ = newProjectBtn.Eval("function() { this.click(); }")
 			}
 		}
+		_ = page.WaitDOMStable(1*time.Second, 0.5)
 
-		// 3. Wait for URL redirection to contain "/project/"
+		// 3. Đợi chuyển hướng URL sang "/project/", tiến hành click lại nếu bị trễ Event Listener của React
 		urlSuccess := false
 		logDebug("Đang chờ URL chuyển hướng sang '/project/'...")
-		for idx := 0; idx < 30; idx++ { // Wait up to 15 seconds (30 * 500ms)
+		for idx := 0; idx < 20; idx++ { // Đợi tối đa 15 giây (20 * 750ms)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -211,7 +274,18 @@ func GenerateFlowVideo(
 					break
 				}
 			}
-			time.Sleep(500 * time.Millisecond)
+
+			// Cứ sau mỗi 2.2 giây (3 lần lặp * 750ms) nếu chưa chuyển hướng thì click lại
+			if idx > 0 && idx % 3 == 0 {
+				logDebug("Vẫn chưa chuyển hướng. Thử click lại nút Tạo dự án mới...")
+				if retryBtn, errRetry := page.ElementByJS(findBtnJS); errRetry == nil && retryBtn != nil {
+					_ = retryBtn.ScrollIntoView()
+					if errClick := retryBtn.Click(proto.InputMouseButtonLeft, 1); errClick != nil {
+						_, _ = retryBtn.Eval("function() { this.click(); }")
+					}
+				}
+			}
+			time.Sleep(750 * time.Millisecond)
 		}
 		if !urlSuccess {
 			urlStr := ""
@@ -227,6 +301,22 @@ func GenerateFlowVideo(
 		logDebug("Lưu link dự án mới vào settings.json: %s", info.URL)
 		saveProjectURL(info.URL)
 	} else {
+		// Kiểm tra xem dự án cũ có vượt quá 50 ảnh hay không
+		totalCardsCountObj, errTotalCount := page.Eval(`() => {
+			const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
+				const src = img.getAttribute('src') || '';
+				return src.includes('getMediaUrl') || src.includes('/fx/api/');
+			});
+			return imgs.length;
+		}`)
+		if errTotalCount == nil && totalCardsCountObj != nil {
+			totalCount := totalCardsCountObj.Value.Int()
+			logDebug("Số lượng hình ảnh hiện có trong dự án cũ: %d", totalCount)
+			if totalCount >= 50 {
+				logDebug("Dự án hiện tại đã có %d hình ảnh (vượt quá ngưỡng 50 ảnh để tránh lag). Tiến hành xóa link dự án cũ để lần tới tự động tạo dự án mới...", totalCount)
+				saveProjectURL("")
+			}
+		}
 		logDebug("Dự án cũ hoạt động bình thường! Tiếp tục sử dụng.")
 	}
 	logDebug("Đã vào dự án thành công!")
@@ -293,38 +383,40 @@ func GenerateFlowVideo(
 		return false
 	}
 
-	// Lấy danh sách URL của nhóm ảnh cuối cùng trước khi bấm Tạo
+	// Lấy danh sách URL tất cả ảnh hiện có trong dự án trước khi bấm Tạo
 	var lastGroupUrls []string
 	if req.MediaType == MediaTypeImage {
 		lastUrlsObj, errLast := page.Eval(`() => {
-			const buttons = Array.from(document.querySelectorAll('button')).filter(btn => {
-				const img = btn.querySelector('img');
-				return img && img.getAttribute('src')?.includes('getMediaUrl');
+			const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
+				const src = img.getAttribute('src') || '';
+				return src.includes('getMediaUrl') || src.includes('/fx/api/');
 			});
-			if (buttons.length === 0) return [];
-			let parent = buttons[buttons.length - 1].parentElement;
-			while (parent && !parent.className.includes('layout') && !parent.className.includes('grid') && parent.tagName !== 'SECTION') {
-				parent = parent.parentElement;
-			}
-			if (!parent) parent = buttons[buttons.length - 1].parentElement;
-			if (parent) {
-				const siblingButtons = Array.from(parent.querySelectorAll('button')).filter(btn => {
-					const img = btn.querySelector('img');
-					return img && img.getAttribute('src')?.includes('getMediaUrl');
-				});
-				return siblingButtons.map(btn => {
-					const img = btn.querySelector('img');
-					return img ? img.getAttribute('src') : '';
-				}).filter(src => src !== '');
-			}
-			return [];
+			return imgs.map(img => {
+				let src = img.getAttribute('src') || '';
+				if (src.startsWith('/')) {
+					src = 'https://labs.google' + src;
+				}
+				return src;
+			}).filter(src => src !== '');
 		}`)
 		if errLast == nil && lastUrlsObj != nil {
 			for _, v := range lastUrlsObj.Value.Arr() {
 				lastGroupUrls = append(lastGroupUrls, v.Str())
 			}
 		}
-		logDebug("URL nhóm ảnh cuối cùng trước khi tạo: %v", lastGroupUrls)
+		logDebug("URL tất cả ảnh hiện tại trước khi tạo (%d ảnh): %v", len(lastGroupUrls), lastGroupUrls)
+	}
+
+	// Kiểm tra và in log tổng số lượng hình ảnh hiện có trong dự án trước khi bấm Tạo
+	totalCardsCountObj, errTotalCount := page.Eval(`() => {
+		const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
+			const src = img.getAttribute('src') || '';
+			return src.includes('getMediaUrl') || src.includes('/fx/api/');
+		});
+		return imgs.length;
+	}`)
+	if errTotalCount == nil && totalCardsCountObj != nil {
+		logDebug("Số lượng hình ảnh đang có trong dự án trước khi tạo: %d ảnh", totalCardsCountObj.Value.Int())
 	}
 
 	// Count initial download buttons if it is Video type
@@ -368,12 +460,15 @@ func GenerateFlowVideo(
 			}
 		}
 
+		logDebug("Bắt đầu điền prompt vào ô nhập liệu: '%s'...", req.Prompt)
 		tm.EmitStatus(TaskStateSubmitting, "Đang điền prompt...", 35)
 		err = FillFlowPrompt(page, promptInput, req.Prompt)
 		if err != nil {
+			logDebug("Lỗi khi điền prompt: %v", err)
 			finalErr = fmt.Errorf("fill prompt: %w", err)
 			continue
 		}
+		logDebug("Đã điền prompt xong thành công!")
 
 		if len(req.InputImagePaths) > 0 {
 			logDebug("Phát hiện yêu cầu gửi kèm ảnh (%d ảnh). Đang upload ảnh...", len(req.InputImagePaths))
@@ -424,7 +519,7 @@ func GenerateFlowVideo(
 		} else {
 			// 2. Try dispatching keydown Enter event via JS on the input element
 			logDebug("Thử gửi bằng sự kiện keydown Enter (JS)...")
-			_, errEv := promptInput.Eval(`(el) => {
+			_, errEv := promptInput.Eval(`function() {
 				const ev = new KeyboardEvent('keydown', {
 					key: 'Enter',
 					code: 'Enter',
@@ -433,7 +528,7 @@ func GenerateFlowVideo(
 					bubbles: true,
 					cancelable: true
 				});
-				el.dispatchEvent(ev);
+				this.dispatchEvent(ev);
 			}`)
 			if errEv != nil {
 				logDebug("Lỗi dispatch event Enter: %v", errEv)
@@ -445,9 +540,8 @@ func GenerateFlowVideo(
 			} else {
 				// 3. Fallback: find and click the physical submit button using robust scoped icon detection
 				logDebug("Bắt đầu quét tìm nút gửi bằng JS...")
-				submitBtn, errSubmit := promptInput.ElementByJS(rod.Eval(`(textbox) => {
-					if (!textbox) return null;
-					let parent = textbox.parentElement;
+				submitBtn, errSubmit := promptInput.ElementByJS(rod.Eval(`function() {
+					let parent = this.parentElement;
 					while (parent && parent.tagName !== 'BODY') {
 						const buttons = Array.from(parent.querySelectorAll('button'));
 						if (buttons.length > 0) {
@@ -482,6 +576,8 @@ func GenerateFlowVideo(
 					if errFb == nil && submitBtnFb != nil {
 						_ = submitBtnFb.Click(proto.InputMouseButtonLeft, 1)
 						sleep(1000 * time.Millisecond)
+					} else if errFb != nil {
+						logDebug("Lỗi tìm nút gửi dự phòng: %v", errFb)
 					}
 				}
 			}
@@ -497,12 +593,18 @@ func GenerateFlowVideo(
 			defer tickerImg.Stop()
 			
 			deadlineImg := time.Now().Add(10 * time.Minute)
+			pollCount := 0
 			
 			for {
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
 				case <-tickerImg.C:
+					pollCount++
+				}
+				
+				if pollCount % 3 == 1 {
+					logDebug("Đang chờ Google AI tạo xong hình ảnh... (Đã chờ %d giây)", pollCount*2)
 				}
 				
 				if time.Now().After(deadlineImg) {
@@ -569,30 +671,33 @@ func GenerateFlowVideo(
 					break
 				}
 				
-				// Quét nhóm ảnh cuối cùng hiện tại
-				currentUrlsObj, errCurr := page.Eval(`() => {
-					const buttons = Array.from(document.querySelectorAll('button')).filter(btn => {
-						const img = btn.querySelector('img');
-						return img && img.getAttribute('src')?.includes('getMediaUrl');
+				// Quét tất cả các ảnh mới vừa sinh ra ở đầu danh sách (chưa có trong lastGroupUrls)
+				currentUrlsObj, errCurr := page.Eval(`(lastGroupUrls) => {
+					const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
+						const src = img.getAttribute('src') || '';
+						return src.includes('getMediaUrl') || src.includes('/fx/api/');
 					});
-					if (buttons.length === 0) return [];
-					let parent = buttons[buttons.length - 1].parentElement;
-					while (parent && !parent.className.includes('layout') && !parent.className.includes('grid') && parent.tagName !== 'SECTION') {
-						parent = parent.parentElement;
+					if (imgs.length === 0) return [];
+					const lastSet = new Set(lastGroupUrls || []);
+					const newUrls = [];
+					for (const img of imgs) {
+						let src = img.getAttribute('src') || '';
+						if (src.startsWith('/')) {
+							src = 'https://labs.google' + src;
+						}
+						if (lastSet.size > 0 && lastSet.has(src)) {
+							break; // Đã chạm đến ảnh cũ có từ trước -> Dừng!
+						}
+						newUrls.push(src);
 					}
-					if (!parent) parent = buttons[buttons.length - 1].parentElement;
-					if (parent) {
-						const siblingButtons = Array.from(parent.querySelectorAll('button')).filter(btn => {
-							const img = btn.querySelector('img');
-							return img && img.getAttribute('src')?.includes('getMediaUrl');
+					if (newUrls.length === 0 && imgs.length > 0 && lastSet.size === 0) {
+						return imgs.map(img => {
+							let src = img.getAttribute('src') || '';
+							return src.startsWith('/') ? 'https://labs.google' + src : src;
 						});
-						return siblingButtons.map(btn => {
-							const img = btn.querySelector('img');
-							return img ? img.getAttribute('src') : '';
-						}).filter(src => src !== '');
 					}
-					return [];
-				}`)
+					return newUrls;
+				}`, lastGroupUrls)
 
 				if errCurr == nil && currentUrlsObj != nil {
 					var currentUrls []string
@@ -600,45 +705,49 @@ func GenerateFlowVideo(
 						currentUrls = append(currentUrls, v.Str())
 					}
 
-					// So sánh với lastGroupUrls
+					// So sánh nhóm ảnh mới ở vị trí đầu tiên [0] với nhóm ảnh trước khi tạo
 					isNew := false
 					if len(lastGroupUrls) == 0 {
 						if len(currentUrls) > 0 {
 							isNew = true
 						}
 					} else {
-						if len(currentUrls) > 0 && (len(currentUrls) != len(lastGroupUrls) || currentUrls[len(currentUrls)-1] != lastGroupUrls[len(lastGroupUrls)-1]) {
+						if len(currentUrls) > 0 && currentUrls[0] != lastGroupUrls[0] {
 							isNew = true
 						}
 					}
 
 					if isNew {
+						logDebug("Phát hiện nhóm ảnh mới đã sinh xong! Số lượng mới sinh: %d ảnh. URL: %v", len(currentUrls), currentUrls)
 						sleep(2000 * time.Millisecond) // Chờ thêm 2 giây để ảnh load hoàn toàn
 						
 						// Đọc lại danh sách URL chính xác nhất sau khi đã load xong
-						currentUrlsObjSec, errCurrSec := page.Eval(`() => {
-							const buttons = Array.from(document.querySelectorAll('button')).filter(btn => {
-								const img = btn.querySelector('img');
-								return img && img.getAttribute('src')?.includes('getMediaUrl');
+						currentUrlsObjSec, errCurrSec := page.Eval(`(lastGroupUrls) => {
+							const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
+								const src = img.getAttribute('src') || '';
+								return src.includes('getMediaUrl') || src.includes('/fx/api/');
 							});
-							if (buttons.length === 0) return [];
-							let parent = buttons[buttons.length - 1].parentElement;
-							while (parent && !parent.className.includes('layout') && !parent.className.includes('grid') && parent.tagName !== 'SECTION') {
-								parent = parent.parentElement;
+							if (imgs.length === 0) return [];
+							const lastSet = new Set(lastGroupUrls || []);
+							const newUrls = [];
+							for (const img of imgs) {
+								let src = img.getAttribute('src') || '';
+								if (src.startsWith('/')) {
+									src = 'https://labs.google' + src;
+								}
+								if (lastSet.size > 0 && lastSet.has(src)) {
+									break;
+								}
+								newUrls.push(src);
 							}
-							if (!parent) parent = buttons[buttons.length - 1].parentElement;
-							if (parent) {
-								const siblingButtons = Array.from(parent.querySelectorAll('button')).filter(btn => {
-									const img = btn.querySelector('img');
-									return img && img.getAttribute('src')?.includes('getMediaUrl');
+							if (newUrls.length === 0 && imgs.length > 0 && lastSet.size === 0) {
+								return imgs.map(img => {
+									let src = img.getAttribute('src') || '';
+									return src.startsWith('/') ? 'https://labs.google' + src : src;
 								});
-								return siblingButtons.map(btn => {
-									const img = btn.querySelector('img');
-									return img ? img.getAttribute('src') : '';
-								}).filter(src => src !== '');
 							}
-							return [];
-						}`)
+							return newUrls;
+						}`, lastGroupUrls)
 						if errCurrSec == nil && currentUrlsObjSec != nil {
 							newGroupUrls := []string{}
 							for _, v := range currentUrlsObjSec.Value.Arr() {
@@ -648,41 +757,29 @@ func GenerateFlowVideo(
 							
 							// Kiểm tra tổng số ảnh trên toàn trang để tránh lag
 							totalCardsCountObj, errTotalCount := page.Eval(`() => {
-								const buttons = Array.from(document.querySelectorAll('button'));
-								let count = 0;
-								for (const btn of buttons) {
-									const img = btn.querySelector('img');
-									if (img && img.getAttribute('src')?.includes('getMediaUrl')) {
-										count++;
-									}
-								}
-								return count;
+								const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
+									const src = img.getAttribute('src') || '';
+									return src.includes('getMediaUrl') || src.includes('/fx/api/');
+								});
+								return imgs.length;
 							}`)
 							if errTotalCount == nil && totalCardsCountObj != nil {
 								totalCount := totalCardsCountObj.Value.Int()
 								logDebug("Tổng số lượng hình ảnh đang có trong dự án: %d", totalCount)
-								if totalCount > 50 {
-									logDebug("Dự án hiện tại có %d hình ảnh (vượt ngưỡng 50 ảnh để tránh lag Chrome). Tiến hành xóa link dự án cũ để lần sau tạo dự án mới...", totalCount)
+								if totalCount >= 50 {
+									logDebug("Dự án hiện tại có %d hình ảnh (vượt ngưỡng 50 ảnh để tránh lag Chrome). Tiến hành xóa link dự án cũ để lần sau tự động tạo dự án mới...", totalCount)
 									saveProjectURL("") // Xóa link project để lần sau tạo dự án mới tinh!
 								}
 							}
 
-							// Bắt đầu xử lý preview
+							// Bắt đầu xử lý preview: Đảm bảo có tiền tố https://labs.google
 							var directUrls []string
 							for _, src := range newGroupUrls {
 								tryUrl := src
-								if strings.Contains(src, "getMediaUrlRedirect") {
-									parts := strings.Split(src, "?")
-									if len(parts) > 1 {
-										queryParams := strings.Split(parts[1], "&")
-										for _, param := range queryParams {
-											kv := strings.Split(param, "=")
-											if len(kv) == 2 && kv[0] == "name" {
-												tryUrl = "https://flow-content.google/image/" + kv[1]
-												break
-											}
-										}
-									}
+								if strings.HasPrefix(src, "/") {
+									tryUrl = "https://labs.google" + src
+								} else if !strings.HasPrefix(src, "http") {
+									tryUrl = "https://labs.google/" + strings.TrimPrefix(src, "/")
 								}
 								directUrls = append(directUrls, tryUrl)
 							}
@@ -755,29 +852,18 @@ func GenerateFlowVideo(
 			for idx, selIdx := range selectedIndexes {
 				logDebug("Đang tải hình ảnh được chọn thứ %d/%d (chỉ mục trong nhóm: %d)...", idx+1, len(selectedIndexes), selIdx)
 
-				// Click the image card in the last layout group at index `selIdx` using atomic JS
+				// Click the image card at index `selIdx` among the newly generated images
 				clickedObj, errClick := page.Eval(`(selIdx) => {
-					const buttons = Array.from(document.querySelectorAll('button')).filter(btn => {
-						const img = btn.querySelector('img');
-						return img && img.getAttribute('src')?.includes('getMediaUrl');
+					const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
+						const src = img.getAttribute('src') || '';
+						return src.includes('getMediaUrl') || src.includes('/fx/api/');
 					});
-					if (buttons.length === 0) return false;
-					let parent = buttons[buttons.length - 1].parentElement;
-					while (parent && !parent.className.includes('layout') && !parent.className.includes('grid') && parent.tagName !== 'SECTION') {
-						parent = parent.parentElement;
-					}
-					if (!parent) parent = buttons[buttons.length - 1].parentElement;
-					if (parent) {
-						const siblingButtons = Array.from(parent.querySelectorAll('button')).filter(btn => {
-							const img = btn.querySelector('img');
-							return img && img.getAttribute('src')?.includes('getMediaUrl');
-						});
-						if (selIdx < siblingButtons.length) {
-							const el = siblingButtons[selIdx];
-							el.scrollIntoView({ block: 'center' });
-							el.click();
-							return true;
-						}
+					if (selIdx < imgs.length) {
+						const img = imgs[selIdx];
+						const card = img.closest('a, button, [data-tile-id], [role="button"]') || img;
+						card.scrollIntoView({ block: 'center' });
+						card.click();
+						return true;
 					}
 					return false;
 				}`, selIdx)
@@ -827,39 +913,28 @@ func GenerateFlowVideo(
 					targetRes = "1k" // default to 1K
 				}
 
-				hasUltra, _ := page.Eval(`() => {
-					// Check if user has ULTRA badge on screen
-					return Array.from(document.querySelectorAll('span, div')).some(el => {
-						return el.textContent.toUpperCase().includes('ULTRA') && el.getBoundingClientRect().width > 0;
-					});
-				}`)
+				logDebug("Đang chọn độ phân giải %s cho ảnh thứ %d/%d...", strings.ToUpper(targetRes), idx+1, len(selectedIndexes))
 
-				if targetRes == "4k" && (hasUltra != nil && !hasUltra.Value.Bool()) {
-					logDebug("Tài khoản chưa đăng ký gói ULTRA (không có badge ULTRA). Tự động lùi độ phân giải từ 4K về 2K.")
-					targetRes = "2k"
-				}
-				
-				// Click resolution button
+				// Click resolution button (1K, 2K, 4K) in dropdown
 				optionBtn, errOpt := page.ElementByJS(rod.Eval(`(target) => {
-					const buttons = Array.from(document.querySelectorAll('button'));
-					const match = buttons.find(el => el.textContent.toLowerCase().includes(target));
-					if (match) {
-						if (target === '4k') {
-							const upgradeBtn = Array.from(match.querySelectorAll('button, span, div')).find(sub => {
-								const subTxt = sub.textContent.toLowerCase();
-								return subTxt.includes('nâng cấp') || subTxt.includes('upgrade');
-							});
-							if (upgradeBtn) {
-								return upgradeBtn;
-							}
-						}
-						return match;
-					}
-					return null;
+					const items = Array.from(document.querySelectorAll('button, div[role="menuitem"], div[role="button"]'));
+					return items.find(el => {
+						const txt = el.textContent.toLowerCase();
+						const isVisible = el.getBoundingClientRect().width > 0;
+						return isVisible && txt.includes(target);
+					});
 				}`, targetRes))
 				
 				if errOpt != nil || optionBtn == nil {
-					logDebug("Không tìm thấy tùy chọn độ phân giải %s cho ảnh thứ %d, bỏ qua", req.Resolution, idx+1)
+					logDebug("Không tìm thấy tùy chọn độ phân giải %s cho ảnh thứ %d, thử tìm tùy chọn 1K mặc định...", targetRes, idx+1)
+					optionBtn, _ = page.ElementByJS(rod.Eval(`() => {
+						const items = Array.from(document.querySelectorAll('button, div[role="menuitem"]'));
+						return items.find(el => el.getBoundingClientRect().width > 0 && el.textContent.toLowerCase().includes('1k'));
+					}`))
+				}
+				
+				if optionBtn == nil {
+					logDebug("Không thể chọn độ phân giải cho ảnh thứ %d, bỏ qua", idx+1)
 					_, _ = page.Eval(`() => {
 						const closeBtn = Array.from(document.querySelectorAll('button')).find(el => {
 							const txt = el.textContent.toLowerCase().trim();
@@ -872,64 +947,12 @@ func GenerateFlowVideo(
 					continue
 				}
 
-				// Check if we need to wait for upscaling (for 2K/4K if it triggers upscale)
-				isUpscalingTriggered := false
-				if targetRes == "2k" || targetRes == "4k" {
-					isUpscalingTriggered = true
-				}
-				
-				_ = optionBtn.Click(proto.InputMouseButtonLeft, 1)
-
-				if isUpscalingTriggered {
-					logDebug("Đã click kích hoạt nâng cấp lên %s. Đang chờ quá trình nâng cấp hoàn tất...", req.Resolution)
-					upscaleTicker := time.NewTicker(2 * time.Second)
-					defer upscaleTicker.Stop()
-					upscaleDeadline := time.Now().Add(60 * time.Second)
-					
-					for {
-						select {
-						case <-ctx.Done():
-							return nil, ctx.Err()
-						case <-upscaleTicker.C:
-						}
-						
-						if time.Now().After(upscaleDeadline) {
-							logDebug("Cảnh báo: Đợi nâng cấp %s quá thời gian chờ (timeout), tiếp tục tải về", req.Resolution)
-							break
-						}
-						
-						// Re-evaluate button status
-						stillUpscaling, _ := page.Eval(`(target) => {
-							const btn = Array.from(document.querySelectorAll('button')).find(el => el.textContent.toLowerCase().includes(target));
-							if (!btn) return false;
-							const txt = btn.textContent.toLowerCase();
-							return txt.includes('nâng cấp') || txt.includes('đang') || txt.includes('progress') || txt.includes('loading');
-						}`, targetRes)
-						
-						if stillUpscaling != nil && !stillUpscaling.Value.Bool() {
-							logDebug("Nâng cấp lên %s hoàn tất!", req.Resolution)
-							sleep(1500 * time.Millisecond) // wait for UI stabilization
-							
-							// Now click the option again since it is upscaled and ready for download!
-							newOptionBtn, errNewOpt := page.ElementByJS(rod.Eval(`(target) => {
-								return Array.from(document.querySelectorAll('button')).find(el => {
-									const txt = el.textContent.toLowerCase();
-									return txt.includes(target) && !txt.includes('nâng cấp');
-								});
-							}`, targetRes))
-							if errNewOpt == nil && newOptionBtn != nil {
-								optionBtn = newOptionBtn
-							}
-							break
-						}
-					}
-				}
-				
-				// Initiate Wails download capturing
+				// Initiate Wails download capturing BEFORE clicking option
 				waitDownload := session.browser.WaitDownload(session.downloadDir)
 				
-				// Click the finalized option to start download
+				// Click resolution option to trigger download / upscaling
 				_ = optionBtn.Click(proto.InputMouseButtonLeft, 1)
+				logDebug("Đã click chọn độ phân giải %s. Đang chờ file được tải về máy...", strings.ToUpper(targetRes))
 				
 				// Generate unique filename for each image in batch
 				customFileName := req.FileName
@@ -939,10 +962,10 @@ func GenerateFlowVideo(
 				
 				filePath, errMove := WaitAndMoveDownload(ctx, waitDownload, session.downloadDir, req.OutputDir, customFileName, MediaTypeImage)
 				if errMove == nil {
-					logDebug("Tải ảnh thành công: %s", filePath)
+					logDebug("Tải ảnh thứ %d/%d thành công (%s): %s", idx+1, len(selectedIndexes), strings.ToUpper(targetRes), filePath)
 					downloadedPaths = append(downloadedPaths, filePath)
 				} else {
-					logDebug("Lỗi khi lưu ảnh %d: %v", idx+1, errMove)
+					logDebug("Lỗi khi tải/lưu ảnh %d: %v", idx+1, errMove)
 				}
 				
 				// Close the detail overlay
@@ -959,7 +982,7 @@ func GenerateFlowVideo(
 					const event = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true });
 					document.dispatchEvent(event);
 				}`)
-				sleep(1200 * time.Millisecond)
+				sleep(1500 * time.Millisecond)
 			}
 			
 			if len(downloadedPaths) > 0 {
@@ -1153,396 +1176,591 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		}
 	}
 
-	// If no custom options are specified, we don't need to open the settings
-	if req.ConfirmBeforeCreate == "" && req.Model == "" && req.BatchSize == "" && req.AspectRatio == "" {
+	// Lấy hệ số delay multiplier từ yêu cầu của người dùng (ví dụ Độ trễ: 2 giây)
+	delayMult := req.DelaySecond
+	if delayMult <= 0 {
+		delayMult = 1.0
+	}
+
+	// Helper sleep sử dụng hệ số delay của người dùng
+	sleep := func(base time.Duration) {
+		time.Sleep(time.Duration(float64(base) * delayMult))
+	}
+
+	// Helper lấy element có timeout tỷ lệ thuận với hệ số delay
+	getElement := func(timeout time.Duration, js string, args ...interface{}) (*rod.Element, error) {
+		adjustedTimeout := time.Duration(float64(timeout) * delayMult)
+		subCtx, cancel := context.WithTimeout(ctx, adjustedTimeout)
+		defer cancel()
+		el, err := page.Context(subCtx).ElementByJS(rod.Eval(js, args...))
+		if err != nil {
+			return nil, err
+		}
+		return el.Context(ctx), nil
+	}
+
+	isAlreadyConfigured := func(btnText string) bool {
+		btnTextLower := strings.ToLower(btnText)
+
+		// 1. Kiểm tra Model
+		if req.Model != "" {
+			targetModel := strings.ToLower(req.Model)
+			displayModel := targetModel
+			if targetModel == "imagen 3" {
+				displayModel = "nano banana 2"
+			} else if strings.Contains(targetModel, "quality") || strings.Contains(targetModel, "pro") {
+				displayModel = "nano banana pro"
+			} else if strings.Contains(targetModel, "fast") || strings.Contains(targetModel, "lite") {
+				displayModel = "nano banana 2 lite"
+			}
+
+			if strings.Contains(displayModel, "pro") {
+				if !strings.Contains(btnTextLower, "pro") {
+					return false
+				}
+			} else if strings.Contains(displayModel, "lite") {
+				if !strings.Contains(btnTextLower, "lite") {
+					return false
+				}
+			} else {
+				if strings.Contains(btnTextLower, "pro") || strings.Contains(btnTextLower, "lite") {
+					return false
+				}
+			}
+
+			family := ""
+			if strings.Contains(displayModel, "banana") {
+				family = "banana"
+			} else if strings.Contains(displayModel, "veo") {
+				family = "veo"
+			} else if strings.Contains(displayModel, "imagen") {
+				family = "imagen"
+			} else if strings.Contains(displayModel, "omni") {
+				family = "omni"
+			}
+			if family != "" && !strings.Contains(btnTextLower, family) {
+				return false
+			}
+		}
+
+		// 2. Kiểm tra Aspect Ratio
+		if req.AspectRatio != "" {
+			ratio := req.AspectRatio
+			cleanRatio := strings.ReplaceAll(ratio, ":", "_")
+			
+			var matchesRatio bool
+			if ratio == "16:9" {
+				matchesRatio = strings.Contains(btnTextLower, "16_9") || strings.Contains(btnTextLower, "16:9") || strings.Contains(btnTextLower, "landscape")
+			} else if ratio == "9:16" {
+				matchesRatio = strings.Contains(btnTextLower, "9_16") || strings.Contains(btnTextLower, "9:16") || strings.Contains(btnTextLower, "portrait")
+			} else if ratio == "1:1" {
+				matchesRatio = strings.Contains(btnTextLower, "1_1") || strings.Contains(btnTextLower, "1:1") || strings.Contains(btnTextLower, "square") || strings.Contains(btnTextLower, "din")
+			} else {
+				matchesRatio = strings.Contains(btnTextLower, ratio) || strings.Contains(btnTextLower, cleanRatio)
+			}
+			if !matchesRatio {
+				return false
+			}
+		}
+
+		// 3. Kiểm tra Batch Size (Khớp chính xác dạng x2, 2x, x 2)
+		if req.BatchSize != "" {
+			batchDigit := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(req.BatchSize, "x", "")))
+			var matchesBatch bool
+			if strings.Contains(btnTextLower, "x"+batchDigit) || strings.Contains(btnTextLower, batchDigit+"x") || strings.Contains(btnTextLower, "x "+batchDigit) {
+				matchesBatch = true
+			} else {
+				matchesBatch = false
+			}
+			if !matchesBatch {
+				return false
+			}
+		}
+
+		return true
+	}
+
+	// A. Đảm bảo nút "Tác nhân" (Agent) được tắt trước tiên (chuyển aria-pressed="true" thành "false")
+	logDebug("Kiểm tra trạng thái nút Tác nhân (Agent)...")
+	
+	queryAgentBtn := func() (*rod.Element, error) {
+		return getElement(3*time.Second, `() => {
+			const buttons = Array.from(document.querySelectorAll('button'));
+			
+			// 1. Tìm nút có chứa text "tác nhân"/"agent" và có thuộc tính "aria-pressed"
+			let btn = buttons.find(b => {
+				const txt = b.textContent.toLowerCase().trim();
+				const hasAgentText = txt === 'tác nhân' || txt === 'agent' || (txt.includes('tác nhân') && !txt.includes('hướng dẫn'));
+				const hasAriaPressed = b.hasAttribute('aria-pressed');
+				const isVisible = b.getBoundingClientRect().width > 0;
+				return isVisible && hasAgentText && hasAriaPressed;
+			});
+			if (btn) return btn;
+
+			// 2. Dự phòng: Tìm nút có text chính xác (Tác nhân / Agent)
+			btn = buttons.find(b => {
+				const txt = b.textContent.toLowerCase().trim();
+				const isVisible = b.getBoundingClientRect().width > 0;
+				return isVisible && (txt === 'tác nhân' || txt === 'agent');
+			});
+			if (btn) return btn;
+
+			// 3. Dự phòng tiếp theo: Thử tìm theo các XPath cụ thể
+			const xpaths = [
+				"//*[@id='__next']/div[1]/div[5]/div/div/div/div/div[2]/div[1]/div/button[2]",
+				"//*[@id='__next']/div[1]/div[4]/div[2]/div[2]/div/div/div[2]/div[2]/div/div[2]/div[1]/div/button[2]"
+			];
+			for (const xpath of xpaths) {
+				try {
+					const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+					const el = result.singleNodeValue;
+					if (el && el.getBoundingClientRect().width > 0) return el;
+				} catch(e) {}
+			}
+
+			return null;
+		}`)
+	}
+
+	agentBtn, errAgent := queryAgentBtn()
+
+	if errAgent == nil && agentBtn != nil {
+		if htmlSnippet, errHtml := agentBtn.HTML(); errHtml == nil {
+			logDebug("Đã tìm thấy nút Tác nhân! HTML: %s", htmlSnippet)
+		} else {
+			logDebug("Đã tìm thấy nút Tác nhân nhưng không lấy được HTML: %v", errHtml)
+		}
+		// Đọc trạng thái aria-pressed qua JS với vòng lặp chờ tối đa 6 lần (tổng ~1.8s) để tránh race condition khi React đang tải
+		var isPressed bool
+		for i := 0; i < 6; i++ {
+			isPressedObj, errPressed := agentBtn.Eval("function() { return this.getAttribute('aria-pressed') === 'true'; }")
+			if errPressed != nil {
+				logDebug("Vòng %d: Lỗi khi kiểm tra aria-pressed: %v", i+1, errPressed)
+			}
+			isPressed = errPressed == nil && isPressedObj != nil && isPressedObj.Value.Bool()
+			if isPressed {
+				logDebug("Nút Tác nhân đang hoạt động (phát hiện ở vòng lặp %d, aria-pressed=true).", i+1)
+				break
+			}
+			sleep(300 * time.Millisecond)
+		}
+		
+		if isPressed {
+			logDebug("Tiến hành click để TẮT nút Tác nhân...")
+			_, errClick := agentBtn.Eval("function() { this.click(); }")
+			if errClick != nil {
+				logDebug("Lỗi khi click tắt nút Tác nhân: %v", errClick)
+			}
+			sleep(800 * time.Millisecond) // Chờ trạng thái cập nhật
+			
+			// Kiểm tra lại sau khi click (Re-query để tránh dùng phải phần tử React cũ đã bị render lại / hủy bỏ khỏi DOM)
+			if freshBtn, errFresh := queryAgentBtn(); errFresh == nil && freshBtn != nil {
+				agentBtn = freshBtn
+			}
+			
+			checkPressedObj, errCheck := agentBtn.Eval("function() { return this.getAttribute('aria-pressed') === 'true'; }")
+			stillPressed := errCheck == nil && checkPressedObj != nil && checkPressedObj.Value.Bool()
+			if stillPressed {
+				logDebug("CẢNH BÁO: Đã click nhưng nút Tác nhân vẫn BẬT! Thử click lại lần 2...")
+				_, _ = agentBtn.Eval("function() { this.click(); }")
+				sleep(500 * time.Millisecond)
+				
+				// Re-query lần nữa
+				if freshBtn, errFresh := queryAgentBtn(); errFresh == nil && freshBtn != nil {
+					agentBtn = freshBtn
+				}
+				
+				finalCheck, _ := agentBtn.Eval("function() { return this.getAttribute('aria-pressed') === 'true'; }")
+				if finalCheck != nil && finalCheck.Value.Bool() {
+					logDebug("LỖI: Không thể tắt nút Tác nhân.")
+				} else {
+					logDebug("Đã tắt nút Tác nhân thành công sau lần click thứ 2.")
+				}
+			} else {
+				logDebug("Đã tắt nút Tác nhân thành công (aria-pressed=false).")
+			}
+		} else {
+			logDebug("Nút Tác nhân đã ở trạng thái TẮT (aria-pressed=false) sau khi đã chờ React load. Bỏ qua.")
+		}
+	} else {
+		logDebug("Không tìm thấy nút Tác nhân (Agent) trên giao diện hoặc gặp lỗi: %v", errAgent)
+	}
+
+	// 1. Kiểm tra xem có cần cấu hình gì thêm không
+	if req.Model == "" && req.BatchSize == "" && req.AspectRatio == "" {
+		logDebug("Không có yêu cầu cấu hình cài đặt thêm. Bỏ qua.")
 		return nil
 	}
 
 	tm.EmitStatus(TaskStateSubmitting, "Đang cấu hình cài đặt tác nhân Google Flow...", 28)
+	logDebug("Bắt đầu cấu hình cài đặt tác nhân (Model: %s, Aspect: %s, Batch: %s)...", req.Model, req.AspectRatio, req.BatchSize)
 
-	// 1. Find the settings gear/slider button using safe JS evaluation
-	logDebug("Đang quét tìm nút Cài đặt tác nhân (tune/settings)...")
-	settingsBtn, err := page.ElementByJS(rod.Eval(`() => {
+	// 2. Tìm nút mở hộp thoại cấu hình (radix-:rn: / nút hiển thị model hiện tại)
+	configTriggerBtn, err := getElement(5*time.Second, `() => {
 		const buttons = Array.from(document.querySelectorAll('button'));
-		for (const btn of buttons) {
-			const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-			const title = (btn.getAttribute('title') || '').toLowerCase();
-			const icon = btn.querySelector('i, span.google-symbols, .material-symbols-outlined, [class*="icon"]');
-			const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
+
+		// 1. Tìm nút hiển thị Model hiện tại có aria-haspopup="menu" (chứa Banana, Veo, Imagen, Omni, hoặc biểu tượng 🍌)
+		let btn = buttons.find(b => {
+			const id = b.getAttribute('id') || '';
+			const hasPopup = b.getAttribute('aria-haspopup') === 'menu';
+			const txt = b.textContent.toLowerCase();
+			const hasModelText = txt.includes('banana') || txt.includes('veo') || txt.includes('imagen') || txt.includes('omni') || txt.includes('🍌');
+			const isVisible = b.getBoundingClientRect().width > 0;
+			return isVisible && id.startsWith('radix-') && hasPopup && hasModelText;
+		});
+		if (btn) return btn;
+
+		// 2. Dự phòng: Tìm nút cấu hình gần nhất với ô nhập prompt
+		try {
+			const editor = document.querySelector('[data-slate-editor="true"], div[role="textbox"], textarea');
+			if (editor) {
+				let parent = editor.parentElement;
+				while (parent && parent.tagName !== 'BODY') {
+					const btns = Array.from(parent.querySelectorAll('button[aria-haspopup="menu"]'));
+					const target = btns.find(b => {
+						const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+						const title = (b.getAttribute('title') || '').toLowerCase();
+						const html = b.innerHTML.toLowerCase();
+						return aria.includes('cài đặt') || aria.includes('settings') || aria.includes('tune') ||
+						       title.includes('cài đặt') || title.includes('settings') ||
+						       html.includes('tune') || html.includes('settings') || html.includes('slider') ||
+						       b.querySelector('span.google-symbols')?.textContent.trim().toLowerCase() === 'tune' ||
+						       b.querySelector('i')?.textContent.trim().toLowerCase() === 'tune';
+					});
+					if (target && target.getBoundingClientRect().width > 0) {
+						return target;
+					}
+					parent = parent.parentElement;
+				}
+			}
+		} catch(e) {}
+
+		// 3. Dự phòng 2: Tìm theo class + role + text/icon đặc trưng trên toàn trang
+		btn = buttons.find(b => {
+			const id = b.getAttribute('id') || '';
+			const ariaHasPopup = b.getAttribute('aria-haspopup');
+			const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+			const title = (b.getAttribute('title') || '').toLowerCase();
+			const html = b.innerHTML.toLowerCase();
 			
-			// Nút settings tác nhân có icon là "tune" hoặc aria-label chứa "cài đặt"/"settings"
-			// Loại trừ các nút quay lại (arrow_back, arrow_forward) hoặc close
-			if (iconText === 'tune' || 
-			    aria.includes('cài đặt tác nhân') || aria.includes('agent settings') || aria.includes('cấu hình') ||
-			    title.includes('cài đặt tác nhân') || title.includes('agent settings')) {
-				
-				const rect = btn.getBoundingClientRect();
-				if (rect.width > 0 && rect.height > 0) {
-					return btn;
-				}
-			}
+			const isRadixMenu = id.startsWith('radix-') && ariaHasPopup === 'menu';
+			const isSettings = aria.includes('cài đặt') || aria.includes('settings') || aria.includes('tune') ||
+			                   title.includes('cài đặt') || title.includes('settings') ||
+			                   html.includes('tune') || html.includes('settings') || html.includes('slider') ||
+			                   b.querySelector('span.google-symbols')?.textContent.trim().toLowerCase() === 'tune' ||
+			                   b.querySelector('i')?.textContent.trim().toLowerCase() === 'tune';
+
+			return isRadixMenu && isSettings && b.getBoundingClientRect().width > 0;
+		});
+		return btn || null;
+	}`)
+
+	if err != nil || configTriggerBtn == nil {
+		logDebug("Không tìm thấy nút mở cấu hình tác nhân: %v", err)
+		return fmt.Errorf("không tìm thấy nút mở cấu hình tác nhân: %w", err)
+	}
+
+	var currentConfigText string
+	var idStr string
+	if configTriggerBtn != nil {
+		idVal, _ := configTriggerBtn.Attribute("id")
+		if idVal != nil {
+			idStr = *idVal
 		}
-		
-		// Fallback sang check icon settings chung nhưng ở nửa dưới màn hình (gần ô prompt)
-		for (const btn of buttons) {
-			const icon = btn.querySelector('i, span.google-symbols, .material-symbols-outlined, [class*="icon"]');
-			const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
-			if (iconText === 'settings' || iconText === 'tune') {
-				const rect = btn.getBoundingClientRect();
-				if (rect.width > 0 && rect.height > 0 && rect.top > 300) { // Thường nằm cạnh ô nhập prompt ở góc dưới
-					return btn;
-				}
-			}
+		currentConfigText, _ = configTriggerBtn.Text()
+	}
+
+	// 2.5. Kiểm tra nếu cấu hình hiện tại trên nút đã trùng khớp với yêu cầu
+	isMatch := isAlreadyConfigured(currentConfigText)
+	logDebug("NÚT CẤU HÌNH ĐƯỢC TÌM THẤY: ID=%s, Text=[%s]", idStr, strings.ReplaceAll(currentConfigText, "\n", " "))
+	logDebug("ĐỐI CHIẾU CẤU HÌNH: Cấu hình hiện tại vs Yêu cầu [Model: %s, Aspect: %s, Batch: %s] -> Trùng khớp: %v", req.Model, req.AspectRatio, req.BatchSize, isMatch)
+
+	if isMatch {
+		logDebug("Cấu hình hiện tại ĐÃ TRÙNG KHỚP với yêu cầu. BỎ QUA toàn bộ các bước mở cấu hình.")
+		return nil
+	}
+	
+	logDebug("Cấu hình hiện tại KHÔNG trùng khớp. Tiến hành mở popover để cấu hình lại...")
+
+	// 3. Kiểm tra xem popover đang mở hay đóng
+	isOpened := isFlowPopoverOpen(page)
+
+	if !isOpened {
+		logDebug("Mở popover cấu hình bằng cách click nút cài đặt (Human Click)...")
+		errClick := HumanClick(page, configTriggerBtn)
+		if errClick != nil {
+			logDebug("Lỗi click chuột thật: %v. Thử click bằng JS...", errClick)
+			_, _ = configTriggerBtn.Eval("function() { this.click(); }")
 		}
-		return null;
-	}`))
-
-	// Fallback to original FindFirstVisible if JS evaluator failed
-	if err != nil || settingsBtn == nil {
-		logDebug("Tìm nút cài đặt qua JS thất bại (%v). Thử tìm qua FindFirstVisible...", err)
-		settingsBtn, err = FindFirstVisible(ctx, page, []SelectorCandidate{
-			{Selector: "button[aria-label*='tune']"},
-			{Selector: "button[aria-label*='Tune']"},
-			{Selector: "button[aria-label*='settings']"},
-			{Selector: "button[aria-label*='Cài đặt']"},
-			{Selector: "button[aria-label*='cài đặt']"},
-			{Selector: "button[title*='Settings']"},
-			{Selector: "button[title*='Cài đặt']"},
-		}, 5*time.Second)
+		sleep(1500 * time.Millisecond) // Chờ popover hiển thị (sử dụng sleep tỉ lệ với delay của người dùng)
 	}
 
-	if err != nil || settingsBtn == nil {
-		logDebug("Không tìm thấy nút cài đặt tác nhân trên trang.")
-		return fmt.Errorf("không tìm thấy nút cài đặt trên Google Flow: %w", err)
-	}
-
-	htmlBtn, _ := settingsBtn.HTML()
-	logDebug("Đã tìm thấy nút cài đặt tác nhân! HTML: %s", htmlBtn)
-
-	err = settingsBtn.Click(proto.InputMouseButtonLeft, 1)
-	if err != nil {
-		return fmt.Errorf("click settings gear: %w", err)
-	}
-
-	time.Sleep(1500 * time.Millisecond) // wait for settings modal to open
-
-	// 2. Find the settings side panel/dialog
-	logDebug("Đang quét tìm hộp thoại/panel Cài đặt tác nhân...")
-	dialog, errDlg := page.ElementByJS(rod.Eval(`() => {
-		// Tìm các div, section, hoặc role dialog lớn chứa tiêu đề "Cài đặt tác nhân" hoặc "Agent settings" hoặc chứa chữ "Xác nhận trước khi tạo"
-		const elements = Array.from(document.querySelectorAll('div, section, form, [role="dialog"], [role="menu"]'));
-		for (const el of elements) {
-			const txt = el.textContent;
-			if (txt.includes('Cài đặt tác nhân') || txt.includes('Agent settings') || txt.includes('Xác nhận trước khi tạo')) {
-				const rect = el.getBoundingClientRect();
-				if (rect.width > 200 && rect.height > 200) {
-					return el;
-				}
-			}
-		}
-		return null;
-	}`))
-
-	// Fallback to original FindFirstVisible candidates
-	if errDlg != nil || dialog == nil {
-		logDebug("Tìm panel cài đặt qua JS thất bại (%v). Thử tìm qua FindFirstVisible...", errDlg)
-		dialogCandidates := []SelectorCandidate{
-			{Selector: "div[role='dialog']"},
-			{Selector: "div[role='menu']"},
-			{Selector: "div[data-radix-menu-content]"},
-			{Selector: "//*[@id=\"__next\"]/div[1]/div[4]/div[2]/div[2]/div/div/div[2]"},
-		}
-		dialog, errDlg = FindFirstVisible(ctx, page, dialogCandidates, 5*time.Second)
-	}
-
-	if errDlg != nil || dialog == nil {
-		logDebug("Không tìm thấy hộp thoại cấu hình tác nhân.")
-		return fmt.Errorf("không tìm thấy hộp thoại cấu hình tác nhân: %w", errDlg)
-	}
-
-	logDebug("Đã tìm thấy hộp thoại/panel cài đặt tác nhân thành công!")
-
-
-
+	// 3.5. Cấu hình Loại Media (Hình ảnh / Video) tab trước tiên để tải đúng model/tỷ lệ
 	isVideoType := req.MediaType == MediaTypeVideo
-
-	// 2. Configure "Xác nhận trước khi tạo"
-	if req.ConfirmBeforeCreate != "" {
-		var candidates []SelectorCandidate
-		if req.ConfirmBeforeCreate == "always" {
-			candidates = []SelectorCandidate{
-				{Selector: "//*[@id=\"__next\"]/div[1]/div[4]/div[2]/div[2]/div/div/div[2]/div[2]/div[1]/div[1]/div/button[1]"},
-				{Selector: "button[value='ALWAYS_ASK']"},
-				{Selector: "button:contains('Luôn luôn')"},
-				{Selector: "button:contains('Always')"},
-			}
-		} else {
-			candidates = []SelectorCandidate{
-				{Selector: "//*[@id=\"__next\"]/div[1]/div[4]/div[2]/div[2]/div/div/div[2]/div[2]/div[1]/div[1]/div/button[2]"},
-				{Selector: "button[value='AUTO_APPROVE']"},
-				{Selector: "button:contains('Không bao giờ')"},
-				{Selector: "button:contains('Never')"},
-			}
-		}
-		btn, errBtn := FindFirstVisible(ctx, page, candidates, 2*time.Second)
-		if errBtn == nil && btn != nil {
-			_ = btn.Click(proto.InputMouseButtonLeft, 1)
-		}
+	targetTab := "IMAGE"
+	if isVideoType {
+		targetTab = "VIDEO"
+	}
+	
+	logDebug("Cấu hình loại media tab: %s", targetTab)
+	
+	// Thử dump toàn bộ buttons để chuẩn đoán trước khi click
+	dumpBefore, _ := page.Eval(`() => {
+		return Array.from(document.querySelectorAll('button')).map(b => ({
+			id: b.getAttribute('id') || '',
+			ariaHasPopup: b.getAttribute('aria-haspopup') || '',
+			ariaLabel: b.getAttribute('aria-label') || '',
+			title: b.getAttribute('title') || '',
+			text: b.textContent.trim(),
+			class: b.getAttribute('class') || '',
+			visible: b.getBoundingClientRect().width > 0
+		}));
+	}`)
+	if dumpBefore != nil {
+		logDebug("DUMP BUTTONS BEFORE CONFIG: %s", dumpBefore.Value.String())
 	}
 
-	// Helper to click aspect ratio using dynamic Radix selector suffixes and user's XPaths
-	clickAspectRatio := func(ratio string, isVideo bool) {
-		var candidates []SelectorCandidate
-		switch ratio {
-		case "16:9":
-			candidates = []SelectorCandidate{
-				{Selector: "button[id$='-trigger-LANDSCAPE']"},
-				{Selector: "//*[@id=\"radix-:r2t:-trigger-LANDSCAPE\"]"},
-				{Selector: "button:contains('16:9')"},
-			}
-		case "4:3":
-			candidates = []SelectorCandidate{
-				{Selector: "button[id$='-trigger-LANDSCAPE_4_3']"},
-				{Selector: "//*[@id=\"radix-:r2t:-trigger-LANDSCAPE_4_3\"]"},
-				{Selector: "button:contains('4:3')"},
-			}
-		case "1:1":
-			candidates = []SelectorCandidate{
-				{Selector: "button[id$='-trigger-SQUARE']"},
-				{Selector: "//*[@id=\"radix-:r2t:-trigger-SQUARE\"]"},
-				{Selector: "button:contains('1:1')"},
-			}
-		case "3:4":
-			candidates = []SelectorCandidate{
-				{Selector: "button[id$='-trigger-PORTRAIT_3_4']"},
-				{Selector: "//*[@id=\"radix-:r2t:-trigger-PORTRAIT_3_4\"]"},
-				{Selector: "button:contains('3:4')"},
-			}
-		case "9:16":
-			candidates = []SelectorCandidate{
-				{Selector: "button[id$='-trigger-PORTRAIT']"},
-				{Selector: "//*[@id=\"radix-:r2t:-trigger-PORTRAIT\"]"},
-				{Selector: "button:contains('9:16')"},
-			}
-		default:
-			return
-		}
-
-		for _, cand := range candidates {
-			var elements rod.Elements
-			var err error
-			if strings.HasPrefix(cand.Selector, "/") || strings.HasPrefix(cand.Selector, "(") {
-				elements, err = dialog.ElementsX(cand.Selector)
-			} else {
-				elements, err = dialog.Elements(cand.Selector)
-			}
-			if err == nil && len(elements) > 0 {
-				var targetEl *rod.Element
-				if isVideo && len(elements) >= 2 {
-					targetEl = elements[1]
+	clickTabBtn, errTab := getElement(3*time.Second, `(tab) => {
+		// Tìm trực tiếp trên toàn trang vì các hậu tố này là duy nhất toàn cục khi popover mở
+		const btnId = document.querySelector('button[id$="-trigger-' + tab + '"]');
+		if (btnId) return btnId;
+		
+		// Tìm dự phòng theo text hiển thị trong popover đang mở
+		const popover = document.querySelector('[data-state="open"][role="menu"], [data-state="open"]');
+		if (popover) {
+			const buttons = Array.from(popover.querySelectorAll('button'));
+			return buttons.find(b => {
+				const txt = b.textContent.trim().toLowerCase();
+				if (tab === 'IMAGE') {
+					return txt === 'hình ảnh' || txt === 'image';
 				} else {
-					targetEl = elements[0]
+					return txt === 'video';
 				}
-				if visible, _ := targetEl.Visible(); visible {
-					_ = targetEl.Click(proto.InputMouseButtonLeft, 1)
-					return
-				}
-			}
+			}) || null;
 		}
+		return null;
+	}`, targetTab)
+
+	if errTab == nil && clickTabBtn != nil {
+		errClick := HumanClick(page, clickTabBtn)
+		if errClick != nil {
+			logDebug("Lỗi click tab bằng chuột: %v. Thử bằng JS...", errClick)
+			_, _ = clickTabBtn.Eval("function() { this.click(); }")
+		}
+		sleep(600 * time.Millisecond)
+	} else {
+		logDebug("Không cấu hình được media tab: %v", errTab)
 	}
 
-	// Helper to click batch size using dynamic Radix selector suffixes and user's XPaths
-	clickBatchSize := func(batch string, isVideo bool) {
-		var candidates []SelectorCandidate
-		switch batch {
-		case "1x":
-			candidates = []SelectorCandidate{
-				{Selector: "button[id$='-trigger-1']"},
-				{Selector: "//*[@id=\"radix-:r33:-trigger-1\"]"},
-				{Selector: "button:contains('1x')"},
-			}
-		case "2x", "x2":
-			candidates = []SelectorCandidate{
-				{Selector: "button[id$='-trigger-2']"},
-				{Selector: "//*[@id=\"radix-:r33:-trigger-2\"]"},
-				{Selector: "button:contains('x2')"},
-				{Selector: "button:contains('2x')"},
-			}
-		case "3x", "x3":
-			candidates = []SelectorCandidate{
-				{Selector: "button[id$='-trigger-3']"},
-				{Selector: "//*[@id=\"radix-:r33:-trigger-3\"]"},
-				{Selector: "button:contains('x3')"},
-				{Selector: "button:contains('3x')"},
-			}
-		case "4x", "x4":
-			candidates = []SelectorCandidate{
-				{Selector: "button[id$='-trigger-4']"},
-				{Selector: "//*[@id=\"radix-:r33:-trigger-4\"]"},
-				{Selector: "button:contains('x4')"},
-				{Selector: "button:contains('4x')"},
-			}
-		default:
-			return
-		}
-
-		for _, cand := range candidates {
-			var elements rod.Elements
-			var err error
-			if strings.HasPrefix(cand.Selector, "/") || strings.HasPrefix(cand.Selector, "(") {
-				elements, err = dialog.ElementsX(cand.Selector)
-			} else {
-				elements, err = dialog.Elements(cand.Selector)
-			}
-			if err == nil && len(elements) > 0 {
-				var targetEl *rod.Element
-				if isVideo && len(elements) >= 2 {
-					targetEl = elements[1]
-				} else {
-					targetEl = elements[0]
-				}
-				if visible, _ := targetEl.Visible(); visible {
-					_ = targetEl.Click(proto.InputMouseButtonLeft, 1)
-					return
-				}
-			}
-		}
-	}
-
-	// 3. Configure Aspect Ratio (e.g., "16:9", "9:16")
+	// 4. Cấu hình Aspect Ratio
 	if req.AspectRatio != "" {
-		clickAspectRatio(req.AspectRatio, isVideoType)
-	}
-
-	// 4. Configure Batch size (e.g., "1x", "2x")
-	if req.BatchSize != "" {
-		clickBatchSize(req.BatchSize, isVideoType)
-	}
-
-	// 5. Configure Model dropdown selection
-	if req.Model != "" {
-		// Map user model names to flow models
-		modelToSelect := req.Model
-		if !isVideoType {
-			if modelToSelect == "Imagen 3" {
-				modelToSelect = "Nano Banana 2"
-			} else if strings.Contains(modelToSelect, "Quality") {
-				modelToSelect = "Nano Banana Pro"
-			} else if strings.Contains(modelToSelect, "Fast") || strings.Contains(modelToSelect, "Lite") {
-				modelToSelect = "Nano Banana 2 Lite"
-			}
-		}
-
-		// Click the dropdown trigger
-		var dropdownCandidates []SelectorCandidate
-		if isVideoType {
-			dropdownCandidates = []SelectorCandidate{
-				{Selector: "button:contains('Omni Flash')"},
-				{Selector: "button:contains('Veo')"},
-				{Selector: "button[id^='radix-']"},
-				{Selector: "//*[@id=\"radix-:r38:\"]"},
-			}
-		} else {
-			dropdownCandidates = []SelectorCandidate{
-				{Selector: "button:contains('Nano Banana')"},
-				{Selector: "button:contains('Imagen')"},
-				{Selector: "button[id^='radix-']"},
-				{Selector: "//*[@id=\"radix-:r38:\"]"},
-			}
-		}
-
-		// Find the dropdown buttons
-		var dropdown *rod.Element
-		dropdowns, errDrops := dialog.Elements("button, [role='combobox'], [id^='radix-']")
-		if errDrops == nil && len(dropdowns) > 0 {
-			// Find visible buttons that look like dropdown triggers
-			var visibleTriggers []*rod.Element
-			for _, el := range dropdowns {
-				if visible, _ := el.Visible(); visible {
-					txt, _ := el.Text()
-					// Dropdowns usually show model name or have chevron
-					if strings.Contains(txt, "Banana") || strings.Contains(txt, "Omni") || strings.Contains(txt, "Veo") || strings.Contains(txt, "Imagen") {
-						visibleTriggers = append(visibleTriggers, el)
-					}
-				}
+		logDebug("Cấu hình tỷ lệ khung hình: %s", req.AspectRatio)
+		clickRatioBtn, errRatio := getElement(3*time.Second, `(ratio) => {
+			let suffix = "";
+			if (ratio === "16:9") suffix = "LANDSCAPE";
+			else if (ratio === "4:3") suffix = "LANDSCAPE_4_3";
+			else if (ratio === "1:1") suffix = "SQUARE";
+			else if (ratio === "3:4") suffix = "PORTRAIT_3_4";
+			else if (ratio === "9:16") suffix = "PORTRAIT";
+			
+			if (suffix) {
+				const btn = document.querySelector('button[id$="-trigger-' + suffix + '"]');
+				if (btn) return btn;
 			}
 			
-			if len(visibleTriggers) > 0 {
-				if isVideoType && len(visibleTriggers) >= 2 {
-					dropdown = visibleTriggers[1]
-				} else {
-					dropdown = visibleTriggers[0]
+			// Dự phòng tìm trong popover đang mở
+			const popover = document.querySelector('[data-state="open"][role="menu"], [data-state="open"]');
+			if (popover) {
+				const buttons = Array.from(popover.querySelectorAll('button'));
+				return buttons.find(b => b.textContent.trim() === ratio) || null;
+			}
+			return null;
+		}`, req.AspectRatio)
+
+		if errRatio == nil && clickRatioBtn != nil {
+			errClick := HumanClick(page, clickRatioBtn)
+			if errClick != nil {
+				logDebug("Lỗi click ratio bằng chuột: %v. Thử bằng JS...", errClick)
+				_, _ = clickRatioBtn.Eval("function() { this.click(); }")
+			}
+			sleep(500 * time.Millisecond)
+		} else {
+			logDebug("Không cấu hình được tỷ lệ khung hình: %v", errRatio)
+		}
+	}
+
+	// 5. Cấu hình Batch Size (Số lượng ảnh/video sinh ra)
+	if req.BatchSize != "" {
+		logDebug("Cấu hình số lượng (batch size): %s", req.BatchSize)
+		clickBatchBtn, errBatch := getElement(3*time.Second, `(batch) => {
+			const cleanDigit = batch.toLowerCase().replace('x', '').trim();
+			if (cleanDigit) {
+				const btn = document.querySelector('button[id$="-trigger-' + cleanDigit + '"]');
+				if (btn) return btn;
+			}
+			
+			// Dự phòng tìm trong popover đang mở
+			const popover = document.querySelector('[data-state="open"][role="menu"], [data-state="open"]');
+			if (popover) {
+				const buttons = Array.from(popover.querySelectorAll('button'));
+				return buttons.find(b => {
+					const txt = b.textContent.toLowerCase().trim();
+					return txt === batch.toLowerCase() || txt === 'x' + cleanDigit || txt === cleanDigit + 'x';
+				}) || null;
+			}
+			return null;
+		}`, req.BatchSize)
+
+		if errBatch == nil && clickBatchBtn != nil {
+			errClick := HumanClick(page, clickBatchBtn)
+			if errClick != nil {
+				logDebug("Lỗi click batch bằng chuột: %v. Thử bằng JS...", errClick)
+				_, _ = clickBatchBtn.Eval("function() { this.click(); }")
+			}
+			sleep(500 * time.Millisecond)
+		} else {
+			logDebug("Không cấu hình được số lượng batch size: %v", errBatch)
+		}
+	}
+
+	// 6. Cấu hình Model
+	if req.Model != "" {
+		logDebug("Cấu hình Model: %s", req.Model)
+		// Tìm nút mở dropdown chọn model bên trong popover (sử dụng XPath, class và role)
+		clickModelDropdownBtn, errModelDropdown := getElement(3*time.Second, `() => {
+			// Tìm popover thực sự chứa nút chọn Model (không lấy nhầm nút trigger)
+			const popovers = Array.from(document.querySelectorAll('[data-state="open"]'));
+			const popover = popovers.find(el => el.tagName !== 'BUTTON' && el.tagName !== 'SPAN' && el.querySelector('button'));
+			if (!popover) return null;
+			
+			const buttons = Array.from(popover.querySelectorAll('button'));
+			// Tìm nút có aria-haspopup="menu" hiển thị thông tin Model hiện tại
+			return buttons.find(b => {
+				const id = b.getAttribute('id') || '';
+				const hasPopup = b.getAttribute('aria-haspopup') === 'menu' || b.getAttribute('aria-haspopup') === 'listbox';
+				const txt = b.textContent.toLowerCase();
+				return hasPopup && id.startsWith('radix-') && (txt.includes('banana') || txt.includes('veo') || txt.includes('imagen') || txt.includes('omni'));
+			}) || null;
+		}`)
+
+		if errModelDropdown == nil && clickModelDropdownBtn != nil {
+			errClick := HumanClick(page, clickModelDropdownBtn)
+			if errClick != nil {
+				logDebug("Lỗi click model dropdown bằng chuột: %v. Thử bằng JS...", errClick)
+				_, _ = clickModelDropdownBtn.Eval("function() { this.click(); }")
+			}
+			sleep(800 * time.Millisecond) // Chờ menu model mở ra
+
+			// Chuẩn hóa tên Model để so khớp chính xác
+			modelToSelect := req.Model
+			if !isVideoType {
+				if modelToSelect == "Imagen 3" {
+					modelToSelect = "Nano Banana 2"
+				} else if strings.Contains(modelToSelect, "Quality") {
+					modelToSelect = "Nano Banana Pro"
+				} else if strings.Contains(modelToSelect, "Fast") || strings.Contains(modelToSelect, "Lite") {
+					modelToSelect = "Nano Banana 2 Lite"
 				}
 			}
-		}
 
-		// Fallback to FindFirstVisible candidates
-		if dropdown == nil {
-			dropdown, _ = FindFirstVisible(ctx, page, dropdownCandidates, 2*time.Second)
-		}
-
-		if dropdown != nil {
-			_ = dropdown.Click(proto.InputMouseButtonLeft, 1)
-			time.Sleep(800 * time.Millisecond) // wait for dropdown menu to open
-
-			// Find the model option in the page using JS and click it via Go to trigger Radix UI properly
-			opt, errEval := page.ElementByJS(rod.Eval(`(target) => {
-				const menu = document.querySelector('[data-radix-dropdown-menu-content], [role="menu"]');
-				if (!menu) return null;
+			modelItem, errItem := getElement(3*time.Second, `(modelName) => {
+				// Tìm dropdown menu mới nhất vừa được mở ra (lấy menu cuối cùng trong DOM để tránh lấy phải popover cha)
+				const dropdowns = Array.from(document.querySelectorAll('[role="menu"][id^="radix-"], [role="listbox"]'));
+				const dropdown = dropdowns.length > 0 ? dropdowns[dropdowns.length - 1] : null;
+				if (!dropdown) return null;
 				
-				const items = Array.from(menu.querySelectorAll('button, [role="menuitem"], [role="option"]'));
-				const cleanTarget = target.toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
-				
-				// 1. Exact match (ignoring special characters/emojis)
-				for (const item of items) {
-					const text = item.textContent.toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
-					if (text === cleanTarget) {
-						return item;
-					}
+				const buttons = Array.from(dropdown.querySelectorAll('button, [role="menuitem"]'));
+				const cleanTarget = modelName.toLowerCase().replace(/[^a-z0-9]/g, "").trim();
+				return buttons.find(b => {
+					const txt = b.textContent.toLowerCase().replace(/[^a-z0-9]/g, "").trim();
+					return txt === cleanTarget || txt.includes(cleanTarget);
+				}) || null;
+			}`, modelToSelect)
+
+			if errItem == nil && modelItem != nil {
+				errClick := HumanClick(page, modelItem)
+				if errClick != nil {
+					logDebug("Lỗi click model item bằng chuột: %v. Thử bằng JS...", errClick)
+					_, _ = modelItem.Eval("function() { this.click(); }")
 				}
-				
-				// 2. Substring match fallback
-				for (const item of items) {
-					const text = item.textContent.toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
-					if (text.includes(cleanTarget)) {
-						return item;
-					}
-				}
-				return null;
-			}`, modelToSelect))
-
-			if errEval == nil && opt != nil {
-				_ = opt.Click(proto.InputMouseButtonLeft, 1)
-				time.Sleep(500 * time.Millisecond)
+				sleep(500 * time.Millisecond)
 			} else {
-				// Fallback to FindFirstVisible with 2-second timeout (never blocks forever!)
-				optCandidates := []SelectorCandidate{
-					{Selector: fmt.Sprintf("button:contains('%s')", modelToSelect)},
-					{Selector: fmt.Sprintf("span:contains('%s')", modelToSelect)},
-				}
-				optFb, errOpt := FindFirstVisible(ctx, page, optCandidates, 2*time.Second)
-				if errOpt == nil && optFb != nil {
-					_ = optFb.Click(proto.InputMouseButtonLeft, 1)
-				}
+				logDebug("Không cấu hình được model item %s: %v", modelToSelect, errItem)
 			}
+		} else {
+			logDebug("Không tìm thấy nút dropdown chọn Model trong popover: %v", errModelDropdown)
 		}
 	}
 
-	// 6. Click "Lưu" (Save) button to apply settings
-	saveCandidates := []SelectorCandidate{
-		{Selector: "//*[@id=\"__next\"]/div[1]/div[4]/div[2]/div[2]/div/div/div[2]/div[2]/div[2]/button"},
-		{Selector: "button:contains('Lưu')"},
-		{Selector: "button:contains('Save')"},
-	}
-	saveBtn, errSave := FindFirstVisible(ctx, page, saveCandidates, 5*time.Second)
-	if errSave == nil && saveBtn != nil {
-		_ = saveBtn.Click(proto.InputMouseButtonLeft, 1)
+	// 7. Đóng popover bằng cách click lại nút menu hoặc click vào ô nhập prompt
+	logDebug("Đóng hộp thoại cấu hình tác nhân...")
+	
+	// 7. Đóng popover bằng cách click lại nút menu trigger
+	logDebug("Đóng hộp thoại cấu hình tác nhân bằng cách click lại nút cài đặt...")
+	if isFlowPopoverOpen(page) && configTriggerBtn != nil {
+		_ = HumanClick(page, configTriggerBtn)
+		sleep(800 * time.Millisecond) // Chờ popover đóng hẳn
 	}
 
-	time.Sleep(800 * time.Millisecond) // wait for save
+	// Dự phòng cuối cùng: click body
+	if isFlowPopoverOpen(page) {
+		logDebug("Hộp thoại vẫn mở. Gửi click ẩn danh lên body để đóng...")
+		_, _ = page.Eval(`() => {
+			document.body.click();
+		}`)
+		sleep(600 * time.Millisecond)
+	}
+
+	// Đảm bảo focus lại ô nhập prompt cuối cùng để sẵn sàng nhập văn bản
+	promptInput, errPrompt := page.Element("div[role='textbox'][contenteditable='true'], div[contenteditable='true'], textarea")
+	if errPrompt == nil && promptInput != nil {
+		_ = promptInput.Focus()
+	}
+
 	return nil
 }
 
+// Kiểm tra xem popover cấu hình của Google Flow có thực sự đang hiển thị trên màn hình hay không
+func isFlowPopoverOpen(page *rod.Page) bool {
+	res, err := page.Eval(`() => {
+		const elements = Array.from(document.querySelectorAll('button, div, span, label'));
+		return elements.some(el => {
+			const txt = el.textContent.trim();
+			const isVisible = el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+			return isVisible && (txt === '9:16' || txt === '16:9' || txt === '1:1' || txt.includes('tín dụng'));
+		});
+	}`)
+	if err != nil {
+		return false
+	}
+	return res.Value.Bool()
+}
+
+// Giả lập click chuột giống như người thật (chống quét bot của Google)
+func HumanClick(page *rod.Page, el *rod.Element) error {
+	if el == nil {
+		return fmt.Errorf("element is nil")
+	}
+
+	// Trễ ngẫu nhiên trước khi click
+	time.Sleep(time.Duration(randomRange(150, 400)) * time.Millisecond)
+
+	// Thực hiện cuộn và click mô phỏng thật của Rod
+	_ = el.ScrollIntoView()
+	err := el.Click(proto.InputMouseButtonLeft, 1)
+
+	// Trễ sau khi click để hệ thống phản hồi
+	time.Sleep(time.Duration(randomRange(400, 800)) * time.Millisecond)
+
+	return err
+}
+
+func randomRange(min, max int) int {
+	if min >= max {
+		return min
+	}
+	return rand.Intn(max-min+1) + min
+}
 func DismissWelcomeModals(ctx context.Context, page *rod.Page) {
 	// Scroll any scrollable container in terms/welcome dialog to bottom to enable Continue buttons
 	_, _ = page.Eval(`() => {
@@ -1606,35 +1824,52 @@ func DismissWelcomeModals(ctx context.Context, page *rod.Page) {
 }
 
 func FillFlowPrompt(page *rod.Page, input *rod.Element, prompt string) error {
-	// Click the prompt input to activate it and place the cursor
-	if err := input.Click(proto.InputMouseButtonLeft, 1); err != nil {
+	// 1. Click và Focus vào ô nhập liệu
+	if err := HumanClick(page, input); err != nil {
 		return fmt.Errorf("click prompt input: %w", err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	_ = input.Focus()
+	time.Sleep(time.Duration(randomRange(150, 300)) * time.Millisecond)
 
-	// Clear any existing text using JS
-	_, _ = input.Eval(`(el) => {
-		el.textContent = "";
-		el.dispatchEvent(new Event('input', { bubbles: true }));
-	}`)
-	time.Sleep(100 * time.Millisecond)
+	// 2. Xóa sạch văn bản cũ thông qua selection của Slate.js
+	_, errClear := input.Eval(`function() {
+		this.focus();
 
-	// Use standard go-rod input typing on focused contenteditable
-	err := input.Input(prompt)
-	if err != nil {
-		// Fallback: try JS setting textContent + event dispatching (safe with arguments)
-		_, errJS := input.Eval(
-			`(el, val) => {
-				el.textContent = val;
-				el.dispatchEvent(new Event('input', { bubbles: true }));
-				el.dispatchEvent(new Event('change', { bubbles: true }));
-			}`,
-			prompt,
-		)
-		if errJS != nil {
-			return fmt.Errorf("input prompt and JS fallback failed: %w", err)
+		// Tìm thẻ chứa văn bản thực tế của Slate.js
+		let targetNode = this.querySelector('[data-slate-node="text"]');
+		if (!targetNode) {
+			targetNode = this.querySelector('[data-slate-leaf="true"]');
 		}
+		if (!targetNode) {
+			targetNode = this;
+		}
+
+		try {
+			const range = document.createRange();
+			range.selectNodeContents(targetNode);
+			const sel = window.getSelection();
+			sel.removeAllRanges();
+			sel.addRange(range);
+			document.execCommand('delete', false, null);
+		} catch (e) {}
+	}`)
+	if errClear != nil {
+		fmt.Printf("[FlowDebug] Lỗi xóa văn bản cũ: %v. Tiến hành gõ đè...\n", errClear)
 	}
+
+	// 3. Gõ câu lệnh bằng sự kiện bàn phím thật (CDP Keyboard events) qua Element.Input
+	// Go-rod sẽ tự động gõ từng phím đồng bộ và kích hoạt chuẩn xác các sự kiện của Slate.js
+	errType := input.Input(prompt)
+	if errType != nil {
+		fmt.Printf("[FlowDebug] Lỗi gõ câu lệnh: %v\n", errType)
+	}
+	time.Sleep(500 * time.Millisecond) // Chờ thêm một chút sau khi gõ xong
+
+	// Dispatch thêm event để chắc chắn React cập nhật
+	_, _ = input.Eval(`function() {
+		this.dispatchEvent(new Event('input', { bubbles: true }));
+		this.dispatchEvent(new Event('change', { bubbles: true }));
+	}`)
 
 	return nil
 }
