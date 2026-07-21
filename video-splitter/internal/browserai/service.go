@@ -89,6 +89,28 @@ func (s *Service) GetBrowserStatus() BrowserStatus {
 	}
 }
 
+type ActiveTaskInfo struct {
+	TaskID   string    `json:"taskId"`
+	State    TaskState `json:"state"`
+	Message  string    `json:"message"`
+	Progress int       `json:"progress"`
+	Previews []string  `json:"previews"`
+}
+
+func (s *Service) GetActiveTaskInfo() ActiveTaskInfo {
+	active := s.tm.GetActiveTask()
+	if active == nil {
+		return ActiveTaskInfo{State: TaskStateIdle}
+	}
+	return ActiveTaskInfo{
+		TaskID:   active.ID,
+		State:    active.State,
+		Message:  active.Message,
+		Progress: active.Progress,
+		Previews: active.Previews,
+	}
+}
+
 func (s *Service) CheckLogin(provider string) (LoginStatus, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

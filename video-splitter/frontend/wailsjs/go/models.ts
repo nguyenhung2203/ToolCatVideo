@@ -1,5 +1,25 @@
 export namespace browserai {
 	
+	export class ActiveTaskInfo {
+	    taskId: string;
+	    state: string;
+	    message: string;
+	    progress: number;
+	    previews: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ActiveTaskInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.taskId = source["taskId"];
+	        this.state = source["state"];
+	        this.message = source["message"];
+	        this.progress = source["progress"];
+	        this.previews = source["previews"];
+	    }
+	}
 	export class BrowserStatus {
 	    isOpen: boolean;
 	    currentProvider: string;

@@ -15,6 +15,8 @@ export function ConfirmSelectedImages(arg1:string,arg2:Array<string>,arg3:string
 
 export function Generate(arg1:browserai.GenerateRequest):Promise<browserai.TaskInfo>;
 
+export function GetActiveTaskInfo():Promise<browserai.ActiveTaskInfo>;
+
 export function GetBrowserStatus():Promise<browserai.BrowserStatus>;
 
 export function OpenGoogleAI(arg1:string,arg2:boolean):Promise<void>;

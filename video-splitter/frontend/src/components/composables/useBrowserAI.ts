@@ -25,12 +25,26 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
     ].includes(taskState.value)
   })
 
-  // Sync browser status
+  // Sync browser status & active task info
   const updateBrowserStatus = async () => {
     try {
       const status = await BrowserAIService.GetBrowserStatus()
       browserOpen.value = status.isOpen
       browserProvider.value = status.currentProvider
+
+      // Sync active task from backend if Vue component re-rendered
+      if (typeof (BrowserAIService as any).GetActiveTaskInfo === 'function') {
+        const activeInfo = await (BrowserAIService as any).GetActiveTaskInfo()
+        if (activeInfo && activeInfo.state && activeInfo.state !== 'idle') {
+          taskId.value = activeInfo.taskId || taskId.value
+          taskState.value = activeInfo.state
+          if (activeInfo.message) message.value = activeInfo.message
+          if (activeInfo.progress) progress.value = activeInfo.progress
+          if (activeInfo.previews && activeInfo.previews.length > 0) {
+            selectionPreviews.value = activeInfo.previews
+          }
+        }
+      }
     } catch (_) {}
   }
 

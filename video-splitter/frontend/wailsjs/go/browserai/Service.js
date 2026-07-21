@@ -26,6 +26,10 @@ export function Generate(arg1) {
   return window['go']['browserai']['Service']['Generate'](arg1);
 }
 
+export function GetActiveTaskInfo() {
+  return window['go']['browserai']['Service']['GetActiveTaskInfo']();
+}
+
 export function GetBrowserStatus() {
   return window['go']['browserai']['Service']['GetBrowserStatus']();
 }

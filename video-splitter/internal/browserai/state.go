@@ -24,6 +24,7 @@ type activeTask struct {
 	StartedAt     time.Time
 	Cancel        context.CancelFunc
 	SelectionChan chan []int // Receive selected image indexes from frontend
+	Previews      []string   // Store preview URLs for frontend sync
 }
 
 func NewTaskManager() *TaskManager {
@@ -162,6 +163,8 @@ func (tm *TaskManager) EmitSelectionRequired(taskID string, previews []string) {
 
 	tm.activeTask.State = TaskStateSelectionRequired
 	tm.activeTask.Message = "Yêu cầu người dùng chọn ảnh"
+	tm.activeTask.Progress = 75
+	tm.activeTask.Previews = previews
 
 	if tm.ctx != nil {
 		runtime.EventsEmit(tm.ctx, "browser-ai:selection-required", SelectionEvent{

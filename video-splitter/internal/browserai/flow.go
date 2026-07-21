@@ -312,7 +312,7 @@ func GenerateFlowVideo(
 		if errTotalCount == nil && totalCardsCountObj != nil {
 			totalCount := totalCardsCountObj.Value.Int()
 			logDebug("Số lượng hình ảnh hiện có trong dự án cũ: %d", totalCount)
-			if totalCount >= 50 {
+			if totalCount >= 30 {
 				logDebug("Dự án hiện tại đã có %d hình ảnh (vượt quá ngưỡng 50 ảnh để tránh lag). Tiến hành xóa link dự án cũ để lần tới tự động tạo dự án mới...", totalCount)
 				saveProjectURL("")
 			}
@@ -1199,10 +1199,11 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		return el.Context(ctx), nil
 	}
 
-	isAlreadyConfigured := func(btnText string) bool {
+	checkConfigMatches := func(btnText string) (isModelMatch, isRatioMatch, isBatchMatch bool) {
 		btnTextLower := strings.ToLower(btnText)
 
 		// 1. Kiểm tra Model
+		isModelMatch = true
 		if req.Model != "" {
 			targetModel := strings.ToLower(req.Model)
 			displayModel := targetModel
@@ -1216,15 +1217,15 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 
 			if strings.Contains(displayModel, "pro") {
 				if !strings.Contains(btnTextLower, "pro") {
-					return false
+					isModelMatch = false
 				}
 			} else if strings.Contains(displayModel, "lite") {
 				if !strings.Contains(btnTextLower, "lite") {
-					return false
+					isModelMatch = false
 				}
 			} else {
 				if strings.Contains(btnTextLower, "pro") || strings.Contains(btnTextLower, "lite") {
-					return false
+					isModelMatch = false
 				}
 			}
 
@@ -1239,45 +1240,39 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 				family = "omni"
 			}
 			if family != "" && !strings.Contains(btnTextLower, family) {
-				return false
+				isModelMatch = false
 			}
 		}
 
 		// 2. Kiểm tra Aspect Ratio
+		isRatioMatch = true
 		if req.AspectRatio != "" {
 			ratio := req.AspectRatio
 			cleanRatio := strings.ReplaceAll(ratio, ":", "_")
 			
-			var matchesRatio bool
 			if ratio == "16:9" {
-				matchesRatio = strings.Contains(btnTextLower, "16_9") || strings.Contains(btnTextLower, "16:9") || strings.Contains(btnTextLower, "landscape")
+				isRatioMatch = strings.Contains(btnTextLower, "16_9") || strings.Contains(btnTextLower, "16:9") || strings.Contains(btnTextLower, "landscape")
 			} else if ratio == "9:16" {
-				matchesRatio = strings.Contains(btnTextLower, "9_16") || strings.Contains(btnTextLower, "9:16") || strings.Contains(btnTextLower, "portrait")
+				isRatioMatch = strings.Contains(btnTextLower, "9_16") || strings.Contains(btnTextLower, "9:16") || strings.Contains(btnTextLower, "portrait")
 			} else if ratio == "1:1" {
-				matchesRatio = strings.Contains(btnTextLower, "1_1") || strings.Contains(btnTextLower, "1:1") || strings.Contains(btnTextLower, "square") || strings.Contains(btnTextLower, "din")
+				isRatioMatch = strings.Contains(btnTextLower, "1_1") || strings.Contains(btnTextLower, "1:1") || strings.Contains(btnTextLower, "square") || strings.Contains(btnTextLower, "din")
 			} else {
-				matchesRatio = strings.Contains(btnTextLower, ratio) || strings.Contains(btnTextLower, cleanRatio)
-			}
-			if !matchesRatio {
-				return false
+				isRatioMatch = strings.Contains(btnTextLower, ratio) || strings.Contains(btnTextLower, cleanRatio)
 			}
 		}
 
 		// 3. Kiểm tra Batch Size (Khớp chính xác dạng x2, 2x, x 2)
+		isBatchMatch = true
 		if req.BatchSize != "" {
 			batchDigit := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(req.BatchSize, "x", "")))
-			var matchesBatch bool
 			if strings.Contains(btnTextLower, "x"+batchDigit) || strings.Contains(btnTextLower, batchDigit+"x") || strings.Contains(btnTextLower, "x "+batchDigit) {
-				matchesBatch = true
+				isBatchMatch = true
 			} else {
-				matchesBatch = false
-			}
-			if !matchesBatch {
-				return false
+				isBatchMatch = false
 			}
 		}
 
-		return true
+		return isModelMatch, isRatioMatch, isBatchMatch
 	}
 
 	// A. Đảm bảo nút "Tác nhân" (Agent) được tắt trước tiên (chuyển aria-pressed="true" thành "false")
@@ -1470,17 +1465,18 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		currentConfigText, _ = configTriggerBtn.Text()
 	}
 
-	// 2.5. Kiểm tra nếu cấu hình hiện tại trên nút đã trùng khớp với yêu cầu
-	isMatch := isAlreadyConfigured(currentConfigText)
+	// 2.5. Kiểm tra chi tiết từng cài đặt trên nút
+	isModelMatch, isRatioMatch, isBatchMatch := checkConfigMatches(currentConfigText)
+	isAllMatch := isModelMatch && isRatioMatch && isBatchMatch
 	logDebug("NÚT CẤU HÌNH ĐƯỢC TÌM THẤY: ID=%s, Text=[%s]", idStr, strings.ReplaceAll(currentConfigText, "\n", " "))
-	logDebug("ĐỐI CHIẾU CẤU HÌNH: Cấu hình hiện tại vs Yêu cầu [Model: %s, Aspect: %s, Batch: %s] -> Trùng khớp: %v", req.Model, req.AspectRatio, req.BatchSize, isMatch)
+	logDebug("ĐỐI CHIẾU CẤU HÌNH: Model=%v, AspectRatio=%v, BatchSize=%v -> Tất cả trùng khớp: %v", isModelMatch, isRatioMatch, isBatchMatch, isAllMatch)
 
-	if isMatch {
-		logDebug("Cấu hình hiện tại ĐÃ TRÙNG KHỚP với yêu cầu. BỎ QUA toàn bộ các bước mở cấu hình.")
+	if isAllMatch {
+		logDebug("Cấu hình hiện tại ĐÃ TRÙNG KHỚP hoàn toàn với yêu cầu. BỎ QUA toàn bộ các bước mở cấu hình.")
 		return nil
 	}
 	
-	logDebug("Cấu hình hiện tại KHÔNG trùng khớp. Tiến hành mở popover để cấu hình lại...")
+	logDebug("Cấu hình chưa trùng khớp (Model: %v, Ratio: %v, Batch: %v). Tiến hành mở popover để điều chỉnh duy nhất các phần chưa đúng...", isModelMatch, isRatioMatch, isBatchMatch)
 
 	// 3. Kiểm tra xem popover đang mở hay đóng
 	isOpened := isFlowPopoverOpen(page)
@@ -1552,9 +1548,9 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		logDebug("Không cấu hình được media tab: %v", errTab)
 	}
 
-	// 4. Cấu hình Aspect Ratio
-	if req.AspectRatio != "" {
-		logDebug("Cấu hình tỷ lệ khung hình: %s", req.AspectRatio)
+	// 4. Cấu hình Aspect Ratio (Chỉ chỉnh nếu chưa đúng)
+	if req.AspectRatio != "" && !isRatioMatch {
+		logDebug("Cấu hình tỷ lệ khung hình: %s (chỉnh lại vì chưa trùng khớp)", req.AspectRatio)
 		clickRatioBtn, errRatio := getElement(3*time.Second, `(ratio) => {
 			let suffix = "";
 			if (ratio === "16:9") suffix = "LANDSCAPE";
@@ -1587,11 +1583,13 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		} else {
 			logDebug("Không cấu hình được tỷ lệ khung hình: %v", errRatio)
 		}
+	} else if isRatioMatch {
+		logDebug("Tỷ lệ khung hình (%s) đã đúng sẵn, bỏ qua không chỉnh lại.", req.AspectRatio)
 	}
 
-	// 5. Cấu hình Batch Size (Số lượng ảnh/video sinh ra)
-	if req.BatchSize != "" {
-		logDebug("Cấu hình số lượng (batch size): %s", req.BatchSize)
+	// 5. Cấu hình Batch Size (Chỉ chỉnh nếu chưa đúng)
+	if req.BatchSize != "" && !isBatchMatch {
+		logDebug("Cấu hình số lượng (batch size): %s (chỉnh lại vì chưa trùng khớp)", req.BatchSize)
 		clickBatchBtn, errBatch := getElement(3*time.Second, `(batch) => {
 			const cleanDigit = batch.toLowerCase().replace('x', '').trim();
 			if (cleanDigit) {
@@ -1621,11 +1619,13 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		} else {
 			logDebug("Không cấu hình được số lượng batch size: %v", errBatch)
 		}
+	} else if isBatchMatch {
+		logDebug("Số lượng Batch Size (%s) đã đúng sẵn, bỏ qua không chỉnh lại.", req.BatchSize)
 	}
 
-	// 6. Cấu hình Model
-	if req.Model != "" {
-		logDebug("Cấu hình Model: %s", req.Model)
+	// 6. Cấu hình Model (Chỉ chỉnh nếu chưa đúng)
+	if req.Model != "" && !isModelMatch {
+		logDebug("Cấu hình Model: %s (chỉnh lại vì chưa trùng khớp)", req.Model)
 		// Tìm nút mở dropdown chọn model bên trong popover (sử dụng XPath, class và role)
 		clickModelDropdownBtn, errModelDropdown := getElement(3*time.Second, `() => {
 			// Tìm popover thực sự chứa nút chọn Model (không lấy nhầm nút trigger)
@@ -1690,6 +1690,8 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		} else {
 			logDebug("Không tìm thấy nút dropdown chọn Model trong popover: %v", errModelDropdown)
 		}
+	} else if isModelMatch {
+		logDebug("Model (%s) đã đúng sẵn, bỏ qua không chỉnh lại.", req.Model)
 	}
 
 	// 7. Đóng popover bằng cách click lại nút menu hoặc click vào ô nhập prompt
