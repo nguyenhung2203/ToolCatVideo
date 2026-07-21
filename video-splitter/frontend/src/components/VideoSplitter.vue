@@ -182,6 +182,15 @@ const browserAIShowChrome = ref(true)
 const browserAIDelay = ref(1.0)
 
 // === AI Thumbnail Generator state and functions ===
+const aiQueueState = reactive({
+  total: 0,
+  completed: 0,
+  failed: 0,
+  current: 0,
+  isRunning: false,
+  tasks: [] as any[]
+})
+
 const aiThumbState = reactive({
   isExtractingFrames: false,
   extractedFrames: [] as string[],
@@ -783,16 +792,6 @@ onMounted(async () => {
     }
   })
 
-  // Trạng thái Hàng đợi AI Thumbnail
-  const aiQueueState = reactive({
-    total: 0,
-    completed: 0,
-    failed: 0,
-    current: 0,
-    isRunning: false,
-    tasks: [] as any[]
-  })
-
   EventsOn('browser-ai:queue-progress', (status: any) => {
     aiQueueState.total = status.total || 0
     aiQueueState.completed = status.completed || 0
@@ -807,7 +806,7 @@ onMounted(async () => {
     } else if (status.total > 0 && status.completed + status.failed === status.total) {
       isMultiExportRunning.value = false
       exportStatusText.value = `✓ [Hàng Đợi AI] Đã hoàn thành toàn bộ ${status.completed} Thumbnail AI!`
-      showToast(`Đã tạo xong ${status.completed} Thumbnail AI bằng Google Flow!`, 'success')
+      showToast(`🎉 Hoàn tất 100%! Đã xuất xong video kèm ${status.completed} Thumbnail AI!`, 'success', 6000)
     }
   })
 
@@ -817,8 +816,8 @@ onMounted(async () => {
         const clips = clipsMap.value[path] || []
         const found = clips.find((c: any) => task.id && (task.id.includes(c.id) || task.clipName.includes(`#${c.index}`)))
         if (found) {
-          found.thumbnail = task.resultPath
-          found.hasAIThumb = true
+          found.thumbnail = task.resultPath;
+          (found as any).hasAIThumb = true
           break
         }
       }
@@ -1619,13 +1618,17 @@ const exportClips = async () => {
     if (failedList.length > 0) {
       showToast(`Xuất xong: ${okCount}/${finalTotal} clip OK. Lỗi: ${failedList.map(f => `${f.video} (Clip #${f.index})`).join(', ')}`, 'warning', 5000)
     } else {
-      showToast(`Xuất thành công ${okCount} clip!`, 'success')
+      if (exportWithThumbnails.value) {
+        showToast(`Đã cắt xong ${okCount} clip! Đang tự động sinh Thumbnail AI...`, 'info', 4000)
+      } else {
+        showToast(`Xuất thành công ${okCount} clip!`, 'success')
+      }
     }
   } catch (err) {
     showToast('Lỗi xuất video: ' + err, 'error')
   } finally {
     isExporting.value = false
-    if (!aiQueueState.isRunning) {
+    if (!exportWithThumbnails.value && !aiQueueState.isRunning) {
       isMultiExportRunning.value = false
     }
     exportStartTime.value = null

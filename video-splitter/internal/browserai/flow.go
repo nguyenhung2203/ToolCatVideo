@@ -7,11 +7,13 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/proto"
 )
 
@@ -460,39 +462,17 @@ func GenerateFlowVideo(
 			}
 		}
 
-		// 1. Upload ảnh trước (nếu có) để thẻ ảnh đính kèm vào ô prompt trước
+		// 1. Dán ảnh bằng phím tắt Ctrl+V thật từ bàn phím hệ thống (Windows Clipboard + CDP Keyboard)
 		if len(req.InputImagePaths) > 0 {
-			logDebug("Phát hiện yêu cầu gửi kèm ảnh (%d ảnh). Đang upload ảnh trước...", len(req.InputImagePaths))
-			fileInput, errInput := page.Element("input[type=file]")
-			if errInput != nil {
-				logDebug("Không tìm thấy input[type=file] ẩn. Thử click nút '+' để kích hoạt...")
-				addBtn, errAdd := page.ElementByJS(rod.Eval(`() => {
-					const buttons = Array.from(document.querySelectorAll('button'));
-					return buttons.find(btn => {
-						const txt = btn.textContent.toLowerCase();
-						const icon = btn.querySelector('span, i');
-						const iconTxt = icon ? icon.textContent.trim().toLowerCase() : '';
-						return iconTxt === 'add' || txt.includes('tải lên') || txt.includes('upload') || btn.querySelector('svg');
-					});
-				}`))
-				if errAdd == nil && addBtn != nil {
-					_ = addBtn.Click(proto.InputMouseButtonLeft, 1)
-					sleep(1000 * time.Millisecond)
-					fileInput, errInput = page.Element("input[type=file]")
-				}
+			logDebug("Phát hiện yêu cầu gửi kèm ảnh (%d ảnh). Đang nạp vào Clipboard Windows và bấm Ctrl+V thật...", len(req.InputImagePaths))
+			
+			for _, imgPath := range req.InputImagePaths {
+				_ = PasteImageNativeCtrlV(ctx, page, promptInput, imgPath, logDebug)
 			}
 
-			if errInput == nil && fileInput != nil {
-				errSet := fileInput.SetFiles(req.InputImagePaths)
-				if errSet != nil {
-					logDebug("Lỗi khi set file upload: %v", errSet)
-				} else {
-					logDebug("Đã upload %d ảnh thành công! Đang chờ 3.5 giây để thẻ ảnh đính kèm vào ô prompt...", len(req.InputImagePaths))
-					sleep(3500 * time.Millisecond) // Chờ ảnh upload xong và hiển thị trong ô prompt
-				}
-			} else {
-				logDebug("Không tìm thấy phần tử tải file lên trên Google Flow")
-			}
+			logDebug("Đã bấm Ctrl+V! Đang chờ DOM tải xong 100% (thẻ ảnh hiển thị trong ô prompt)...")
+			WaitUntilImageAttachedAndLoaded(ctx, page, 25*time.Second, logDebug)
+			sleep(1500 * time.Millisecond) // Chờ thêm 1.5 giây cho React cập nhật state
 
 			// Quét tìm lại ô prompt sau khi đính kèm ảnh
 			promptInput, err = FindFirstVisible(ctx, page, FlowSelectors.PromptInputs, 5*time.Second)
@@ -513,6 +493,29 @@ func GenerateFlowVideo(
 		}
 		logDebug("Đã điền prompt xong thành công!")
 		sleep(1000 * time.Millisecond)
+
+		// Cập nhật lại danh sách tất cả URL ảnh đang có trên trang NGAY TRƯỚC KHI BẤM NÚT GỬI PROMPT
+		// (bao gồm cả URL của ảnh vừa dán vào) để chắc chắn KHÔNG nhầm ảnh upload với ảnh do AI vừa tạo ra!
+		lastUrlsObj, errLast := page.Eval(`() => {
+			const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
+				const src = img.getAttribute('src') || '';
+				return src.includes('getMediaUrl') || src.includes('/fx/api/');
+			});
+			return imgs.map(img => {
+				let src = img.getAttribute('src') || '';
+				if (src.startsWith('/')) {
+					src = 'https://labs.google' + src;
+				}
+				return src;
+			}).filter(src => src !== '');
+		}`)
+		if errLast == nil && lastUrlsObj != nil {
+			lastGroupUrls = nil
+			for _, v := range lastUrlsObj.Value.Arr() {
+				lastGroupUrls = append(lastGroupUrls, v.Str())
+			}
+		}
+		logDebug("Cập nhật lại danh sách URL ảnh hiện có trước khi bấm Gửi (%d ảnh): %v", len(lastGroupUrls), lastGroupUrls)
 
 		logDebug("Bắt đầu thực hiện gửi prompt...")
 		tm.EmitStatus(TaskStateSubmitting, "Đang gửi prompt...", 40)
@@ -1840,54 +1843,14 @@ func DismissWelcomeModals(ctx context.Context, page *rod.Page) {
 	}
 }
 
-func FillFlowPrompt(page *rod.Page, input *rod.Element, prompt string) error {
-	// 1. Click và Focus vào ô nhập liệu
-	if err := HumanClick(page, input); err != nil {
-		return fmt.Errorf("click prompt input: %w", err)
+func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string) error {
+	// KHÔNG thực hiện bất kỳ câu lệnh Eval JS Range/Selection nào (tránh làm React Slate.js reset mất thẻ ảnh)
+	// Trực tiếp gửi văn bản bằng CDP InsertText vì con trỏ đã nằm sẵn đúng vị trí sau khi dán Ctrl+V
+	err := page.InsertText(prompt)
+	if err != nil {
+		_ = promptInput.Input(prompt)
 	}
-	_ = input.Focus()
-	time.Sleep(time.Duration(randomRange(150, 300)) * time.Millisecond)
-
-	// 2. Xóa sạch văn bản cũ thông qua selection của Slate.js
-	_, errClear := input.Eval(`function() {
-		this.focus();
-
-		// Tìm thẻ chứa văn bản thực tế của Slate.js
-		let targetNode = this.querySelector('[data-slate-node="text"]');
-		if (!targetNode) {
-			targetNode = this.querySelector('[data-slate-leaf="true"]');
-		}
-		if (!targetNode) {
-			targetNode = this;
-		}
-
-		try {
-			const range = document.createRange();
-			range.selectNodeContents(targetNode);
-			const sel = window.getSelection();
-			sel.removeAllRanges();
-			sel.addRange(range);
-			document.execCommand('delete', false, null);
-		} catch (e) {}
-	}`)
-	if errClear != nil {
-		fmt.Printf("[FlowDebug] Lỗi xóa văn bản cũ: %v. Tiến hành gõ đè...\n", errClear)
-	}
-
-	// 3. Gõ câu lệnh bằng sự kiện bàn phím thật (CDP Keyboard events) qua Element.Input
-	// Go-rod sẽ tự động gõ từng phím đồng bộ và kích hoạt chuẩn xác các sự kiện của Slate.js
-	errType := input.Input(prompt)
-	if errType != nil {
-		fmt.Printf("[FlowDebug] Lỗi gõ câu lệnh: %v\n", errType)
-	}
-	time.Sleep(500 * time.Millisecond) // Chờ thêm một chút sau khi gõ xong
-
-	// Dispatch thêm event để chắc chắn React cập nhật
-	_, _ = input.Eval(`function() {
-		this.dispatchEvent(new Event('input', { bubbles: true }));
-		this.dispatchEvent(new Event('change', { bubbles: true }));
-	}`)
-
+	time.Sleep(500 * time.Millisecond)
 	return nil
 }
 
@@ -1946,4 +1909,101 @@ func saveProjectURL(projectURL string) {
 		_ = os.MkdirAll(filepath.Dir(path), 0755)
 		_ = os.WriteFile(path, newData, 0644)
 	}
+}
+
+
+// CopyImageToClipboardWindows nạp file ảnh trực tiếp vào Clipboard của hệ thống Windows qua PowerShell
+// CopyImageToClipboardWindows nạp file ảnh trực tiếp vào Clipboard của hệ thống Windows qua PowerShell
+func CopyImageToClipboardWindows(imagePath string) error {
+	absPath, err := filepath.Abs(imagePath)
+	if err != nil {
+		absPath = imagePath
+	}
+
+	cmdStr := fmt.Sprintf(`Add-Type -Assembly System.Windows.Forms; Add-Type -Assembly System.Drawing; $img = [System.Drawing.Image]::FromFile('%s'); [System.Windows.Forms.Clipboard]::SetImage($img); $img.Dispose()`, absPath)
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", cmdStr)
+	return cmd.Run()
+}
+
+// PasteImageNativeCtrlV thực hiện dán Ctrl+V thật sự thông qua Clipboard hệ thống OS & phím Ctrl+V bàn phím thật
+func PasteImageNativeCtrlV(ctx context.Context, page *rod.Page, promptInput *rod.Element, imagePath string, logDebug func(string, ...interface{})) error {
+	if logDebug != nil {
+		logDebug("Đang nạp ảnh vào Clipboard hệ thống Windows: %s...", imagePath)
+	}
+
+	errCopy := CopyImageToClipboardWindows(imagePath)
+	if errCopy != nil && logDebug != nil {
+		logDebug("Lỗi nạp ảnh vào Clipboard hệ thống: %v", errCopy)
+	} else if logDebug != nil {
+		logDebug("✓ Đã nạp ảnh vào Clipboard hệ thống Windows thành công!")
+	}
+
+	// Focus ô prompt
+	_ = promptInput.Hover()
+	_ = HumanClick(page, promptInput)
+	_ = promptInput.Focus()
+	time.Sleep(300 * time.Millisecond)
+
+	if logDebug != nil {
+		logDebug("Đang bấm phím Ctrl+V thật từ bàn phím hệ thống qua KeyActions CDP...")
+	}
+
+	// Gửi tổ hợp phím Ctrl+V thật từ CDP Keyboard Action
+	_ = page.KeyActions().Press(input.ControlLeft).Press(input.KeyV).Release(input.ControlLeft).Do()
+	time.Sleep(800 * time.Millisecond)
+
+	return nil
+}
+// WaitUntilImageAttachedAndLoaded chờ cho tới khi ảnh upload đã hiển thị hoàn toàn trong ô prompt
+func WaitUntilImageAttachedAndLoaded(ctx context.Context, page *rod.Page, timeout time.Duration, logDebug func(string, ...interface{})) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+
+		isLoaded, _ := page.Eval(`() => {
+			const hasLoadingPercentage = Array.from(document.querySelectorAll('div, span, p, h1, h2, h3, canvas')).some(el => {
+				const txt = el.textContent.trim();
+				const isVisible = el.getBoundingClientRect().width > 0;
+				return isVisible && /\d{1,2}%/.test(txt);
+			});
+
+			if (hasLoadingPercentage) {
+				return false;
+			}
+
+			const hasAttachedCard = Array.from(document.querySelectorAll('img, canvas, div[data-tile-id]')).some(el => {
+				const isVisible = el.getBoundingClientRect().width > 0;
+				const src = el.getAttribute('src') || '';
+				const alt = el.getAttribute('alt') || '';
+				const inPrompt = el.closest('div[role="textbox"], [contenteditable="true"]') !== null ||
+				                 el.closest('form, div[class*="input"], div[class*="prompt"]') !== null;
+				return isVisible && (inPrompt || src.includes('blob:') || src.includes('getMediaUrl') || src.includes('/fx/api/') || alt.includes('thumb'));
+			}) || Array.from(document.querySelectorAll('button, div, span')).some(el => {
+				const isVisible = el.getBoundingClientRect().width > 0;
+				const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+				const title = (el.getAttribute('title') || '').toLowerCase();
+				return isVisible && (aria.includes('remove') || aria.includes('xóa') || aria.includes('delete') || aria.includes('close') || title.includes('remove') || title.includes('xóa'));
+			});
+
+			return hasAttachedCard;
+		}`)
+
+		if isLoaded != nil && isLoaded.Value.Bool() {
+			if logDebug != nil {
+				logDebug("✓ Đã xác nhận: Thẻ ảnh đã đính kèm và load xong 100%% trong ô prompt!")
+			}
+			return true
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if logDebug != nil {
+		logDebug("Cảnh báo: Hết thời gian chờ (%v) nhưng vẫn tiếp tục luồng...", timeout)
+	}
+	return false
 }
