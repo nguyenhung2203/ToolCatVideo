@@ -126,9 +126,9 @@
                 Đã sinh xong! Chọn ảnh muốn tải về máy
               </span>
             </div>
-            <button type="button" @click="toggleSelectAllPreviews" class="img-source-pill active" style="margin-left: auto; font-size: 11px; height: 28px;">
+            <button type="button" @click="toggleSelectAllPreviews" class="img-source-pill active" style="margin-left: auto; font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px;">
               {{ selectedPreviewIndexes.size === selectionPreviews.length ? 'Bỏ tất cả' : 'Chọn tất cả' }}
-              <span>({{ selectedPreviewIndexes.size }}/{{ selectionPreviews.length }})</span>
+              <span style="margin-left: 2px;">({{ selectedPreviewIndexes.size }}/{{ selectionPreviews.length }})</span>
             </button>
           </div>
 
