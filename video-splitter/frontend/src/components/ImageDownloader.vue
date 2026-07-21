@@ -229,16 +229,18 @@ function updateSelectionFromDrag() {
         </div>
       </div>
 
-      <!-- ── API Key row ─────────────────────────────────── -->
+      <!-- ── API Key / Cookie row ─────────────────────────────────── -->
       <div class="img-apikey-row" v-if="sourceNeedsKey">
         <Key :size="14" class="img-key-icon" />
-        <label class="img-apikey-label">{{ imageSelectedSource?.label }} API Key:</label>
+        <label class="img-apikey-label">
+          {{ imageSource === 'pinterest' ? 'Pinterest Cookie (Tùy chọn):' : `${imageSelectedSource?.label} API Key:` }}
+        </label>
         <div class="img-apikey-input-wrap">
           <input
             v-model="imageApiKey"
-            type="password"
+            :type="imageSource === 'pinterest' ? 'text' : 'password'"
             class="img-text-input img-apikey-input"
-            :placeholder="`Nhập ${imageSelectedSource?.label} API Key...`"
+            :placeholder="imageSource === 'pinterest' ? 'Paste Cookie từ trình duyệt (csrftoken=...; _pinterest_sess=...)...' : `Nhập ${imageSelectedSource?.label} API Key...`"
           />
           <span v-if="imageHasEnvKey" class="img-env-badge" style="display: inline-flex; align-items: center; gap: 3px;">
             <Check :size="11" />
@@ -246,6 +248,7 @@ function updateSelectionFromDrag() {
           </span>
         </div>
         <a
+          v-if="imageSource !== 'pinterest'"
           :href="imageSource==='pixabay'?'https://pixabay.com/api/docs/':imageSource==='unsplash'?'https://unsplash.com/developers':'https://www.pexels.com/api/'"
           target="_blank"
           class="img-getkey-link"

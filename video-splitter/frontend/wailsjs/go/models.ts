@@ -55,6 +55,7 @@ export namespace browserai {
 	    inputImageBase64: string;
 	    inputImagePaths: string[];
 	    inputImageBase64s: string[];
+	    logPrefix: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new GenerateRequest(source);
@@ -80,6 +81,7 @@ export namespace browserai {
 	        this.inputImageBase64 = source["inputImageBase64"];
 	        this.inputImagePaths = source["inputImagePaths"];
 	        this.inputImageBase64s = source["inputImageBase64s"];
+	        this.logPrefix = source["logPrefix"];
 	    }
 	}
 	export class ThumbnailTask {
@@ -90,6 +92,8 @@ export namespace browserai {
 	    fileName: string;
 	    prompt: string;
 	    inputImagePath: string;
+	    inputImagePaths: string[];
+	    inputImageBase64s: string[];
 	    provider: string;
 	    model: string;
 	    aspectRatio: string;
@@ -111,6 +115,8 @@ export namespace browserai {
 	        this.fileName = source["fileName"];
 	        this.prompt = source["prompt"];
 	        this.inputImagePath = source["inputImagePath"];
+	        this.inputImagePaths = source["inputImagePaths"];
+	        this.inputImageBase64s = source["inputImageBase64s"];
 	        this.provider = source["provider"];
 	        this.model = source["model"];
 	        this.aspectRatio = source["aspectRatio"];

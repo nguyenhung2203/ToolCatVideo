@@ -4,7 +4,7 @@ import { imagedownloader } from '../../../wailsjs/go/models'
 import { EventsOn } from '../../../wailsjs/runtime/runtime'
 
 // === Types ===
-export type ImageSource = 'duckduckgo' | 'pixabay' | 'unsplash' | 'pexels'
+export type ImageSource = 'duckduckgo' | 'pinterest' | 'pixabay' | 'unsplash' | 'pexels'
 
 export interface ImageProgressItem {
   id: string
@@ -23,6 +23,13 @@ export const IMAGE_SOURCES: { value: ImageSource; label: string; icon: string; n
     icon: '🦆',
     needsKey: false,
     hint: 'Miễn phí, không cần API Key. Tổng hợp ảnh từ nhiều nguồn.',
+  },
+  {
+    value: 'pinterest',
+    label: 'Pinterest',
+    icon: '📌',
+    needsKey: true,
+    hint: 'Tải ảnh chất lượng cao từ Pinterest. Nhập Cookie từ trình duyệt nếu Pinterest chặn IP/trả về 0 kết quả.',
   },
   {
     value: 'pixabay',

@@ -637,7 +637,7 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 	a.exportCancelMu.Unlock()
 
 	results := make([]ExportResult, len(clips))
-	var aiQueueTasks []browserai.ThumbnailTask
+	var enqueuedCount int
 	sem := make(chan struct{}, jobs)
 	var wg sync.WaitGroup
 	var done int
@@ -757,9 +757,15 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 							AspectRatio:    aspectRatio,
 						}
 
-						mu.Lock()
-						aiQueueTasks = append(aiQueueTasks, task)
-						mu.Unlock()
+						// Nạp task vào Hàng Đợi AI NGAY khi clip này cắt xong (vừa xuất
+						// vừa gửi) thay vì đợi cắt hết mọi clip. Enqueue an toàn khi hàng
+						// đợi đang chạy — worker sẽ tự nhặt task mới.
+						if a.browserAIService != nil {
+							a.browserAIService.EnqueueThumbnailTasks([]browserai.ThumbnailTask{task})
+							mu.Lock()
+							enqueuedCount++
+							mu.Unlock()
+						}
 					} else if clip.Thumbnail != "" {
 						if _, errStat := os.Stat(clip.Thumbnail); errStat == nil {
 							_ = copyFile(clip.Thumbnail, destThumbPath)
@@ -785,9 +791,8 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 	}
 	wg.Wait()
 
-	if len(aiQueueTasks) > 0 && a.browserAIService != nil {
-		runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("🔥 Đã nạp %d clip vào Hàng Đợi AI tự động sinh Thumbnail trên Google Flow!", len(aiQueueTasks)))
-		a.browserAIService.EnqueueThumbnailTasks(aiQueueTasks)
+	if enqueuedCount > 0 {
+		runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("🔥 Đã nạp %d clip vào Hàng Đợi AI tự động sinh Thumbnail trên Google Flow!", enqueuedCount))
 	}
 
 	okCount := 0

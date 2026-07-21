@@ -14,100 +14,122 @@
       
       <!-- Left Column: Config Form -->
       <div class="config-panel" :class="{ 'panel-disabled': isGenerating }">
-        <h3 class="panel-section-title">Cấu hình yêu cầu</h3>
+        <button
+          type="button"
+          @click="configCollapsed = !configCollapsed"
+          style="display: flex; align-items: center; justify-content: space-between; width: 100%; background: none; border: none; cursor: pointer; padding: 0; margin-bottom: 8px;"
+          :title="configCollapsed ? 'Mở rộng cấu hình' : 'Thu gọn cấu hình để tập trung vào prompt'"
+        >
+          <h3 class="panel-section-title" style="margin: 0;">Cấu hình yêu cầu</h3>
+          <ChevronDown v-if="configCollapsed" :size="18" style="color: var(--wx-brand-accent);" />
+          <ChevronUp v-else :size="18" style="color: var(--wx-brand-accent);" />
+        </button>
 
-        <div class="form-row" v-if="provider === 'flow'">
-          <label class="img-label">Model Google AI:</label>
-          <div class="img-source-pills">
-            <button v-for="m in modelsList" :key="m" :class="{ active: selectedModel === m }" @click="selectedModel = m" class="img-source-pill">
-              {{ m }}
-            </button>
-          </div>
-        </div>
-
-        <div class="form-row">
-          <label class="img-label">Tỷ lệ khung hình:</label>
-          <div class="img-source-pills">
-            <button v-for="r in ratios" :key="r" :class="{ active: aspectRatio === r }" @click="aspectRatio = r" class="img-source-pill">
-              {{ r }}
-            </button>
-          </div>
-        </div>
-
-        <div class="form-row" v-if="provider === 'flow'">
-          <label class="img-label">Số lượng sinh mỗi lần:</label>
-          <div class="img-source-pills">
-            <button v-for="b in ['1x', '2x', '3x', '4x']" :key="b" :class="{ active: selectedBatchSize === b }" @click="selectedBatchSize = b" class="img-source-pill">
-              {{ b }}
-            </button>
-          </div>
-        </div>
-
-        <div class="form-row" v-if="provider === 'flow'">
-          <label class="img-label">Độ phân giải tải về:</label>
-          <div class="img-source-pills">
-            <button v-for="res in ['1K', '2K', '4K']" :key="res" :class="{ active: selectedResolution === res }" @click="selectedResolution = res" class="img-source-pill">
-              {{ res }}
-            </button>
-          </div>
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1.2fr 0.8fr; gap: var(--wx-space-2);">
-          <div class="form-row">
-            <label class="img-label">Thư mục lưu:</label>
-            <div style="display: flex; gap: var(--wx-space-1);">
-              <input type="text" v-model="outputDir" class="img-text-input read-only-input" readonly style="flex: 1;" />
-              <button @click="pickOutputDir" class="img-dir-btn" style="height: 38px; width: 38px; padding: 0;" title="Chọn thư mục lưu">
-                <FolderOpen :size="14" />
+        <div v-show="!configCollapsed">
+          <div class="form-row" v-if="provider === 'flow'">
+            <label class="img-label">Model Google AI:</label>
+            <div class="img-source-pills">
+              <button v-for="m in modelsList" :key="m" :class="{ active: selectedModel === m }" @click="selectedModel = m" class="img-source-pill">
+                {{ m }}
               </button>
             </div>
           </div>
 
           <div class="form-row">
-            <label class="img-label">Tên file lưu trữ:</label>
-            <input type="text" v-model="fileName" placeholder="Tên file..." class="img-text-input" />
+            <label class="img-label">Tỷ lệ khung hình:</label>
+            <div class="img-source-pills">
+              <button v-for="r in ratios" :key="r" :class="{ active: aspectRatio === r }" @click="aspectRatio = r" class="img-source-pill">
+                {{ r }}
+              </button>
+            </div>
+          </div>
+
+          <div class="form-row" v-if="provider === 'flow'">
+            <label class="img-label">Số lượng sinh mỗi lần:</label>
+            <div class="img-source-pills">
+              <button v-for="b in ['1x', '2x', '3x', '4x']" :key="b" :class="{ active: selectedBatchSize === b }" @click="selectedBatchSize = b" class="img-source-pill">
+                {{ b }}
+              </button>
+            </div>
+          </div>
+
+          <div class="form-row" v-if="provider === 'flow'">
+            <label class="img-label">Độ phân giải tải về:</label>
+            <div class="img-source-pills">
+              <button v-for="res in ['1K', '2K', '4K']" :key="res" :class="{ active: selectedResolution === res }" @click="selectedResolution = res" class="img-source-pill">
+                {{ res }}
+              </button>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1.2fr 0.8fr; gap: var(--wx-space-2);">
+            <div class="form-row">
+              <label class="img-label">Thư mục lưu:</label>
+              <div style="display: flex; gap: var(--wx-space-1);">
+                <input type="text" v-model="outputDir" class="img-text-input read-only-input" readonly style="flex: 1;" />
+                <button @click="pickOutputDir" class="img-dir-btn" style="height: 38px; width: 38px; padding: 0;" title="Chọn thư mục lưu">
+                  <FolderOpen :size="14" />
+                </button>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <label class="img-label">Tên file lưu trữ:</label>
+              <input type="text" v-model="fileName" placeholder="Tên file..." class="img-text-input" />
+            </div>
           </div>
         </div>
 
         <div class="form-row prompt-row">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
             <label class="img-label" style="margin-bottom: 0;">Mô tả chi tiết nội dung (Prompt):</label>
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <button type="button" @click="chooseImageFile" class="img-source-pill" style="padding: 2px 6px; font-size: 11px; height: 22px;" :title="'Thêm ảnh làm đầu vào (tối đa 3 ảnh, hiện có ' + inputImages.length + '/3)'">
-                <ImageIcon :size="11" style="margin-right: 3px;" /> Thêm ảnh ({{ inputImages.length }}/3)
-              </button>
-              <span class="char-counter" :class="{ limit: prompt.length > 2000 }">{{ prompt.length }}/2000</span>
-            </div>
-          </div>
-          <!-- Bật/tắt tự động tải + gợi ý mỗi dòng 1 prompt -->
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px;">
-            <!-- <span style="font-size: 11px; color: var(--l-text-muted);">
-              Mỗi prompt cách nhau 1 dòng trống ({{ promptLines.length }} prompt) — chạy song song.
-            </span> -->
-            <label class="toggle-row inline" style="font-size: 11.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; margin-bottom: 0; white-space: nowrap;" title="Bật: tự động tải mọi ảnh sinh ra. Tắt (chỉ khi 1 prompt): hiện ảnh để bạn chọn rồi mới tải.">
+            <label class="toggle-row inline" style="font-size: 11.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; margin-bottom: 0; white-space: nowrap;" title="Bật: tự động tải mọi ảnh sinh ra. Tắt (chỉ khi tổng cộng 1 prompt): hiện ảnh để bạn chọn rồi mới tải.">
               <input type="checkbox" v-model="autoDownload" style="width:15px; height:15px;" />
               Tự động tải ảnh
             </label>
           </div>
-          <div style="position: relative; flex: 1; display: flex; flex-direction: column;">
-            <textarea
-              v-model="prompt"
-              @paste="handlePasteImage"
-              placeholder="Mỗi prompt cách nhau bằng 1 DÒNG TRỐNG — Google AI tạo song song mỗi prompt thành 1 ảnh. Một prompt có thể dài nhiều dòng.&#10;Ví dụ:&#10;một chú mèo phi hành gia&#10;trôi giữa dải ngân hà&#10;&#10;thành phố cyberpunk về đêm&#10;mưa neon phản chiếu&#10;&#10;(Mẹo: nhấn Ctrl+V để dán ảnh làm đầu vào)"
-              class="img-text-input prompt-textarea"
-              maxlength="2000"
-              style="padding-bottom: 56px;"
-            ></textarea>
 
-            <!-- Previews inside textarea -->
-            <div v-if="inputImages.length > 0" style="position: absolute; bottom: 8px; left: 8px; display: flex; gap: 8px; pointer-events: auto; z-index: 10;">
-              <div v-for="img in inputImages" :key="img.id" style="position: relative; width: 40px; height: 40px; border-radius: 4px; border: 1px solid var(--wx-border-default); background: #000; box-shadow: 0 2px 6px rgba(0,0,0,0.4);">
-                <img :src="img.preview" style="width: 100%; height: 100%; object-fit: cover; border-radius: 3px;" />
-                <button type="button" @click="removeSelectedImage(img.id)" style="position: absolute; top: -5px; right: -5px; width: 13px; height: 13px; border-radius: 50%; background: var(--wx-danger-solid); color: #fff; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; box-shadow: 0 1px 2px rgba(0,0,0,0.3); font-size: 8px; font-weight: bold;" title="Xóa ảnh">
-                  ×
-                </button>
+          <!-- Danh sách card prompt: mỗi card = 1 prompt + tối đa 3 ảnh riêng -->
+          <div style="flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding-right: 2px;">
+            <div
+              v-for="(card, cIdx) in promptCards"
+              :key="card.id"
+              style="border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); background: var(--wx-glass-light-bg); padding: 8px;"
+            >
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-size: 11.5px; font-weight: 700; color: var(--wx-brand-accent);">Prompt #{{ cIdx + 1 }}</span>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <button type="button" @click="addImageToCard(card.id)" class="img-source-pill" style="padding: 2px 6px; font-size: 11px; height: 22px;" :title="'Thêm ảnh cho prompt này (tối đa 3, hiện có ' + card.images.length + '/3)'">
+                    <ImageIcon :size="11" style="margin-right: 3px;" /> Ảnh ({{ card.images.length }}/3)
+                  </button>
+                  <span class="char-counter" :class="{ limit: card.text.length > 2000 }">{{ card.text.length }}/2000</span>
+                  <button type="button" @click="removePromptCard(card.id)" class="img-source-pill" style="padding: 2px 6px; font-size: 11px; height: 22px; color: var(--wx-danger-solid);" title="Xóa prompt này">
+                    <Trash2 :size="11" />
+                  </button>
+                </div>
+              </div>
+              <textarea
+                v-model="card.text"
+                @paste="handlePasteImageToCard(card.id, $event)"
+                placeholder="Mô tả ảnh bạn muốn tạo... (Mẹo: nhấn Ctrl+V để dán ảnh đầu vào cho riêng prompt này)"
+                class="img-text-input"
+                maxlength="2000"
+                :rows="configCollapsed ? 8 : 3"
+                :style="{ width: '100%', resize: 'vertical', minHeight: configCollapsed ? '180px' : '64px' }"
+              ></textarea>
+              <div v-if="card.images.length > 0" style="display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap;">
+                <div v-for="img in card.images" :key="img.id" style="position: relative; width: 44px; height: 44px; border-radius: 4px; border: 1px solid var(--wx-border-default); background: #000; box-shadow: 0 2px 6px rgba(0,0,0,0.4);">
+                  <img :src="img.preview" style="width: 100%; height: 100%; object-fit: cover; border-radius: 3px;" />
+                  <button type="button" @click="removeImageFromCard(card.id, img.id)" style="position: absolute; top: -5px; right: -5px; width: 14px; height: 14px; border-radius: 50%; background: var(--wx-danger-solid); color: #fff; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; box-shadow: 0 1px 2px rgba(0,0,0,0.3); font-size: 9px; font-weight: bold;" title="Xóa ảnh">
+                    ×
+                  </button>
+                </div>
               </div>
             </div>
+
+            <button type="button" @click="addPromptCard" class="img-source-pill" style="align-self: flex-start; flex: none; padding: 4px 10px; font-size: 11.5px; height: 28px;">
+              + Thêm prompt
+            </button>
           </div>
         </div>
       </div>
@@ -122,8 +144,8 @@
           <p class="state-description">
             Điền mô tả bên trái sau đó nhấn nút <strong>"Bắt đầu tạo"</strong> bên dưới để bắt đầu luồng tự động hóa trình duyệt.
           </p>
-          <button @click="startGeneration" :disabled="promptLines.length === 0" class="img-action-btn start-generate-btn">
-            <Play :size="14" /> Bắt đầu tạo{{ promptLines.length > 1 ? ` (${promptLines.length} prompt song song)` : '' }}
+          <button @click="startGeneration" :disabled="effectiveTasks.length === 0" class="img-action-btn start-generate-btn">
+            <Play :size="14" /> Bắt đầu tạo{{ effectiveTasks.length > 1 ? ` (${effectiveTasks.length} prompt song song)` : '' }}
           </button>
         </div>
 
@@ -359,7 +381,7 @@
 <script setup lang="ts">
 import { ref, reactive, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useBrowserAI } from './composables/useBrowserAI'
-import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, CheckCircle, RefreshCw, ImageIcon, Check, Download } from 'lucide-vue-next'
+import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, CheckCircle, RefreshCw, ImageIcon, Check, Download, ChevronDown, ChevronUp } from 'lucide-vue-next'
 // @ts-ignore
 import { SelectFolder, GetStreamURL, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
 // @ts-ignore
@@ -585,7 +607,6 @@ const provider = computed<'gemini' | 'flow'>(() => {
   return 'flow'
 })
 
-const prompt = ref('')
 const ratios = ['16:9', '4:3', '1:1', '3:4', '9:16']
 const aspectRatio = ref('1:1')
 const outputDir = ref('')
@@ -594,18 +615,50 @@ const previewURL = ref('')
 const previewURLs = ref<string[]>([])
 
 // Tự động tải: BẬT → tự tải mọi ảnh sinh ra (không cần chọn tay).
-// TẮT → chế độ cũ: hiện preview cho người dùng chọn rồi mới tải (chỉ áp dụng khi 1 prompt).
+// TẮT → chế độ cũ: hiện preview cho người dùng chọn rồi mới tải (chỉ khi TỔNG = 1 task).
 const autoDownload = ref(true)
 
-// Mỗi prompt cách nhau bằng 1 DÒNG TRỐNG (mỗi prompt có thể dài nhiều dòng).
-// Tách theo cụm ≥1 dòng trống → 1 task riêng; gộp các dòng trong cùng cụm lại,
-// bỏ khoảng trắng thừa và cụm rỗng.
-const promptLines = computed(() =>
-  prompt.value
-    .split(/\n\s*\n/)
-    .map(block => block.split('\n').map(l => l.trim()).filter(l => l !== '').join('\n').trim())
-    .filter(block => block !== '')
-)
+// Thu gọn khối "Cấu hình yêu cầu" để tập trung vào phần nhập prompt.
+const configCollapsed = ref(false)
+
+interface InputImage {
+  id: string
+  path: string
+  base64: string
+  preview: string
+}
+
+// Mỗi card = 1 prompt + tối đa 3 ảnh riêng của prompt đó. Mặc định 1 card trống.
+interface PromptCard {
+  id: string
+  text: string
+  images: InputImage[]
+}
+const promptCards = ref<PromptCard[]>([
+  { id: `card_${Date.now()}`, text: '', images: [] }
+])
+
+// Danh sách task thực tế sẽ chạy:
+// - Nếu CHỈ có 1 card và card đó KHÔNG có ảnh → tách text theo dòng trống thành
+//   nhiều task (giữ trải nghiệm gõ nhiều prompt trong 1 ô như cũ).
+// - Ngược lại → mỗi card là 1 task riêng (kèm đúng ảnh của card đó).
+interface PromptTask {
+  prompt: string
+  images: InputImage[]
+}
+const effectiveTasks = computed<PromptTask[]>(() => {
+  const cards = promptCards.value
+  if (cards.length === 1 && cards[0].images.length === 0) {
+    return cards[0].text
+      .split(/\n\s*\n/)
+      .map(b => b.split('\n').map(l => l.trim()).filter(l => l !== '').join('\n').trim())
+      .filter(b => b !== '')
+      .map(text => ({ prompt: text, images: [] as InputImage[] }))
+  }
+  return cards
+    .filter(c => c.text.trim() !== '')
+    .map(c => ({ prompt: c.text.trim(), images: c.images }))
+})
 
 // Trạng thái Hàng Đợi AI khi chạy nhiều prompt song song trên trang này.
 const queueMode = ref(false)
@@ -617,15 +670,25 @@ watch(() => result.value, () => {
   selectedCompletedIndexes.value = new Set(list.map((_, i) => i))
 }, { immediate: true })
 
-interface InputImage {
-  id: string
-  path: string
-  base64: string
-  preview: string
-}
-const inputImages = ref<InputImage[]>([])
+import { SelectImageFiles } from '../../wailsjs/go/main/App'
 
-const handlePasteImage = async (e: ClipboardEvent) => {
+const addPromptCard = () => {
+  promptCards.value.push({ id: `card_${Date.now()}_${Math.random()}`, text: '', images: [] })
+}
+
+const removePromptCard = (cardId: string) => {
+  if (promptCards.value.length <= 1) {
+    // Card cuối cùng: chỉ xóa nội dung, giữ lại 1 card trống.
+    promptCards.value[0].text = ''
+    promptCards.value[0].images = []
+    return
+  }
+  promptCards.value = promptCards.value.filter(c => c.id !== cardId)
+}
+
+const handlePasteImageToCard = (cardId: string, e: ClipboardEvent) => {
+  const card = promptCards.value.find(c => c.id === cardId)
+  if (!card) return
   const items = e.clipboardData?.items as any
   if (!items) return
   for (let i = 0; i < items.length; i++) {
@@ -633,18 +696,18 @@ const handlePasteImage = async (e: ClipboardEvent) => {
     if (item.type.indexOf('image') !== -1) {
       const file = item.getAsFile()
       if (file) {
-        if (inputImages.value.length >= 3) {
-          showToast("Chỉ được thêm tối đa 3 ảnh làm đầu vào!", "warning")
+        if (card.images.length >= 3) {
+          showToast("Mỗi prompt chỉ thêm tối đa 3 ảnh!", "warning")
           e.preventDefault()
           return
         }
         const reader = new FileReader()
-        reader.onload = async (event) => {
+        reader.onload = (event) => {
           const base64 = event.target?.result as string
-          inputImages.value.push({
+          card.images.push({
             id: `paste_${Date.now()}_${Math.random()}`,
             path: '',
-            base64: base64,
+            base64,
             preview: base64
           })
           showToast("Đã dán ảnh từ clipboard!", "success")
@@ -656,45 +719,43 @@ const handlePasteImage = async (e: ClipboardEvent) => {
   }
 }
 
-import { SelectImageFiles } from '../../wailsjs/go/main/App'
-
-const chooseImageFile = async () => {
-  if (inputImages.value.length >= 3) {
-    showToast("Chỉ được thêm tối đa 3 ảnh làm đầu vào!", "warning")
+const addImageToCard = async (cardId: string) => {
+  const card = promptCards.value.find(c => c.id === cardId)
+  if (!card) return
+  if (card.images.length >= 3) {
+    showToast("Mỗi prompt chỉ thêm tối đa 3 ảnh!", "warning")
     return
   }
   try {
     const paths = await SelectImageFiles()
     if (paths && paths.length > 0) {
-      let addedCount = 0
+      let added = 0
       for (const path of paths) {
-        if (inputImages.value.length >= 3) {
-          showToast("Chỉ chọn được tối đa 3 ảnh, các ảnh thừa đã bị bỏ qua.", "warning")
+        if (card.images.length >= 3) {
+          showToast("Chỉ chọn được tối đa 3 ảnh/prompt, ảnh thừa đã bỏ qua.", "warning")
           break
         }
-        if (inputImages.value.some(img => img.path === path)) {
-          continue
-        }
+        if (card.images.some(img => img.path === path)) continue
         const url = await GetStreamURL(path)
-        inputImages.value.push({
+        card.images.push({
           id: `file_${Date.now()}_${Math.random()}`,
-          path: path,
+          path,
           base64: '',
           preview: url
         })
-        addedCount++
+        added++
       }
-      if (addedCount > 0) {
-        showToast(`Đã thêm ${addedCount} ảnh thành công!`, "success")
-      }
+      if (added > 0) showToast(`Đã thêm ${added} ảnh!`, "success")
     }
   } catch (err) {
     showToast("Lỗi chọn ảnh: " + err, "error")
   }
 }
 
-const removeSelectedImage = (id: string) => {
-  inputImages.value = inputImages.value.filter(img => img.id !== id)
+const removeImageFromCard = (cardId: string, imgId: string) => {
+  const card = promptCards.value.find(c => c.id === cardId)
+  if (!card) return
+  card.images = card.images.filter(img => img.id !== imgId)
 }
 
 const getFilename = (path: string) => {
@@ -783,7 +844,8 @@ const saveBrowserAISettings = async () => {
     gSettings[`browserAIBatchSize_${suffix}`] = selectedBatchSize.value
     gSettings[`browserAIResolution_${suffix}`] = selectedResolution.value
     gSettings[`browserAIConfirmBeforeCreate_${suffix}`] = confirmBeforeCreate.value
-    
+    gSettings[`browserAIConfigCollapsed_${suffix}`] = configCollapsed.value
+
     await SaveGlobalSettings(JSON.stringify(gSettings))
   } catch (err) {
     console.error("Lỗi tự động lưu cấu hình BrowserAI:", err)
@@ -792,7 +854,7 @@ const saveBrowserAISettings = async () => {
 
 let saveSettingsTimeout: any = null
 watch(
-  [selectedModel, aspectRatio, selectedBatchSize, selectedResolution, confirmBeforeCreate],
+  [selectedModel, aspectRatio, selectedBatchSize, selectedResolution, confirmBeforeCreate, configCollapsed],
   () => {
     if (!isSettingsLoaded.value) return
     if (saveSettingsTimeout) clearTimeout(saveSettingsTimeout)
@@ -819,6 +881,7 @@ onMounted(async () => {
       if (gSettings[`browserAIBatchSize_${suffix}`]) selectedBatchSize.value = gSettings[`browserAIBatchSize_${suffix}`]
       if (gSettings[`browserAIResolution_${suffix}`]) selectedResolution.value = gSettings[`browserAIResolution_${suffix}`]
       if (gSettings[`browserAIConfirmBeforeCreate_${suffix}`]) confirmBeforeCreate.value = gSettings[`browserAIConfirmBeforeCreate_${suffix}`]
+      if (gSettings[`browserAIConfigCollapsed_${suffix}`] !== undefined) configCollapsed.value = gSettings[`browserAIConfigCollapsed_${suffix}`]
     }
   } catch (err) {
     console.error("Lỗi tải cấu hình BrowserAI từ settings.json:", err)
@@ -869,29 +932,27 @@ const pickOutputDir = async () => {
 }
 
 const startGeneration = async () => {
-  const lines = promptLines.value
-  if (lines.length === 0) return
+  const tasksList = effectiveTasks.value
+  if (tasksList.length === 0) return
 
   const baseName = fileName.value.trim() || `ai_image_${Date.now()}`
-  const filePaths = inputImages.value.map(i => i.path).filter(p => p !== '')
 
-  // Nhiều dòng prompt, HOẶC 1 dòng nhưng bật tự động tải → chạy qua Hàng Đợi AI
-  // (song song, mỗi dòng 1 task, tự tải hết). 1 dòng + tắt tự tải → giữ luồng
-  // xem-trước-chọn-tay cũ.
-  const useQueue = lines.length > 1 || (lines.length === 1 && autoDownload.value)
+  // Tắt tự tải CHỈ dùng được khi đúng 1 task (luồng xem-trước-chọn-tay tuần tự).
+  // Nhiều task luôn chạy song song qua Hàng Đợi AI (tự tải).
+  const useQueue = tasksList.length > 1 || autoDownload.value
 
   if (useQueue) {
-    // Mỗi prompt 1 task. Đặt tên file _1, _2... theo thứ tự dòng để dễ tìm.
-    const single = lines.length === 1
-    const inputImagePath = filePaths.length > 0 ? filePaths[0] : ''
-    const tasks = lines.map((line, i) => ({
+    const single = tasksList.length === 1
+    const tasks = tasksList.map((t, i) => ({
       id: `img_prompt_${Date.now()}_${i}`,
       clipName: `Prompt #${i + 1}`,
       clipPath: '',
       outputDir: outputDir.value,
       fileName: single ? baseName : `${baseName}_${i + 1}`,
-      prompt: line,
-      inputImagePath,
+      prompt: t.prompt,
+      inputImagePath: '',
+      inputImagePaths: t.images.map(im => im.path).filter(p => p !== ''),
+      inputImageBase64s: t.images.map(im => im.base64).filter(b => b !== ''),
       provider: provider.value,
       model: selectedModel.value,
       aspectRatio: aspectRatio.value,
@@ -919,12 +980,12 @@ const startGeneration = async () => {
     return
   }
 
-  // Luồng đơn cũ: 1 prompt, tắt tự tải → hiện preview cho người dùng chọn.
-  const base64s = inputImages.value.map(i => i.base64).filter(b => b !== '')
+  // Luồng đơn cũ: đúng 1 task + tắt tự tải → hiện preview cho người dùng chọn.
+  const only = tasksList[0]
   await generate({
     provider: provider.value,
     mediaType: 'image',
-    prompt: lines[0],
+    prompt: only.prompt,
     aspectRatio: aspectRatio.value,
     outputDir: outputDir.value,
     fileName: baseName,
@@ -934,8 +995,8 @@ const startGeneration = async () => {
     batchSize: selectedBatchSize.value,
     confirmBeforeCreate: confirmBeforeCreate.value,
     resolution: selectedResolution.value,
-    inputImagePaths: filePaths,
-    inputImageBase64s: base64s
+    inputImagePaths: only.images.map(im => im.path).filter(p => p !== ''),
+    inputImageBase64s: only.images.map(im => im.base64).filter(b => b !== '')
   })
 }
 
@@ -961,11 +1022,10 @@ const openFolder = async () => {
 
 const resetForm = () => {
   reset()
-  prompt.value = ''
+  promptCards.value = [{ id: `card_${Date.now()}`, text: '', images: [] }]
   fileName.value = ''
   previewURL.value = ''
   selectedResolution.value = '1K'
-  inputImages.value = []
   queueMode.value = false
   queueStatus.total = 0
   queueStatus.completed = 0

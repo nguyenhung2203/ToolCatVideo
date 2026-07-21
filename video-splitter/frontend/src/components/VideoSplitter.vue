@@ -107,6 +107,12 @@ const outDir = ref('D:\\Output')
 const outImageDir = ref('D:\\Output')
 const autoCreateSubfolders = ref(true)
 const exportWithThumbnails = ref(true)
+
+// Thư mục ảnh truyền sang trang Tạo Ảnh AI: khớp đúng nơi thumbnail từ luồng cắt
+// video được lưu. Bật tạo thư mục con → outDir\image; tắt → dùng outImageDir riêng.
+const aiImageOutputDir = computed(() =>
+  autoCreateSubfolders.value ? outDir.value + '\\image' : (outImageDir.value || outDir.value)
+)
 const exportStatusText = ref('Đang chuẩn bị...')
 const videoDoneCount = ref(0)
 const thumbDoneCount = ref(0)
@@ -190,6 +196,10 @@ const aiQueueState = reactive({
   isRunning: false,
   tasks: [] as any[]
 })
+
+// Đang chạy nếu CÒN cắt video HOẶC hàng đợi AI còn tạo thumbnail. Dùng cho thanh
+// tiến trình + nút Dừng để chúng không biến mất khi cắt xong nhưng AI vẫn chạy.
+const isRunningAny = computed(() => isExporting.value || aiQueueState.isRunning)
 
 const aiThumbState = reactive({
   isExtractingFrames: false,
@@ -1517,6 +1527,14 @@ const stopExport = async () => {
   try {
     await CancelExport()
     isExporting.value = false
+    // Nút Dừng giờ hiện cả khi export đã xong mà Hàng Đợi AI còn chạy → hủy luôn queue.
+    if (aiQueueState.isRunning) {
+      await import('../../wailsjs/go/browserai/Service').then(async (srv) => {
+        try { await srv.CancelQueue() } catch (_) {}
+      })
+      aiQueueState.isRunning = false
+      isMultiExportRunning.value = false
+    }
   } catch (err) {
     addLog('Lỗi khi dừng xuất video: ' + err)
   }
@@ -3163,8 +3181,8 @@ const formatSize = (bytes: number) => {
         </div>
 
         <!-- Thư mục xuất chung mặc định (chỉ hiện khi chưa xuất) -->
-        <div v-if="!isExporting" style="display: flex; align-items: center; gap: var(--wx-space-2); flex: 1; margin: 0 var(--wx-space-4); min-width: 0; align-self: center;">
-          <span style="font-size: var(--wx-fs-13); font-weight: var(--wx-fw-semibold); color: var(--wx-text-primary); white-space: nowrap; line-height: 1; display: inline-flex; align-items: center;">
+        <div v-if="!isExporting" style="display: flex; align-items: center; gap: 6px; flex: 1; margin: 0 12px; min-width: 140px; max-width: 380px; align-self: center;">
+          <span style="font-size: 12.5px; font-weight: 600; color: var(--wx-text-primary); white-space: nowrap; line-height: 1; display: inline-flex; align-items: center;">
             Lưu vào:
           </span>
           <input type="text" v-model="outDir" class="file-path-input dl-pub-dir-input" readonly :title="outDir" />
@@ -3173,64 +3191,64 @@ const formatSize = (bytes: number) => {
           </button>
         </div>
 
-        <div class="pub-right" :style="{ display: 'flex', alignItems: 'center', gap: '16px', flex: isExporting ? '1' : 'none', justifyContent: 'flex-end', flexShrink: 0 }">
+        <div class="pub-right" :style="{ display: 'flex', alignItems: 'center', gap: '10px', flex: '1', minWidth: '0', justifyContent: 'flex-end' }">
           <!-- Tiến trình xuất -->
-          <div v-if="isExporting && exportProgress.total > 0" class="pub-progress-box" 
+          <div v-if="isRunningAny && exportProgress.total > 0" class="pub-progress-box"
                :style="{
                  display: 'flex', 
                  flexDirection: 'row',
                  flexWrap: 'nowrap',
                  alignItems: 'center', 
-                 gap: '12px', 
-                 flex: 1, 
-                 minWidth: '580px', 
+                 gap: '8px', 
+                 flex: '1', 
+                 minWidth: '0', 
                  padding: '6px 12px', 
                  userSelect: 'none', 
-                 fontSize: '12.5px',
+                 fontSize: '12px',
                  borderRadius: '8px',
                  border: '1px solid rgba(255, 255, 255, 0.06)',
                  background: `linear-gradient(to right, rgba(16, 185, 129, 0.12) 0%, rgba(16, 185, 129, 0.12) ${exportProgress.done / exportProgress.total * 100}%, rgba(255, 255, 255, 0.01) ${exportProgress.done / exportProgress.total * 100}%)`
                }">
             <!-- Tổng tiến độ Video -->
-            <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
+            <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
               🎬 Cắt Video: <strong style="color: var(--success-color);">{{ videoDoneCount }}/{{ exportProgress.total }}</strong>
             </span>
             
-            <span style="color: var(--wx-border-default)">|</span>
+            <span style="color: var(--wx-border-default); flex-shrink: 0;">|</span>
             
             <!-- Tổng tiến độ Thumbnail -->
-            <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px;">
-              🎨 Ảnh bìa AI: 
+            <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+              🎨 Ảnh bìa AI:
               <template v-if="exportWithThumbnails">
-                <strong style="color: var(--wx-brand-accent);">{{ thumbDoneCount }}/{{ exportProgress.total }}</strong>
+                <strong style="color: var(--wx-brand-accent);">{{ aiQueueState.total > 0 ? (aiQueueState.completed + aiQueueState.failed) : thumbDoneCount }}/{{ aiQueueState.total > 0 ? aiQueueState.total : exportProgress.total }}</strong>
               </template>
               <span v-else style="color: var(--text-muted); font-size: 11px; font-weight: normal; font-style: italic;">(Tắt)</span>
             </span>
             
-            <span style="color: var(--wx-border-default)">|</span>
+            <span style="color: var(--wx-border-default); flex-shrink: 0;">|</span>
 
             <!-- Tên Video đang xử lý -->
-            <div style="color: var(--l-text-muted); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; text-align: left;" :title="exportStatusText">
+            <div style="color: var(--l-text-muted); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; text-align: left; min-width: 0;" :title="exportStatusText">
               {{ formatExportStatusMsg(exportStatusText) }}
             </div>
             
-            <span style="color: rgba(255,255,255,0.15)">|</span>
+            <span style="color: rgba(255,255,255,0.15); flex-shrink: 0;">|</span>
             
             <!-- ETA -->
-            <span class="eta-badge" style="font-size: 11px; font-weight: bold; color: var(--accent-color); padding: 2px 6px; background: rgba(99, 102, 241, 0.1); border-radius: 4px; white-space: nowrap;">
+            <span class="eta-badge" style="font-size: 11px; font-weight: bold; color: var(--accent-color); padding: 2px 6px; background: rgba(99, 102, 241, 0.1); border-radius: 4px; white-space: nowrap; flex-shrink: 0;">
               {{ getExportETA() }}
             </span>
           </div>
 
-          <button v-if="!isExporting" @click="removeSelectedClips" class="btn delete-selected-btn-bar flex-center" title="Xóa các clip đã chọn">
+          <button v-if="!isRunningAny" @click="removeSelectedClips" class="btn delete-selected-btn-bar flex-center" title="Xóa các clip đã chọn" style="flex-shrink: 0; white-space: nowrap;">
             <Trash2 :size="13" />
             Xóa {{ selectedClips.size }} Clip
           </button>
-          <button v-if="isExporting" @click="stopExport" class="btn big-export-btn stop-export-btn flex-center">
+          <button v-if="isRunningAny" @click="stopExport" class="btn big-export-btn stop-export-btn flex-center" style="flex-shrink: 0; white-space: nowrap;">
             <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><rect x="6" y="6" width="12" height="12" fill="currentColor"/></svg>
-            <span class="font-bold">Dừng Xuất</span>
+            <span class="font-bold">{{ isExporting ? 'Dừng Xuất' : 'Dừng Tạo Ảnh' }}</span>
           </button>
-          <button v-else @click="exportClips" class="btn big-export-btn flex-center">
+          <button v-else @click="exportClips" class="btn big-export-btn flex-center" style="flex-shrink: 0; white-space: nowrap;">
             <svg viewBox="0 0 24 24" width="20" height="20" class="btn-icon"><path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
             <span class="font-bold">
               {{ selectedClips.size > 0 ? `Xuất ${selectedClips.size} Clip Đã Chọn` : `Xuất Toàn Bộ ${displayClipsCount} Clip` }}
@@ -3247,7 +3265,7 @@ const formatSize = (bytes: number) => {
       <ImageDownloader v-show="activeView === 'download-image'" :show-toast="showToast" @back="activeView = 'split'" />
 
       <!-- BỐ CỤC CHO PHẦN TẠO ẢNH AI INLINE -->
-      <BrowserAIImagePage v-show="activeView === 'ai-image'" :default-output-dir="outDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-image="handleApplyAIImage" @show-toast="showToast" />
+      <BrowserAIImagePage v-show="activeView === 'ai-image'" :default-output-dir="aiImageOutputDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-image="handleApplyAIImage" @show-toast="showToast" />
 
       <!-- BỐ CỤC CHO PHẦN TẠO VIDEO AI INLINE -->
       <BrowserAIVideoPage v-show="activeView === 'ai-video'" :default-output-dir="outDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-video="handleApplyAIVideo" @show-toast="showToast" />

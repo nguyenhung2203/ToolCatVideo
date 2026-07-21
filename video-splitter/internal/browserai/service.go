@@ -474,3 +474,41 @@ func (s *Service) ConfirmSelectedImages(
 
 	return movedPaths, nil
 }
+
+// decodeBase64ImagesToTemp giải mã danh sách ảnh base64 (data URL từ clipboard)
+// ra file tạm và trả về đường dẫn. idPrefix để đặt tên file duy nhất cho mỗi task
+// tránh nhiều worker song song ghi đè lên nhau. Trả về cả hàm cleanup xóa file tạm.
+func decodeBase64ImagesToTemp(idPrefix string, base64s []string) (paths []string, cleanup func()) {
+	var decoded []string
+	for idx, b64 := range base64s {
+		if b64 == "" {
+			continue
+		}
+		parts := strings.Split(b64, ",")
+		base64Data := b64
+		ext := ".png"
+		if len(parts) > 1 {
+			base64Data = parts[1]
+			header := parts[0]
+			if strings.Contains(header, "image/jpeg") || strings.Contains(header, "image/jpg") {
+				ext = ".jpg"
+			} else if strings.Contains(header, "image/gif") {
+				ext = ".gif"
+			}
+		}
+		data, errDecode := base64.StdEncoding.DecodeString(base64Data)
+		if errDecode != nil {
+			continue
+		}
+		tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("pasted_img_%s_%d%s", idPrefix, idx, ext))
+		if errWrite := os.WriteFile(tempFile, data, 0644); errWrite == nil {
+			decoded = append(decoded, tempFile)
+		}
+	}
+	cleanup = func() {
+		for _, p := range decoded {
+			_ = os.Remove(p)
+		}
+	}
+	return decoded, cleanup
+}

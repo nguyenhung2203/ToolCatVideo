@@ -210,7 +210,8 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
         inputImagePath: req.inputImagePath || "",
         inputImageBase64: req.inputImageBase64 || "",
         inputImagePaths: req.inputImagePaths || [],
-        inputImageBase64s: req.inputImageBase64s || []
+        inputImageBase64s: req.inputImageBase64s || [],
+        logPrefix: ""
       })
 
       taskId.value = taskInfo.taskId

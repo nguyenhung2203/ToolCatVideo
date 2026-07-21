@@ -57,6 +57,9 @@ type GenerateRequest struct {
 	InputImageBase64    string    `json:"inputImageBase64"`
 	InputImagePaths     []string  `json:"inputImagePaths"`
 	InputImageBase64s   []string  `json:"inputImageBase64s"`
+	// LogPrefix: tiền tố gắn vào mỗi dòng log để phân biệt luồng nào (worker/task)
+	// khi nhiều tab chạy song song. Ví dụ "[W1 Clip #2] ". Rỗng cho luồng đơn.
+	LogPrefix           string    `json:"logPrefix"`
 }
 
 type GenerateResult struct {

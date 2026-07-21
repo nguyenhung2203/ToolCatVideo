@@ -2,6 +2,10 @@ package browserai
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -25,6 +29,12 @@ type ThumbnailTask struct {
 	FileName       string         `json:"fileName"`
 	Prompt         string         `json:"prompt"`
 	InputImagePath string         `json:"inputImagePath"`
+	// InputImagePaths: nhiều ảnh đầu vào cho 1 prompt (tối đa ~3). Nếu rỗng thì
+	// fallback dùng InputImagePath (1 ảnh) để tương thích task cũ từ bên cắt video.
+	InputImagePaths []string      `json:"inputImagePaths"`
+	// InputImageBase64s: ảnh dán từ clipboard (base64, chưa có file trên đĩa).
+	// Worker sẽ decode ra file tạm trước khi dán vào Flow.
+	InputImageBase64s []string    `json:"inputImageBase64s"`
 	Provider       Provider       `json:"provider"`
 	Model          string         `json:"model"`
 	AspectRatio    string         `json:"aspectRatio"`
@@ -285,6 +295,30 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			resolution = "1K"
 		}
 
+		// Ưu tiên danh sách nhiều ảnh (tối đa 3/prompt); fallback về ảnh đơn cũ.
+		inputImgPaths := []string{}
+		if len(task.InputImagePaths) > 0 {
+			inputImgPaths = append(inputImgPaths, task.InputImagePaths...)
+		} else if task.InputImagePath != "" {
+			inputImgPaths = append(inputImgPaths, task.InputImagePath)
+		}
+
+		// Ảnh dán từ clipboard (base64, không có đường dẫn file) → giải mã ra file
+		// tạm để dán được. Worker gọi thẳng GenerateFlowVideo nên không đi qua bước
+		// decode ở service.Generate; phải tự decode ở đây. Cleanup gọi tường minh sau
+		// khi task xong (không dùng defer vì đây là vòng lặp — file sẽ tích tụ).
+		var cleanupTemp func()
+		if len(task.InputImageBase64s) > 0 {
+			decodedPaths, cleanup := decodeBase64ImagesToTemp(task.ID, task.InputImageBase64s)
+			cleanupTemp = cleanup
+			inputImgPaths = append(inputImgPaths, decodedPaths...)
+		}
+
+		firstInputPath := ""
+		if len(inputImgPaths) > 0 {
+			firstInputPath = inputImgPaths[0]
+		}
+
 		genReq := GenerateRequest{
 			Provider:            provider,
 			MediaType:           MediaTypeImage,
@@ -295,16 +329,30 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			ConfirmBeforeCreate: "auto",
 			OutputDir:           task.OutputDir,
 			FileName:            task.FileName,
-			InputImagePath:      task.InputImagePath,
+			InputImagePath:      firstInputPath,
+			InputImagePaths:     inputImgPaths,
 			Resolution:          resolution,
 			TimeoutSecond:       180,
 			ShowChrome:          true,
+			LogPrefix:           fmt.Sprintf("[W%d %s] ", workerID+1, task.ClipName),
 		}
 
 		// Mỗi task chạy trong timeout riêng để một task treo không chặn worker mãi.
 		taskCtx, cancel := context.WithTimeout(ctx, ImageGenerateTimeout)
 		filePaths, genErr := GenerateFlowVideo(taskCtx, qm.service.session, page, nil, genReq)
 		cancel()
+		if cleanupTemp != nil {
+			cleanupTemp()
+		}
+		// Dọn file frame tạm do luồng xuất video tự sinh (clearframe_*.jpg trong
+		// TempDir) sau khi đã dùng xong. Chỉ xóa đúng file khớp mẫu này để KHÔNG
+		// đụng ảnh người dùng tự chọn ở trang Tạo Ảnh AI (những task đó không mang
+		// InputImagePath dạng clearframe).
+		if task.InputImagePath != "" &&
+			strings.HasPrefix(filepath.Base(task.InputImagePath), "clearframe_") &&
+			strings.Contains(filepath.ToSlash(task.InputImagePath), "/video-splitter/") {
+			_ = os.Remove(task.InputImagePath)
+		}
 
 		qm.mu.Lock()
 		if genErr != nil {

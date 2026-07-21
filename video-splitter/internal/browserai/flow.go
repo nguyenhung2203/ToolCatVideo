@@ -30,7 +30,16 @@ func GenerateFlowVideo(
 	tm *TaskManager,
 	req GenerateRequest,
 ) ([]string, error) {
-	logDebug := flowLogf
+	// logDebug gắn LogPrefix (ví dụ "[W1 Clip #2] ") vào đầu mỗi dòng để phân biệt
+	// luồng nào khi nhiều tab chạy song song. Rỗng → log như cũ.
+	logDebug := func(msg string, args ...interface{}) {
+		flowLogf(req.LogPrefix+msg, args...)
+	}
+
+	// Chuẩn hóa danh sách ảnh đính kèm: tự động nạp InputImagePath vào InputImagePaths nếu chưa có
+	if len(req.InputImagePaths) == 0 && req.InputImagePath != "" {
+		req.InputImagePaths = []string{req.InputImagePath}
+	}
 
 	// forceNewProject: worker queue (workerPage != nil) luôn tạo project mới riêng.
 	forceNewProject := workerPage != nil
@@ -435,7 +444,49 @@ func GenerateFlowVideo(
 				return true
 			}
 		}
+
+		// 3. Đã xuất hiện thẻ ảnh đang tạo: hoặc có phần trăm tiến trình dạng "NN%",
+		// hoặc caption trùng đúng prompt hiện ra NGOÀI ô nhập liệu. Đây là tín hiệu
+		// chắc chắn nhất rằng prompt đã được gửi — dùng để chặn cú submit rỗng lần 2
+		// khi chạy song song nhiều tab (React xóa ô prompt chậm hơn poll).
+		startedObj, errStarted := page.Eval(`(p) => {
+			const pctRe = /^\d{1,3}%$/;
+			const nodes = Array.from(document.querySelectorAll('div, span'));
+			for (const el of nodes) {
+				const rect = el.getBoundingClientRect();
+				if (rect.width <= 0 || rect.height <= 0) continue;
+				const t = (el.textContent || '').trim();
+				if (pctRe.test(t)) return true;
+			}
+			if (p) {
+				const want = p.trim();
+				for (const el of nodes) {
+					if (el.isContentEditable) continue;
+					if (el.closest && el.closest('[contenteditable="true"]')) continue;
+					const rect = el.getBoundingClientRect();
+					if (rect.width <= 0 || rect.height <= 0) continue;
+					if ((el.textContent || '').trim() === want) return true;
+				}
+			}
+			return false;
+		}`, req.Prompt)
+		if errStarted == nil && startedObj != nil && startedObj.Value.Bool() {
+			return true
+		}
 		return false
+	}
+
+	// waitSent poll isPromptSent nhiều lần trong khoảng total thay vì kiểm tra 1
+	// lần rồi bỏ cuộc — tránh race dưới tải song song khi React xóa ô prompt trễ.
+	waitSent := func(total time.Duration) bool {
+		deadline := time.Now().Add(total)
+		for time.Now().Before(deadline) {
+			if isPromptSent() {
+				return true
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+		return isPromptSent()
 	}
 
 	// Lấy danh sách URL tất cả ảnh hiện có trong dự án trước khi bấm Tạo
@@ -515,10 +566,28 @@ func GenerateFlowVideo(
 			}
 		}
 
+		// KHÓA NHẬP LIỆU (dán ảnh → điền prompt → bấm gửi) cho toàn bộ giai đoạn này.
+		// Clipboard Windows chỉ có 1 và Ctrl+V thật cần cửa sổ foreground, nên CẢ việc
+		// dán ảnh LẪN điền prompt (FillFlowPrompt cũng dùng OS clipboard + Ctrl+V) đều
+		// phải tuần tự giữa các cửa sổ. Nếu chỉ khóa lúc dán ảnh, worker khác sẽ đè ảnh
+		// lên clipboard đúng lúc worker này đang dán TEXT prompt → dán nhầm ảnh, Slate
+		// không nhận text, fill thất bại, không bao giờ tới bước bấm Gửi (đúng lỗi log).
+		// Chỉ phần TẠO ẢNH (30-90s) mới chạy song song — nhả khóa ngay trước vòng chờ đó.
+		session.LockPaste()
+		inputLocked := true
+		unlockInput := func() {
+			if inputLocked {
+				inputLocked = false
+				session.UnlockPaste()
+			}
+		}
+		// Đưa cửa sổ này lên foreground để Ctrl+V thật ăn đúng vào nó.
+		_, _ = page.Activate()
+
 		// 1. Dán ảnh bằng phím tắt Ctrl+V thật từ bàn phím hệ thống (Windows Clipboard + CDP Keyboard)
 		if len(req.InputImagePaths) > 0 {
 			logDebug("Phát hiện yêu cầu gửi kèm ảnh (%d ảnh). Đang nạp vào Clipboard Windows và bấm Ctrl+V thật...", len(req.InputImagePaths))
-			
+
 			for _, imgPath := range req.InputImagePaths {
 				_ = PasteImageNativeCtrlV(ctx, page, promptInput, imgPath, logDebug)
 			}
@@ -530,6 +599,7 @@ func GenerateFlowVideo(
 			// Quét tìm lại ô prompt sau khi đính kèm ảnh
 			promptInput, err = FindFirstVisible(ctx, page, FlowSelectors.PromptInputs, 5*time.Second)
 			if err != nil {
+				unlockInput()
 				finalErr = fmt.Errorf("không tìm thấy ô nhập liệu sau khi upload ảnh: %w", err)
 				continue
 			}
@@ -540,6 +610,7 @@ func GenerateFlowVideo(
 		tm.EmitStatus(TaskStateSubmitting, "Đang điền prompt...", 35)
 		err = FillFlowPrompt(page, promptInput, req.Prompt)
 		if err != nil {
+			unlockInput()
 			logDebug("Lỗi khi điền prompt: %v", err)
 			finalErr = fmt.Errorf("fill prompt: %w", err)
 			continue
@@ -573,12 +644,16 @@ func GenerateFlowVideo(
 		logDebug("Bắt đầu thực hiện gửi prompt...")
 		tm.EmitStatus(TaskStateSubmitting, "Đang gửi prompt...", 40)
 
+		// QUAN TRỌNG (chạy song song): sau mỗi cách gửi phải RE-CHECK isPromptSent
+		// trước khi escalate sang cách mạnh hơn. Dưới tải nhiều tab, React xóa ô
+		// prompt trễ nên nếu chỉ chờ cứng rồi bấm tiếp sẽ bấm submit lên ô ĐÃ trống
+		// → Google báo "Bạn phải cung cấp câu lệnh". waitSent poll nhiều lần để tránh.
+
 		// 1. Try submitting by pressing Enter key on the keyboard
 		logDebug("Thử gửi bằng phím Enter ảo...")
 		_ = page.Keyboard.Press('\r')
-		sleep(500 * time.Millisecond)
 
-		if isPromptSent() {
+		if waitSent(2500 * time.Millisecond) {
 			logDebug("Đã gửi prompt thành công qua phím Enter ảo!")
 		} else {
 			// 2. Try dispatching keydown Enter event via JS on the input element
@@ -597,10 +672,13 @@ func GenerateFlowVideo(
 			if errEv != nil {
 				logDebug("Lỗi dispatch event Enter: %v", errEv)
 			}
-			sleep(800 * time.Millisecond)
 
-			if isPromptSent() {
+			if waitSent(2500 * time.Millisecond) {
 				logDebug("Đã gửi prompt thành công qua sự kiện keydown Enter!")
+			} else if isPromptSent() {
+				// Chốt chặn cuối trước khi click nút: nếu generation đã bắt đầu thì
+				// tuyệt đối KHÔNG click submit nữa (tránh cú gửi rỗng lần 2).
+				logDebug("Prompt đã được gửi (phát hiện muộn). Bỏ qua bước click nút gửi.")
 			} else {
 				// 3. Fallback: find and click the physical submit button using robust scoped icon detection
 				logDebug("Bắt đầu quét tìm nút gửi bằng JS...")
@@ -619,7 +697,7 @@ func GenerateFlowVideo(
 								       (btn.querySelector('svg') && (aria.includes('gửi') || aria.includes('send') || html.includes('path') || html.includes('svg')));
 							});
 							if (matched) return matched;
-							
+
 							const visibleButtons = buttons.filter(btn => btn.getBoundingClientRect().width > 0);
 							if (visibleButtons.length > 0) {
 								return visibleButtons[visibleButtons.length - 1];
@@ -630,22 +708,31 @@ func GenerateFlowVideo(
 					return null;
 				}`))
 
-				if errSubmit == nil && submitBtn != nil {
+				// Re-check ngay trước khi click: nếu vừa gửi xong trong lúc quét thì thôi.
+				if isPromptSent() {
+					logDebug("Prompt đã gửi ngay trước khi click nút. Bỏ qua click.")
+				} else if errSubmit == nil && submitBtn != nil {
 					logDebug("Tiến hành click nút gửi...")
 					_ = submitBtn.Click(proto.InputMouseButtonLeft, 1)
-					sleep(1000 * time.Millisecond)
+					_ = waitSent(1500 * time.Millisecond)
 				} else {
 					logDebug("Phương án quét JS thất bại. Thử dùng danh sách Selectors dự phòng...")
 					submitBtnFb, errFb := FindFirstVisible(ctx, page, FlowSelectors.SubmitButtons, 3*time.Second)
-					if errFb == nil && submitBtnFb != nil {
+					if isPromptSent() {
+						logDebug("Prompt đã gửi ngay trước khi click nút dự phòng. Bỏ qua click.")
+					} else if errFb == nil && submitBtnFb != nil {
 						_ = submitBtnFb.Click(proto.InputMouseButtonLeft, 1)
-						sleep(1000 * time.Millisecond)
+						_ = waitSent(1500 * time.Millisecond)
 					} else if errFb != nil {
 						logDebug("Lỗi tìm nút gửi dự phòng: %v", errFb)
 					}
 				}
 			}
 		}
+
+		// Đã bấm gửi xong: nhả khóa nhập liệu để worker khác bắt đầu dán ảnh/điền
+		// prompt của nó. Phần còn lại (chờ tạo ảnh 30-90s) chạy song song thoải mái.
+		unlockInput()
 
 		generationFailed := false
 
@@ -1256,7 +1343,9 @@ func GenerateFlowVideo(
 }
 
 func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequest, tm *TaskManager) error {
-	logDebug := flowLogf
+	logDebug := func(msg string, args ...interface{}) {
+		flowLogf(req.LogPrefix+msg, args...)
+	}
 
 	// Lấy hệ số delay multiplier từ yêu cầu của người dùng (ví dụ Độ trễ: 2 giây)
 	delayMult := req.DelaySecond
