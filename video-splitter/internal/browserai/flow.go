@@ -662,31 +662,41 @@ func GenerateFlowVideo(
 					return nil, NewError(ErrQuotaExceeded, quotaMsg)
 				}
 
-				// Check for error card or policy violation card ONLY on the newest tile card (firstTile)
-				isError, _ := page.Eval(`() => {
-					const firstTile = document.querySelector('div[data-tile-id], div[role="button"][aria-roledescription="draggable"]');
-					if (!firstTile) return false;
+				// Chỉ kiểm tra thẻ báo lỗi sau ít nhất 6 giây (pollCount >= 3) để đảm bảo thẻ ảnh mới đã được nạo vào DOM
+				if pollCount >= 3 {
+					isError, _ := page.Eval(`() => {
+						const tiles = Array.from(document.querySelectorAll('div[data-tile-id], div[role="button"][aria-roledescription="draggable"]'));
+						if (tiles.length === 0) return false;
 
-					const txt = firstTile.textContent.toLowerCase();
-					const errorKeywords = [
-						'lượt tạo này có thể vi phạm',
-						'vi phạm các chính sách',
-						'vi phạm chính sách',
-						'policy violation',
-						'thử một câu lệnh khác'
-					];
+						const firstTile = tiles[0];
+						const txt = firstTile.textContent.trim().toLowerCase();
 
-					const hasErrorTxt = errorKeywords.some(kw => txt.includes(kw));
-					const warningEl = firstTile.querySelector('i');
-					const hasWarningIcon = warningEl !== null && warningEl.textContent.trim().toLowerCase() === 'warning';
+						// Nếu thẻ mới nhất đang hiển thị phần trăm % loading (ví dụ 10%, 43%, 80%), chắc chắn ĐANG TẠO BÌNH THƯỜNG!
+						if (/\d{1,2}%/.test(txt)) {
+							return false;
+						}
 
-					return hasErrorTxt || hasWarningIcon;
-				}`)
-				if isError != nil && isError.Value.Bool() {
-					logDebug("Phát hiện thẻ báo lỗi / vi phạm chính sách trên thẻ ảnh MỚI NHẤT. Đang kích hoạt thử lại tự động (Tối đa 3 lần)...")
-					finalErr = NewError(ErrGenerationFailed, "Google Flow báo lỗi / vi phạm chính sách tạo hình ảnh.")
-					generationFailed = true
-					break
+						const errorKeywords = [
+							'lượt tạo này có thể vi phạm',
+							'vi phạm các chính sách',
+							'vi phạm chính sách',
+							'policy violation',
+							'thử một câu lệnh khác'
+						];
+
+						const hasErrorTxt = errorKeywords.some(kw => txt.includes(kw));
+						const warningEl = Array.from(firstTile.querySelectorAll('i, span')).find(el => {
+							return el.textContent.trim().toLowerCase() === 'warning';
+						});
+
+						return hasErrorTxt || (warningEl !== undefined && warningEl !== null);
+					}`)
+					if isError != nil && isError.Value.Bool() {
+						logDebug("Phát hiện thẻ báo lỗi / vi phạm chính sách thực sự trên thẻ ảnh MỚI NHẤT. Đang kích hoạt thử lại tự động (Tối đa 3 lần)...")
+						finalErr = NewError(ErrGenerationFailed, "Google Flow báo lỗi / vi phạm chính sách tạo hình ảnh.")
+						generationFailed = true
+						break
+					}
 				}
 				
 				// Quét tất cả các ảnh mới vừa sinh ra ở đầu danh sách (chưa có trong lastGroupUrls)
