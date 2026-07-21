@@ -231,15 +231,15 @@
 
         <!-- Success Preview panel -->
         <div v-else-if="state === 'completed' && result" class="completed-panel" style="display: flex; flex-direction: column; height: 100%; overflow: hidden; min-height: 0;">
-          <div class="preview-header" style="padding-bottom: 4px;">
+          <div class="preview-header" style="padding-bottom: 4px; flex-shrink: 0;">
             <CheckCircle :size="18" class="success-check-icon" />
             <span class="success-title">
               {{ previewURLs.length > 1 ? `Đã tạo thành công ${previewURLs.length} file!` : `Đã tạo thành công file: ${result.fileName}` }}
             </span>
           </div>
 
-          <!-- Previews Compact Grid Area (Identical layout to Selection Card Grid) -->
-          <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 10px 0; width: 100%;">
+          <!-- Previews Compact Grid Area with Smooth Scrollbar -->
+          <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 10px 4px; width: 100%;">
             <div class="img-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; width: 100%; justify-items: center;">
               <div 
                 v-for="(pUrl, pIdx) in (previewURLs.length > 0 ? previewURLs : (previewURL ? [previewURL] : []))" 
@@ -252,26 +252,24 @@
             </div>
           </div>
 
-          <!-- File Details & Actions Row -->
-          <div class="file-details" style="flex-shrink: 0; padding: 10px 14px; border-top: 1px solid var(--wx-border-default); display: flex; justify-content: space-between; align-items: center; gap: 16px; background: var(--wx-surface-sunken); border-radius: var(--wx-radius-md);">
-            <div style="flex: 1; min-width: 0; font-size: 12px; line-height: 1.4;">
-              <div v-if="previewURLs.length <= 1" style="word-break: break-all; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Đường dẫn: <code style="color: var(--wx-brand-accent);">{{ result.filePath }}</code></div>
-              <div v-else style="word-break: break-all; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Thư mục lưu: <code style="color: var(--wx-brand-accent);">{{ outputDir }}</code></div>
-              <div style="margin-top: 2px;">Kích thước: <code style="color: var(--wx-brand-accent);">{{ formatSize(result.fileSize) }}</code></div>
-            </div>
+          <!-- Single Row Bottom Action & Info Bar (Identical layout to Selection View) -->
+          <div class="completed-actions" style="flex-shrink: 0; margin-top: 8px; display: flex; gap: 8px; align-items: center; width: 100%;">
+            <button @click="resetForm" class="img-dir-btn" style="height: 38px;">
+              <RefreshCw :size="12" style="margin-right: 4px;" /> Tạo lại
+            </button>
 
-            <!-- Quick Action Buttons -->
-            <div class="completed-actions" style="flex-shrink: 0; display: flex; gap: 8px; margin-top: 0; justify-content: flex-end; align-items: center;">
-              <button @click="resetForm" class="img-dir-btn" style="height: 34px; padding: 0 12px; font-size: 12px;">
-                <RefreshCw :size="12" style="margin-right: 4px;" /> Tạo lại
-              </button>
-              <button v-if="previewURLs.length <= 1" @click="applyAsThemeImage(result.filePath)" class="img-action-btn apply-btn" style="height: 34px; padding: 0 12px; font-size: 12px;">
-                🎨 Dùng làm ảnh chủ đề
-              </button>
-              <button @click="openFolder" class="img-dir-btn" style="height: 34px; padding: 0 12px; font-size: 12px;">
-                <FolderOpen :size="12" style="margin-right: 4px;" /> Mở thư mục
-              </button>
-            </div>
+            <span style="font-size: var(--wx-fs-12); color: var(--wx-text-muted); flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              <template v-if="previewURLs.length <= 1">
+                Đường dẫn: <code style="color: var(--wx-brand-accent);">{{ result.filePath }}</code> ({{ formatSize(result.fileSize) }})
+              </template>
+              <template v-else>
+                Lưu vào: <code style="color: var(--wx-brand-accent);">{{ outputDir }}</code> ({{ previewURLs.length }} ảnh - {{ formatSize(result.fileSize) }})
+              </template>
+            </span>
+
+            <button @click="openFolder" class="img-dir-btn" style="height: 38px;">
+              <FolderOpen :size="12" style="margin-right: 4px;" /> Mở thư mục
+            </button>
           </div>
         </div>
       </div>
