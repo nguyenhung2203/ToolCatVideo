@@ -179,7 +179,7 @@
             </div>
           </div>
 
-          <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 4px 0; width: 100%;">
+          <div class="custom-scroll-grid" style="flex: 1; overflow-y: auto; min-height: 0; padding: 4px 0; width: 100%;">
             <div class="img-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; width: 100%; justify-items: center;">
               <div
                 v-for="(rPath, rIdx) in queueResultPaths"
@@ -237,7 +237,7 @@
           </div>
 
           <!-- Previews Area with Drag-select support -->
-          <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 10px 0; width: 100%;">
+          <div class="custom-scroll-grid" style="flex: 1; overflow-y: auto; min-height: 0; padding: 10px 0; width: 100%;">
             <div
               ref="gridRef"
               class="img-grid"
@@ -355,7 +355,7 @@
           </div>
 
           <!-- Previews Compact Grid Area with Drag-select & Card Selection -->
-          <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 10px 4px; width: 100%;">
+          <div class="custom-scroll-grid" style="flex: 1; overflow-y: auto; min-height: 0; padding: 10px 4px; width: 100%;">
             <div
               ref="gridRef"
               class="img-grid"

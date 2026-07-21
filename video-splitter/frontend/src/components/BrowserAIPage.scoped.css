@@ -581,3 +581,18 @@
   from { background-position: 1rem 0; }
   to { background-position: 0 0; }
 }
+
+.custom-scroll-grid::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scroll-grid::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+}
+.custom-scroll-grid::-webkit-scrollbar-thumb {
+  background: var(--wx-brand-accent, #3b82f6);
+  border-radius: 4px;
+}
+.custom-scroll-grid::-webkit-scrollbar-thumb:hover {
+  background: var(--wx-brand-primary, #60a5fa);
+}
