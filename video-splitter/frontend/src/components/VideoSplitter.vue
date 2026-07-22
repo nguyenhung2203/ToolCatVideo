@@ -285,11 +285,11 @@ interface PromptPreset {
 }
 
 const promptPresets = ref<PromptPreset[]>([
-  { id: 'default_auto', name: '✨ Tối ưu tự động', content: 'A premium, eye-catching, and highly engaging thumbnail with a professional modern look, vibrant colors, clean lighting, and clear focal point.' },
-  { id: '1', name: '🎬 Kịch tính / Điện ảnh', content: 'Dramatic cinematic scene, high suspense, emotional facial expression, extreme close-up, vivid colors, neon lighting accents, dark background, YouTube Shorts thumbnail style.' },
-  { id: '2', name: '🎨 Hoạt họa / Anime', content: 'Vibrant anime visual style, cute character, colorful background, soft lighting, 4k digital art illustration, highly detailed, eye-catching style.' },
-  { id: '3', name: '📸 Vlog / Đời thường', content: 'Modern casual lifestyle vlog style, bright natural lighting, happy emotion, clean background, high clarity, realistic mobile-first photography.' },
-  { id: '4', name: '🔥 Xu hướng / Viral', content: 'High contrast trending vertical thumbnail, ultra-clear visual detail, bold composition, dynamic lighting, optimized for mobile screens, premium aesthetics.' }
+  { id: 'default_auto', name: 'Tối ưu tự động', content: 'A premium, eye-catching, and highly engaging thumbnail with a professional modern look, vibrant colors, clean lighting, and clear focal point.' },
+  { id: '1', name: 'Kịch tính / Điện ảnh', content: 'Dramatic cinematic scene, high suspense, emotional facial expression, extreme close-up, vivid colors, neon lighting accents, dark background, YouTube Shorts thumbnail style.' },
+  { id: '2', name: 'Hoạt họa / Anime', content: 'Vibrant anime visual style, cute character, colorful background, soft lighting, 4k digital art illustration, highly detailed, eye-catching style.' },
+  { id: '3', name: 'Vlog / Đời thường', content: 'Modern casual lifestyle vlog style, bright natural lighting, happy emotion, clean background, high clarity, realistic mobile-first photography.' },
+  { id: '4', name: 'Xu hướng / Viral', content: 'High contrast trending vertical thumbnail, ultra-clear visual detail, bold composition, dynamic lighting, optimized for mobile screens, premium aesthetics.' }
 ])
 
 // === Cấu hình dự án ===
@@ -414,8 +414,8 @@ const activeView = ref<'split' | 'download-video' | 'download-image' | 'ai-image
 
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
-  sceneThreshold: 20.0,
-  minClipDuration: 1.0,
+  sceneThreshold: 25.0,
+  minClipDuration: 3.0,
   maxClipDuration: 60.0,
   autoAcceptScore: 60,
   reviewMinScore: 35,
@@ -428,12 +428,12 @@ const analyzerConfig = reactive(new project.AnalyzerConfig({
     silence: 30,
     layoutChange: 25,
     audioChange: 20,
-    continuityPen: 10
+    continuityPen: 15
   },
   exportPreset: 'fast',
   exportCRF: 23,
   prompt: '',
-  hardwareAccel: 'none'
+  hardwareAccel: 'auto'
 }))
 
 const loadDefaultConfig = async () => {
@@ -583,6 +583,30 @@ const selectedPromptPresetId = ref('')
 const newPresetName = ref('')
 const showAddPresetForm = ref(false)
 
+const cleanPresetList = (list: PromptPreset[]): PromptPreset[] => {
+  const defaultPresetsList = [
+    { id: 'default_auto', name: 'Tối ưu tự động', content: 'A premium, eye-catching, and highly engaging thumbnail with a professional modern look, vibrant colors, clean lighting, and clear focal point.' },
+    { id: '1', name: 'Kịch tính / Điện ảnh', content: 'Dramatic cinematic scene, high suspense, emotional facial expression, extreme close-up, vivid colors, neon lighting accents, dark background, YouTube Shorts thumbnail style.' },
+    { id: '2', name: 'Hoạt họa / Anime', content: 'Vibrant anime visual style, cute character, colorful background, soft lighting, 4k digital art illustration, highly detailed, eye-catching style.' },
+    { id: '3', name: 'Vlog / Đời thường', content: 'Modern casual lifestyle vlog style, bright natural lighting, happy emotion, clean background, high clarity, realistic mobile-first photography.' },
+    { id: '4', name: 'Xu hướng / Viral', content: 'High contrast trending vertical thumbnail, ultra-clear visual detail, bold composition, dynamic lighting, optimized for mobile screens, premium aesthetics.' }
+  ]
+  const cleaned = list.map((p) => ({
+    ...p,
+    name: p.name.replace(/^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{27BF}\u{2B50}\u{1F4F8}\u{1F3AC}\u{1F3A8}\u{1F525}\u{1F408}\s]+/u, '').trim()
+  }))
+  for (const def of defaultPresetsList) {
+    const found = cleaned.find(c => c.id === def.id)
+    if (found) {
+      found.name = def.name
+      found.content = def.content
+    } else {
+      cleaned.push(def)
+    }
+  }
+  return cleaned
+}
+
 const loadPromptPresets = () => {
   const data = localStorage.getItem('prompt_presets_list')
   if (data) {
@@ -593,11 +617,11 @@ const loadPromptPresets = () => {
       
       // Nếu sau khi filter bị thiếu các mẫu mặc định hoặc trống, hãy nạp lại các mẫu mới sạch sẽ
       const defaultPresetsList = [
-        { id: 'default_auto', name: '✨ Tối ưu tự động', content: 'A premium, eye-catching, and highly engaging thumbnail with a professional modern look, vibrant colors, clean lighting, and clear focal point.' },
-        { id: '1', name: '🎬 Kịch tính / Điện ảnh', content: 'Dramatic cinematic scene, high suspense, emotional facial expression, extreme close-up, vivid colors, neon lighting accents, dark background, YouTube Shorts thumbnail style.' },
-        { id: '2', name: '🎨 Hoạt họa / Anime', content: 'Vibrant anime visual style, cute character, colorful background, soft lighting, 4k digital art illustration, highly detailed, eye-catching style.' },
-        { id: '3', name: '📸 Vlog / Đời thường', content: 'Modern casual lifestyle vlog style, bright natural lighting, happy emotion, clean background, high clarity, realistic mobile-first photography.' },
-        { id: '4', name: '🔥 Xu hướng / Viral', content: 'High contrast trending vertical thumbnail, ultra-clear visual detail, bold composition, dynamic lighting, optimized for mobile screens, premium aesthetics.' }
+        { id: 'default_auto', name: 'Tối ưu tự động', content: 'A premium, eye-catching, and highly engaging thumbnail with a professional modern look, vibrant colors, clean lighting, and clear focal point.' },
+        { id: '1', name: 'Kịch tính / Điện ảnh', content: 'Dramatic cinematic scene, high suspense, emotional facial expression, extreme close-up, vivid colors, neon lighting accents, dark background, YouTube Shorts thumbnail style.' },
+        { id: '2', name: 'Hoạt họa / Anime', content: 'Vibrant anime visual style, cute character, colorful background, soft lighting, 4k digital art illustration, highly detailed, eye-catching style.' },
+        { id: '3', name: 'Vlog / Đời thường', content: 'Modern casual lifestyle vlog style, bright natural lighting, happy emotion, clean background, high clarity, realistic mobile-first photography.' },
+        { id: '4', name: 'Xu hướng / Viral', content: 'High contrast trending vertical thumbnail, ultra-clear visual detail, bold composition, dynamic lighting, optimized for mobile screens, premium aesthetics.' }
       ]
       
       // Bổ sung các mẫu mặc định còn thiếu
@@ -619,6 +643,11 @@ const loadPromptPresets = () => {
         const oa = order[a.id] !== undefined ? order[a.id] : 99
         const ob = order[b.id] !== undefined ? order[b.id] : 99
         return oa - ob
+      })
+
+      // Loại bỏ emoji biểu tượng cũ ở đầu tên preset nếu có
+      loaded.forEach(p => {
+        p.name = p.name.replace(/^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\s]+/u, '').trim()
       })
 
       promptPresets.value = loaded
@@ -723,7 +752,7 @@ onMounted(async () => {
 
       // Mẫu Prompt
       if (Array.isArray(gSettings.promptPresets) && gSettings.promptPresets.length > 0) {
-        promptPresets.value = gSettings.promptPresets
+        promptPresets.value = cleanPresetList(gSettings.promptPresets)
       } else {
         loadPromptPresets()
       }
@@ -962,7 +991,11 @@ const currentTimeRef = ref(Date.now())
 const displayProgressMap = ref<Record<string, number>>({})
 let timerInterval: any = null
 
-const analyzeETAMap = ref<Record<string, { remaining: number, lastUpdate: number, lastProgress: number, hasRealDuration?: boolean }>>({})
+// QUAN TRỌNG: state ETA phải là plain object (KHÔNG reactive). getAnalyzeETA được
+// gọi từ template lúc render và có ghi vào state này (cache + làm mượt); nếu để
+// reactive thì ghi-khi-render sẽ kích hoạt re-render vô hạn → WebView2 Out of Memory.
+// Render vẫn tự cập nhật mỗi tick nhờ currentTimeRef & displayProgressMap (đã reactive).
+const analyzeETAMap: Record<string, { remaining: number, lastUpdate: number, lastProgress: number, hasRealDuration?: boolean, smoothed?: number, smoothedAt?: number }> = {}
 const exportETARecord = ref<{ remaining: number, lastUpdate: number, lastProgress: number } | null>(null)
 const videoDurationMap = ref<Record<string, number>>({})
 const videoInfoMap = ref<Record<string, project.VideoInfo>>({})
@@ -986,14 +1019,19 @@ const getAnalyzeETA = (path: string): string => {
   let initialRemaining = 45 // fallback default
   if (duration > 0) {
     const mode = analyzerConfig.mode
-    if (mode === 'fast' || mode === 'fixed') {
-      // Fast mode: KHÔNG tạo proxy, chạy thẳng PySceneDetect trên video gốc
-      // Nhanh hơn nhưng ít chính xác hơn — thời gian ≈ duration / 60 (PySceneDetect CPU)
-      initialRemaining = 5 + duration / 60.0
+    // Ước lượng theo đặc tính THỰC của pipeline (sau đại tu):
+    //   fixed  : chỉ chia đều + trích thumbnail → nhanh nhất, gần như không phụ thuộc nội dung.
+    //   fast   : silence + black (ffmpeg) + trích WAV mono 8k + audio-novelty (numpy). KHÔNG tạo proxy.
+    //   smart  : proxy 320×180 + quét đa tín hiệu + WAV + audio-novelty + speech + refine-on-source.
+    //   precise: như smart + Librosa MFCC (nặng nhất).
+    if (mode === 'fixed') {
+      initialRemaining = 3 + duration / 120.0 // cắt đều: chỉ ffmpeg trích thumbnail
+    } else if (mode === 'fast') {
+      initialRemaining = 5 + duration / 45.0 // fast: +WAV/audio-novelty so với bản chỉ silence/black
     } else if (mode === 'precise') {
-      initialRemaining = 15 + duration / 10.0 // precise: proxy + WAV + Librosa
+      initialRemaining = 15 + duration / 8.0 // precise: proxy + WAV + Librosa + refine-source
     } else {
-      initialRemaining = 10 + duration / 18.0 // smart: proxy 320×180 + multi-detector
+      initialRemaining = 10 + duration / 14.0 // smart: proxy + WAV + audio + refine-on-source
     }
     if (initialRemaining < 3) initialRemaining = 3
 
@@ -1013,7 +1051,7 @@ const getAnalyzeETA = (path: string): string => {
   const concurrencyMultiplier = 1.0 + (jobCount - 1) * 0.25
   initialRemaining = initialRemaining * concurrencyMultiplier
 
-  let eta = analyzeETAMap.value[path]
+  let eta = analyzeETAMap[path]
   const nowMs = Date.now()
 
   // Estimate Phase 3 (Thumbnail extraction) overhead: min 3 seconds, average duration / 75 seconds.
@@ -1042,7 +1080,7 @@ const getAnalyzeETA = (path: string): string => {
       lastProgress: progress,
       hasRealDuration: duration > 0
     }
-    analyzeETAMap.value[path] = eta
+    analyzeETAMap[path] = eta
   } else if (duration > 0 && !eta.hasRealDuration) {
     eta.remaining = rawRemaining
     eta.lastUpdate = nowMs
@@ -1054,20 +1092,41 @@ const getAnalyzeETA = (path: string): string => {
     eta.lastProgress = progress
   }
 
-  // displayRemaining = luôn dùng rawRemaining (tính từ elapsed thực tế)
-  // Không dùng "countdown từ lastUpdate" vì sẽ drift về 0 khi progress đứng yên
-  let displayRemaining = Math.max(1, rawRemaining)
+  // Mục tiêu thô cho lần tick này (tính từ elapsed thực tế).
+  let targetRemaining = Math.max(1, rawRemaining)
 
   // Khi đang ở Bước 1 (progress <= 14%): đếm ngược từ initialRemaining - elapsed
   if (progress <= 14) {
     const elapsed = (nowMs - startTime) / 1000
-    displayRemaining = Math.max(1, initialRemaining - elapsed)
+    targetRemaining = Math.max(1, initialRemaining - elapsed)
   }
 
-  // Khi progress 15-92%: rawRemaining đã được tính đúng theo elapsed → dùng trực tiếp
-  // Khi progress 92-98%: interpolate phase3 overhead
-
   // Sàn: không bao giờ hiện < phase3Overhead khi chưa vào Phase 3
+  if (progress < 92 && targetRemaining < phase3Overhead) {
+    targetRemaining = phase3Overhead
+  }
+
+  // === Làm mượt đếm ngược để hiển thị "đều" ===
+  // BE báo progress theo bậc (nhảy 15→45→55...), khiến targetRemaining giật lên/xuống.
+  // Ta giữ một giá trị `smoothed`:
+  //   1. Mỗi tick tự trôi XUỐNG theo thời gian thực đã trôi (đồng hồ đếm ngược đều).
+  //   2. Blend nhẹ (EMA) về target để hiệu chỉnh dần thay vì nhảy vọt.
+  //   3. Chỉ cho tăng chậm (khi target vọt lên) để không bao giờ "giật ngược" khó chịu.
+  if (eta.smoothed === undefined || eta.smoothedAt === undefined) {
+    eta.smoothed = targetRemaining
+    eta.smoothedAt = nowMs
+  } else {
+    const dt = Math.max(0, (nowMs - eta.smoothedAt) / 1000)
+    // Bước 1: trôi xuống theo thời gian thực.
+    let s = Math.max(1, eta.smoothed - dt)
+    // Bước 2+3: kéo về target — xuống nhanh hơn (0.25), lên rất chậm (0.05) để mượt.
+    const alpha = targetRemaining < s ? 0.25 : 0.05
+    s = s + (targetRemaining - s) * alpha
+    eta.smoothed = Math.max(1, s)
+    eta.smoothedAt = nowMs
+  }
+
+  let displayRemaining = Math.max(1, eta.smoothed)
   if (progress < 92 && displayRemaining < phase3Overhead) {
     displayRemaining = phase3Overhead
   }
@@ -1243,7 +1302,7 @@ const analyzeSingle = async (path: string): Promise<boolean> => {
     activeAnalyzingPaths.value.add(path)
     analyzeProgressMap.value[path] = 0
     displayProgressMap.value[path] = 0
-    delete analyzeETAMap.value[path]
+    delete analyzeETAMap[path]
     analyzeStartTimes.value[path] = Date.now()
     
     // Clear old clips to ensure the new analysis results completely overwrite the old ones
@@ -1938,14 +1997,14 @@ const loadProject = async (projId: string) => {
       Object.assign(analyzerConfig, JSON.parse(JSON.stringify(globalSettingsConfig.value)))
     } else {
       analyzerConfig.mode = 'smart'
-      analyzerConfig.sceneThreshold = 20.0
-      analyzerConfig.minClipDuration = 1.0
-      analyzerConfig.maxClipDuration = 30.0
+      analyzerConfig.sceneThreshold = 25.0
+      analyzerConfig.minClipDuration = 3.0
+      analyzerConfig.maxClipDuration = 60.0
       analyzerConfig.autoAcceptScore = 60
       analyzerConfig.reviewMinScore = 35
       analyzerConfig.exportPreset = 'fast'
       analyzerConfig.exportCRF = 23
-      analyzerConfig.hardwareAccel = 'none'
+      analyzerConfig.hardwareAccel = 'auto'
     }
   }
 
@@ -3072,11 +3131,15 @@ const formatSize = (bytes: number) => {
               
               <!-- Tiêu đề + Hành động -->
               <div style="display: flex; align-items: center; justify-content: space-between;">
-                <span class="option-title-compact" style="color: var(--wx-brand-accent); font-weight: 700; margin-bottom: 0; font-size: 12.5px;">💡 Chủ đề Video (Prompt AI)</span>
+                <span class="option-title-compact" style="color: var(--wx-brand-accent); font-weight: 700; margin-bottom: 0; font-size: 12.5px; display: inline-flex; align-items: center; gap: 5px;">
+                  <Sparkles :size="14" style="color: var(--wx-brand-accent);" />
+                  Chủ đề Video (Prompt AI)
+                </span>
                 
                 <!-- Nút thêm mẫu -->
-                <button @click="showAddPresetForm = !showAddPresetForm" class="text-btn" style="font-size: 11px; color: var(--accent-color); background: none; border: none; cursor: pointer; padding: 2px 6px; border-radius: 4px; background: rgba(99, 102, 241, 0.08); display: flex; align-items: center; gap: 4px;" title="Lưu prompt hiện tại thành mẫu mới">
-                  💾 Lưu mẫu hiện tại
+                <button @click="showAddPresetForm = !showAddPresetForm" class="text-btn" style="font-size: 11px; color: var(--accent-color); background: none; border: none; cursor: pointer; padding: 2px 8px; border-radius: 4px; background: rgba(99, 102, 241, 0.08); display: inline-flex; align-items: center; gap: 4px; font-weight: 600;" title="Lưu prompt hiện tại thành mẫu mới">
+                  <Save :size="12" />
+                  Lưu mẫu hiện tại
                 </button>
               </div>
 

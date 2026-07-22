@@ -252,13 +252,18 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 	// fast mode: KHÔNG tạo proxy — chạy thẳng trên video gốc để tiết kiệm thời gian
 	// smart/precise: tạo proxy 320×180 4fps để phân tích nhanh hơn nhiều
 	needProxy := cfg.Mode != project.ModeFast
-	needAudio := cfg.Mode == project.ModePrecise // WAV chỉ cần cho Librosa (precise mode)
 
-	// Lấy thời lượng video gốc để tính tiến độ thời gian thực cho Bước 1
+	// Lấy thông tin video gốc (thời lượng + có audio hay không) cho Bước 1
 	var totalDuration float64
+	hasAudio := true
 	if vi, err := media.GetVideoInfo(sourcePath); err == nil && vi != nil {
 		totalDuration = vi.Duration
+		hasAudio = vi.HasAudio
 	}
+
+	// WAV cần cho smart (audio novelty + speech continuity) và precise (Librosa MFCC).
+	// Bỏ qua nếu video không có audio để tránh tạo WAV rỗng.
+	needAudio := cfg.Mode != project.ModeFast && hasAudio
 
 	var errProxy, errAudio error
 	if needProxy || needAudio {

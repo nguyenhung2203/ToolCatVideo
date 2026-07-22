@@ -8,6 +8,11 @@ type VideoInfo struct {
 	FPS        float64
 	TimeBase   string
 	SizeByte   int64 `json:"sizeByte"`
+	// HasAudio: có ít nhất 1 audio stream. Dùng để bỏ nhánh phân tích audio khi video
+	// không tiếng (tránh trích WAV rỗng). VFR/rotation/start_time KHÔNG cần field riêng:
+	// refine-source dùng pts_time thật (đúng cho VFR), ffmpeg tự autorotate, và toàn bộ
+	// timeline phân tích lẫn cắt đều 0-based nên start_time≠0 không gây lệch.
+	HasAudio bool `json:"hasAudio"`
 }
 
 // Boundary tier: mức phân loại điểm ranh giới theo độ tin cậy.
@@ -186,7 +191,7 @@ func DefaultWeights() SignalWeights {
 		Silence:       30,
 		LayoutChange:  25,
 		AudioChange:   20,
-		ContinuityPen: 10,
+		ContinuityPen: 15,
 	}
 }
 
@@ -194,8 +199,8 @@ func DefaultWeights() SignalWeights {
 func DefaultConfig() AnalyzerConfig {
 	return AnalyzerConfig{
 		Mode:             ModeSmart,
-		SceneThreshold:   20.0,
-		MinClipDuration:  1.0,
+		SceneThreshold:   25.0, // bảo thủ hơn 20: bớt bắt chuyển cảnh yếu → ít điểm rác
+		MinClipDuration:  3.0,  // clip tối thiểu 3s: chặn điểm cắt dày đặc (không ai làm clip 1s)
 		MaxClipDuration:  60.0,
 		AutoAcceptScore:  60, // visual-only scene change (45 - 10 = 35) sẽ được xếp vào review candidate, không bị auto-accept tràn lan
 		ReviewMinScore:   35,

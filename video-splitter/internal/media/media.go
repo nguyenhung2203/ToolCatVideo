@@ -68,27 +68,27 @@ func DetectGPU() string {
 func GetVideoInfo(filePath string) (*project.VideoInfo, error) {
 	cmdArgs := []string{
 		"-v", "error",
-		"-select_streams", "v:0",
-		"-show_entries", "stream=width,height,r_frame_rate,duration,time_base",
+		"-show_entries", "stream=codec_type,width,height,r_frame_rate,duration,time_base",
 		"-show_entries", "format=duration",
 		"-of", "json",
 		filePath,
 	}
-	
+
 	cmd := exec.Command(utils.GetBinPath("ffprobe"), cmdArgs...)
 	utils.HideCmdWindow(cmd)
 	var out bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
-	
+
 	err := cmd.Run()
 	if err != nil {
 		return nil, fmt.Errorf("ffprobe error: %v, stderr: %s", err, stderr.String())
 	}
-	
+
 	var probeResult struct {
 		Streams []struct {
+			CodecType  string `json:"codec_type"`
 			Width      int    `json:"width"`
 			Height     int    `json:"height"`
 			RFrameRate string `json:"r_frame_rate"`
@@ -99,17 +99,37 @@ func GetVideoInfo(filePath string) (*project.VideoInfo, error) {
 			Duration string `json:"duration"`
 		} `json:"format"`
 	}
-	
+
 	if err := json.Unmarshal(out.Bytes(), &probeResult); err != nil {
 		return nil, fmt.Errorf("failed to parse ffprobe json: %v", err)
 	}
-	
-	if len(probeResult.Streams) == 0 {
+
+	// Tách video stream đầu tiên + kiểm tra có audio stream không.
+	var stream *struct {
+		CodecType  string `json:"codec_type"`
+		Width      int    `json:"width"`
+		Height     int    `json:"height"`
+		RFrameRate string `json:"r_frame_rate"`
+		Duration   string `json:"duration"`
+		TimeBase   string `json:"time_base"`
+	}
+	hasAudio := false
+	for i := range probeResult.Streams {
+		s := &probeResult.Streams[i]
+		switch s.CodecType {
+		case "video":
+			if stream == nil {
+				stream = s
+			}
+		case "audio":
+			hasAudio = true
+		}
+	}
+
+	if stream == nil {
 		return nil, fmt.Errorf("no video stream found")
 	}
-	
-	stream := probeResult.Streams[0]
-	
+
 	// Tính fps từ dạng phân số "30000/1001"
 	fps := 0.0
 	if strings.Contains(stream.RFrameRate, "/") {
@@ -124,13 +144,13 @@ func GetVideoInfo(filePath string) (*project.VideoInfo, error) {
 	} else {
 		fps, _ = strconv.ParseFloat(stream.RFrameRate, 64)
 	}
-	
+
 	// Ưu tiên duration từ stream; fallback sang format duration nếu stream không có.
 	duration, _ := strconv.ParseFloat(stream.Duration, 64)
 	if duration <= 0 {
 		duration, _ = strconv.ParseFloat(probeResult.Format.Duration, 64)
 	}
-	
+
 	var sizeByte int64
 	fileInfo, err := os.Stat(filePath)
 	if err == nil {
@@ -145,8 +165,9 @@ func GetVideoInfo(filePath string) (*project.VideoInfo, error) {
 		FPS:        fps,
 		TimeBase:   stream.TimeBase,
 		SizeByte:   sizeByte,
+		HasAudio:   hasAudio,
 	}
-	
+
 	return info, nil
 }
 
@@ -331,7 +352,8 @@ func ExtractAudio(ctx context.Context, inputPath string, outputPath string) erro
 	cmdArgs := []string{
 		"-y",
 		"-i", inputPath,
-		"-vn", // bỏ video
+		"-vn",             // bỏ video
+		"-map", "0:a:0?",  // lấy TƯỜNG MINH track audio đầu tiên (video có thể nhiều track); '?' = không lỗi nếu thiếu
 		"-acodec", "pcm_s16le",
 		"-ar", "16000",
 		"-ac", "1", // mono để dễ phân tích silence/energy

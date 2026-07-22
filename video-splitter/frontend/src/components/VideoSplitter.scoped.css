@@ -2627,6 +2627,24 @@
   display: flex;
   flex-direction: column;
   gap: var(--wx-space-2);
+  max-height: 380px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.recent-list::-webkit-scrollbar {
+  width: 6px;
+}
+.recent-list::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+}
+.recent-list::-webkit-scrollbar-thumb {
+  background: var(--wx-brand-accent, #3b82f6);
+  border-radius: 4px;
+}
+.recent-list::-webkit-scrollbar-thumb:hover {
+  background: var(--wx-brand-primary, #60a5fa);
 }
 
 .recent-item {

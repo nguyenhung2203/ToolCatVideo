@@ -759,6 +759,7 @@ export namespace project {
 	    FPS: number;
 	    TimeBase: string;
 	    sizeByte: number;
+	    hasAudio: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new VideoInfo(source);
@@ -773,6 +774,7 @@ export namespace project {
 	        this.FPS = source["FPS"];
 	        this.TimeBase = source["TimeBase"];
 	        this.sizeByte = source["sizeByte"];
+	        this.hasAudio = source["hasAudio"];
 	    }
 	}
 
