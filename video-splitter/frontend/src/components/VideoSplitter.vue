@@ -516,6 +516,11 @@ watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir
   }, 800)
 }, { deep: true })
 
+watch(browserAIShowChrome, (val) => {
+  if (!isSettingsLoaded.value) return
+  saveGlobalSettings()
+})
+
 // Đổi số luồng trình duyệt → áp dụng ngay vào backend cho lần chạy Hàng Đợi AI kế tiếp.
 watch(browserAIConcurrency, (n) => {
   if (!isSettingsLoaded.value) return
@@ -4208,7 +4213,7 @@ const formatSize = (bytes: number) => {
             </div>
           </div>
           <div class="modal-footer" style="justify-content: flex-end;">
-            <button class="btn save-btn flex-center" @click="showSettings = false" style="display: inline-flex; align-items: center; gap: 4px;">
+            <button class="btn save-btn flex-center" @click="saveGlobalSettings(); showSettings = false" style="display: inline-flex; align-items: center; gap: 4px;">
               <Check :size="15" /> Hoàn tất
             </button>
           </div>

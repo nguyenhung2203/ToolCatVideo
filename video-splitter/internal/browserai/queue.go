@@ -38,10 +38,12 @@ type ThumbnailTask struct {
 	Provider       Provider       `json:"provider"`
 	Model          string         `json:"model"`
 	AspectRatio    string         `json:"aspectRatio"`
+	BatchSize      string         `json:"batchSize"`
 	Resolution     string         `json:"resolution"`
 	State          QueueTaskState `json:"state"`
 	ErrorMessage   string         `json:"errorMessage"`
 	ResultPath     string         `json:"resultPath"`
+	ResultPaths    []string       `json:"resultPaths"`
 	// Source: nguồn tạo task, dùng để lập lịch luân phiên công bằng giữa 2 nguồn.
 	// "video-cut" = thumbnail tự sinh từ luồng cắt video; "ai-image" = tạo ảnh AI
 	// độc lập ở trang Tạo Ảnh. Rỗng → coi như "ai-image" (tương thích task cũ).
@@ -135,8 +137,9 @@ func (qm *AIQueueManager) topUpWorkers() {
 	qm.spawnMu.Lock()
 	defer qm.spawnMu.Unlock()
 
-	if !qm.service.session.IsOpen() {
-		if err := qm.service.OpenGoogleAI(string(ProviderFlow), true); err != nil {
+	cfg := LoadGlobalSettingsConfig()
+	if !qm.service.session.IsOpen() || qm.service.session.IsHeadless() != !cfg.BrowserAIShowChrome {
+		if err := qm.service.OpenGoogleAI(string(ProviderFlow), cfg.BrowserAIShowChrome); err != nil {
 			qm.mu.Lock()
 			for i := range qm.tasks {
 				if qm.tasks[i].State == QueueStatePending || qm.tasks[i].State == QueueStateProcessing {
@@ -319,6 +322,12 @@ func (qm *AIQueueManager) retireWorker(ctx context.Context, workerID int) {
 	// Worker cuối cùng thoát → dọn run-state để lần Enqueue sau khởi động lại sạch.
 	// Guard qm.runCtx == ctx: nếu Cancel/Clear đã tạo (hoặc xóa) một run mới thì
 	// worker cũ này KHÔNG được nil nhầm run-state mới.
+	//
+	// CỐ Ý GIỮ TRÌNH DUYỆT SỐNG (không Close session) khi hết worker: mỗi worker đã
+	// tự đóng cửa sổ riêng của nó, chỉ còn lại tab gốc (trang Flow mở kèm lúc
+	// OpenGoogleAI). Tab gốc này chính là "keep-alive" giữ browser sống để lần chạy
+	// kế tiếp topUpWorkers thấy IsOpen()==true nên KHÔNG phải khởi động lại Chrome +
+	// nạp lại profile/đăng nhập (rất chậm). Đổi lại chỉ tốn 1 tab nền im lặng.
 	if qm.activeWorkers == 0 && qm.runCtx == ctx {
 		qm.isRunning = false
 		qm.runCtx = nil
@@ -370,6 +379,12 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 		if resolution == "" {
 			resolution = "1K"
 		}
+		batchSize := task.BatchSize
+		if batchSize == "" {
+			batchSize = "1x"
+		}
+
+		cfg := LoadGlobalSettingsConfig()
 
 		// Ưu tiên danh sách nhiều ảnh (tối đa 3/prompt); fallback về ảnh đơn cũ.
 		inputImgPaths := []string{}
@@ -401,7 +416,7 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			Prompt:              task.Prompt,
 			Model:               model,
 			AspectRatio:         task.AspectRatio,
-			BatchSize:           "1x",
+			BatchSize:           batchSize,
 			ConfirmBeforeCreate: "auto",
 			OutputDir:           task.OutputDir,
 			FileName:            task.FileName,
@@ -409,7 +424,7 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			InputImagePaths:     inputImgPaths,
 			Resolution:          resolution,
 			TimeoutSecond:       180,
-			ShowChrome:          true,
+			ShowChrome:          cfg.BrowserAIShowChrome,
 			LogPrefix:           fmt.Sprintf("[W%d %s] ", workerID+1, task.ClipName),
 		}
 
@@ -460,6 +475,7 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			}
 		} else {
 			qm.tasks[idx].State = QueueStateCompleted
+			qm.tasks[idx].ResultPaths = filePaths
 			if len(filePaths) > 0 {
 				qm.tasks[idx].ResultPath = filePaths[0]
 			}

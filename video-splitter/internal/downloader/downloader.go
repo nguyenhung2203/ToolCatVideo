@@ -104,6 +104,25 @@ func ProbeURL(ctx context.Context, rawURL string, cookieBrowser string, maxCount
 		isSearch = true
 	}
 
+	// Nếu là video đơn (linkType=="video"), loại bỏ tham số playlist ra khỏi URL
+	// để tránh yt-dlp cào cả playlist khi link có &list=... (YouTube).
+	if !isSearch && searchSource == "video" {
+		if u, err := url.Parse(rawURL); err == nil {
+			q := u.Query()
+			removed := false
+			for _, p := range []string{"list", "index", "start_radio"} {
+				if q.Has(p) {
+					q.Del(p)
+					removed = true
+				}
+			}
+			if removed {
+				u.RawQuery = q.Encode()
+				rawURL = u.String()
+			}
+		}
+	}
+
 	if isSearch {
 		if searchSource == "tiktok" {
 			entries, err := searchTikTok(ctx, query, maxCount)
@@ -141,7 +160,7 @@ func ProbeURL(ctx context.Context, rawURL string, cookieBrowser string, maxCount
 			}
 			// Search YouTube
 			ytURL := fmt.Sprintf("ytsearch%d:%s", limit, query)
-			ytResult, errYt := runYtDlpProbe(ctx, ytURL, cookieBrowser, limit, sortOrder)
+			ytResult, errYt := runYtDlpProbe(ctx, ytURL, cookieBrowser, limit, sortOrder, "")
 
 			// Search TikTok
 			ttEntries, _ := searchTikTok(ctx, query, limit)
@@ -176,10 +195,10 @@ func ProbeURL(ctx context.Context, rawURL string, cookieBrowser string, maxCount
 		rawURL = fmt.Sprintf("ytsearch%d:%s", limit, query)
 	}
 
-	return runYtDlpProbe(ctx, rawURL, cookieBrowser, maxCount, sortOrder)
+	return runYtDlpProbe(ctx, rawURL, cookieBrowser, maxCount, sortOrder, searchSource)
 }
 
-func runYtDlpProbe(ctx context.Context, rawURL string, cookieBrowser string, maxCount int, sortOrder string) (*URLProbeResult, error) {
+func runYtDlpProbe(ctx context.Context, rawURL string, cookieBrowser string, maxCount int, sortOrder string, linkType string) (*URLProbeResult, error) {
 	platform := DetectPlatform(rawURL)
 	if strings.HasPrefix(rawURL, "ytsearch") {
 		platform = "youtube"
@@ -190,6 +209,12 @@ func runYtDlpProbe(ctx context.Context, rawURL string, cookieBrowser string, max
 		"--dump-json",
 		"--no-warnings",
 		"--ignore-errors",
+		"--socket-timeout", "15",
+		"--retries", "2",
+	}
+	// Video đơn: không mở rộng sang playlist/channel
+	if linkType == "video" {
+		args = append(args, "--no-playlist")
 	}
 	if maxCount > 0 {
 		args = append(args, "--playlist-end", strconv.Itoa(maxCount))

@@ -82,11 +82,17 @@
 
         <div class="form-row prompt-row">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-            <label class="img-label" style="margin-bottom: 0;">Mô tả chi tiết nội dung (Prompt):</label>
-            <label class="toggle-row inline" style="font-size: 11.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; margin-bottom: 0; white-space: nowrap;" title="Bật: tự động tải mọi ảnh sinh ra. Tắt (chỉ khi tổng cộng 1 prompt): hiện ảnh để bạn chọn rồi mới tải.">
-              <input type="checkbox" v-model="autoDownload" style="width:15px; height:15px;" />
-              Tự động tải ảnh
-            </label>
+            <label class="img-label" style="margin-bottom: 0;">Mô tả (Prompt):</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <label style="font-size: 11px; display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; color: var(--wx-text-muted); white-space: nowrap;" title="Bật: mỗi đoạn cách nhau bằng 1 dòng trống (Enter 2 lần) tính là 1 prompt riêng. Tắt: cả ô tính là 1 prompt duy nhất dù có xuống dòng.">
+                <input type="checkbox" v-model="splitPrompts" style="width:13px; height:13px;" />
+                Tách prompt
+              </label>
+              <label style="font-size: 11px; display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; color: var(--wx-text-muted); white-space: nowrap;" title="Bật: tự động tải mọi ảnh sinh ra. Tắt: tải hết rồi cho tick chọn/xóa ảnh thừa sau.">
+                <input type="checkbox" v-model="autoDownload" style="width:13px; height:13px;" />
+                Tự động tải ảnh
+              </label>
+            </div>
           </div>
 
           <!-- Danh sách card prompt: mỗi card = 1 prompt + tối đa 3 ảnh riêng -->
@@ -99,8 +105,8 @@
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                 <span style="font-size: 11.5px; font-weight: 700; color: var(--wx-brand-accent);">Prompt #{{ cIdx + 1 }}</span>
                 <div style="display: flex; align-items: center; gap: 8px;">
-                  <button type="button" @click="addImageToCard(card.id)" class="img-source-pill" style="padding: 2px 6px; font-size: 11px; height: 22px;" :title="'Thêm ảnh cho prompt này (tối đa 3, hiện có ' + card.images.length + '/3)'">
-                    <ImageIcon :size="11" style="margin-right: 3px;" /> Ảnh ({{ card.images.length }}/3)
+                  <button type="button" @click="addImageToCard(card.id)" class="img-source-pill" style="padding: 2px 6px; font-size: 11px; height: 22px;" :title="'Thêm ảnh cho prompt này (hiện có ' + card.images.length + ' ảnh)'">
+                    <ImageIcon :size="11" style="margin-right: 3px;" /> Ảnh ({{ card.images.length }})
                   </button>
                   <span class="char-counter" :class="{ limit: card.text.length > 2000 }">{{ card.text.length }}/2000</span>
                   <button type="button" @click="removePromptCard(card.id)" class="img-source-pill" style="padding: 2px 6px; font-size: 11px; height: 22px; color: var(--wx-danger-solid);" title="Xóa prompt này">
@@ -112,16 +118,16 @@
                 v-model="card.text"
                 @input="onPromptInput"
                 @paste="handlePasteImageToCard(card.id, $event)"
-                placeholder="Mô tả ảnh bạn muốn tạo... (Mẹo: nhấn Ctrl+V để dán ảnh đầu vào cho riêng prompt này)"
+                placeholder="Mô tả ảnh bạn muốn tạo... (Gõ nhiều prompt bằng cách xuống dòng 2 lần. Nhấn Ctrl+V để dán nhiều ảnh)"
                 class="img-text-input prompt-auto-textarea"
                 maxlength="2000"
                 rows="1"
                 style="width: 100%; box-sizing: border-box; display: block;"
               ></textarea>
-              <div v-if="card.images.length > 0" style="display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap;">
-                <div v-for="img in card.images" :key="img.id" style="position: relative; width: 44px; height: 44px; border-radius: 4px; border: 1px solid var(--wx-border-default); background: #000; box-shadow: 0 2px 6px rgba(0,0,0,0.4);">
+              <div v-if="card.images.length > 0" style="display: flex; gap: 8px; margin-top: 2px; overflow-x: auto; padding: 6px 6px 4px 6px; scrollbar-width: thin;">
+                <div v-for="img in card.images" :key="img.id" style="position: relative; flex: none; width: 44px; height: 44px; border-radius: 4px; border: 1px solid var(--wx-border-default); background: #000; box-shadow: 0 2px 6px rgba(0,0,0,0.4);">
                   <img :src="img.preview" style="width: 100%; height: 100%; object-fit: cover; border-radius: 3px;" />
-                  <button type="button" @click="removeImageFromCard(card.id, img.id)" style="position: absolute; top: -5px; right: -5px; width: 14px; height: 14px; border-radius: 50%; background: var(--wx-danger-solid); color: #fff; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; box-shadow: 0 1px 2px rgba(0,0,0,0.3); font-size: 9px; font-weight: bold;" title="Xóa ảnh">
+                  <button type="button" @click="removeImageFromCard(card.id, img.id)" style="position: absolute; top: -5px; right: -5px; width: 15px; height: 15px; border-radius: 50%; background: var(--wx-danger-solid); color: #fff; border: 1px solid #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.4); font-size: 10px; font-weight: bold; z-index: 2;" title="Xóa ảnh">
                     ×
                   </button>
                 </div>
@@ -160,12 +166,33 @@
                 ({{ queueStatus.completed + queueStatus.failed }}/{{ queueStatus.total }})
               </span>
             </div>
-            <button v-if="queueStatus.isRunning" @click="cancelQueue" class="img-source-pill" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px; color: var(--wx-danger-solid);">
-              <StopCircle :size="12" style="margin-right: 3px;" /> Dừng
-            </button>
-            <button v-else @click="resetForm" class="img-source-pill active" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px;">
-              <RefreshCw :size="12" style="margin-right: 3px;" /> Tạo mới
-            </button>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <button
+                v-if="!queueAutoDownload && !queueStatus.isRunning && queueResultPaths.length > 0"
+                type="button"
+                @click="toggleSelectAllResults"
+                class="img-source-pill active"
+                style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px;"
+              >
+                {{ selectedResultIndexes.size === queueResultPaths.length ? 'Bỏ tất cả' : 'Chọn tất cả' }}
+                <span style="margin-left: 2px;">({{ selectedResultIndexes.size }}/{{ queueResultPaths.length }})</span>
+              </button>
+              <button
+                v-if="!queueAutoDownload && !queueStatus.isRunning && selectedResultIndexes.size > 0"
+                type="button"
+                @click="deleteSelectedResults"
+                class="img-source-pill"
+                style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px; color: var(--wx-danger-solid);"
+              >
+                <Trash2 :size="12" style="margin-right: 3px;" /> Xóa {{ selectedResultIndexes.size }} ảnh
+              </button>
+              <button v-if="queueStatus.isRunning" @click="cancelQueue" class="img-source-pill" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px; color: var(--wx-danger-solid);">
+                <StopCircle :size="12" style="margin-right: 3px;" /> Dừng
+              </button>
+              <button v-else @click="resetForm" class="img-source-pill active" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px;">
+                <RefreshCw :size="12" style="margin-right: 3px;" /> Tạo mới
+              </button>
+            </div>
           </div>
 
           <div style="padding: 6px 0 10px; width: 100%;">
@@ -186,27 +213,51 @@
                 v-for="(rPath, rIdx) in queueResultPaths"
                 :key="rIdx"
                 class="img-card"
-                style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 160px; background: var(--wx-glass-light-bg); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 6px; box-shadow: var(--wx-shadow-md);"
+                :class="{ selected: !queueAutoDownload && selectedResultIndexes.has(rIdx) }"
+                @click="(!queueAutoDownload && !queueStatus.isRunning) ? toggleResultImage(rIdx) : null"
+                @dblclick.stop="openLightbox(queueResultPaths, rIdx)"
+                :style="{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', maxWidth: '160px', background: 'var(--wx-glass-light-bg)', border: '1.5px solid var(--wx-border-default)', borderRadius: 'var(--wx-radius-md)', padding: '6px', boxShadow: 'var(--wx-shadow-md)', position: 'relative', cursor: (!queueAutoDownload && !queueStatus.isRunning) ? 'pointer' : 'default' }"
               >
                 <img :src="rPath" style="width: 100%; height: 160px; object-fit: cover; border-radius: var(--wx-radius-sm);" draggable="false" />
+                <div v-if="!queueAutoDownload && selectedResultIndexes.has(rIdx)" class="img-card-check" style="position: absolute; top: 10px; right: 10px; background: var(--wx-brand-primary); color: var(--wx-text-inverse); border-radius: var(--wx-radius-full); width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; box-shadow: var(--wx-shadow-sm); border: 1px solid var(--wx-text-inverse); z-index: 10;">
+                  <Check :size="12" />
+                </div>
+                <!-- Zoom icon hover -->
+                <div class="img-zoom-btn" @click.stop="openLightbox(queueResultPaths, rIdx)" title="Xem ảnh to">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                </div>
               </div>
             </div>
           </div>
 
-          <!-- Card log tiến trình: mỗi dòng 1 bước ngắn gọn, có nút thu nhỏ -->
+          <!-- Card log tiến trình: mỗi dòng 1 bước ngắn gọn, có nút xóa & thu nhỏ -->
           <div v-if="queueLogs.length > 0" style="flex-shrink: 0; margin-top: 8px; border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); background: var(--wx-surface-sunken, #0e1626); overflow: hidden;">
-            <button
-              type="button"
-              @click="queueLogCollapsed = !queueLogCollapsed"
-              style="display: flex; align-items: center; justify-content: space-between; width: 100%; background: none; border: none; cursor: pointer; padding: 8px 10px;"
-              :title="queueLogCollapsed ? 'Mở rộng log' : 'Thu nhỏ log'"
-            >
+            <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 6px 10px; background: rgba(0,0,0,0.15); border-bottom: 1px solid var(--wx-border-subtle, rgba(255,255,255,0.05));">
               <span style="font-size: 11.5px; font-weight: 700; color: var(--wx-brand-accent); display: inline-flex; align-items: center; gap: 6px;">
                 Nhật ký tiến trình ({{ queueLogs.length }})
               </span>
-              <ChevronDown v-if="queueLogCollapsed" :size="16" style="color: var(--wx-brand-accent);" />
-              <ChevronUp v-else :size="16" style="color: var(--wx-brand-accent);" />
-            </button>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <button
+                  type="button"
+                  @click="clearQueueLogs"
+                  title="Xóa nhật ký tiến trình"
+                  style="background: none; border: none; cursor: pointer; color: var(--wx-text-muted, #94a3b8); padding: 2px 4px; display: inline-flex; align-items: center; border-radius: 4px; transition: color 0.15s ease;"
+                  onmouseover="this.style.color='#fca5a5'"
+                  onmouseout="this.style.color='var(--wx-text-muted, #94a3b8)'"
+                >
+                  <Trash2 :size="14" />
+                </button>
+                <button
+                  type="button"
+                  @click="queueLogCollapsed = !queueLogCollapsed"
+                  style="background: none; border: none; cursor: pointer; color: var(--wx-brand-accent); padding: 2px 4px; display: inline-flex; align-items: center;"
+                  :title="queueLogCollapsed ? 'Mở rộng log' : 'Thu nhỏ log'"
+                >
+                  <ChevronDown v-if="queueLogCollapsed" :size="16" />
+                  <ChevronUp v-else :size="16" />
+                </button>
+              </div>
+            </div>
             <div v-show="!queueLogCollapsed" ref="queueLogBox" style="max-height: 300px; overflow-y: auto; padding: 4px 10px 8px; font-size: 11px; font-family: 'Consolas', monospace; line-height: 1.55;">
               <div
                 v-for="line in queueLogs"
@@ -373,6 +424,7 @@
                 :class="{ selected: selectedCompletedIndexes.has(pIdx) }"
                 :data-preview-idx="pIdx"
                 @click="toggleCompletedImage(pIdx)"
+                @dblclick.stop="openLightbox(previewURLs.length > 0 ? previewURLs : (previewURL ? [previewURL] : []), pIdx)"
                 style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 160px; background: var(--wx-glass-light-bg); backdrop-filter: blur(var(--wx-glass-light-blur)); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 6px; box-shadow: var(--wx-shadow-md); cursor: pointer; transition: all var(--wx-d-fast) var(--wx-ease-standard); position: relative;"
               >
                 <img :src="pUrl" style="width: 100%; height: 160px; object-fit: cover; border-radius: var(--wx-radius-sm);" draggable="false" />
@@ -380,6 +432,10 @@
                 <!-- Checkmark Overlay Badge -->
                 <div v-if="selectedCompletedIndexes.has(pIdx)" class="img-card-check" style="position: absolute; top: 10px; right: 10px; background: var(--wx-brand-primary); color: var(--wx-text-inverse); border-radius: var(--wx-radius-full); width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; box-shadow: var(--wx-shadow-sm); border: 1px solid var(--wx-text-inverse); z-index: 10;">
                   <Check :size="12" />
+                </div>
+                <!-- Zoom icon hover -->
+                <div class="img-zoom-btn" @click.stop="openLightbox(previewURLs.length > 0 ? previewURLs : (previewURL ? [previewURL] : []), pIdx)" title="Xem ảnh to">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
                 </div>
               </div>
             </div>
@@ -408,6 +464,50 @@
       </div>
     </div>
   </div>
+
+  <!-- ===== LIGHTBOX OVERLAY ===== -->
+  <Teleport to="body">
+    <div
+      v-if="lightbox.open"
+      class="lightbox-overlay"
+      @click.self="closeLightbox"
+      @keydown.esc="closeLightbox"
+      tabindex="0"
+      ref="lightboxEl"
+    >
+      <!-- Nav prev -->
+      <button v-if="lightbox.list.length > 1" class="lightbox-nav lightbox-prev" @click="lightboxStep(-1)" title="Ảnh trước (←)">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+
+      <!-- Image -->
+      <div class="lightbox-content" @click.self="closeLightbox">
+        <img
+          :src="lightbox.list[lightbox.index]"
+          class="lightbox-img"
+          draggable="false"
+          :style="{ transform: `scale(${lightbox.scale})`, transition: 'transform 0.2s ease' }"
+          @wheel.prevent="onLightboxWheel"
+        />
+        <!-- Info bar -->
+        <div class="lightbox-bar">
+          <span style="font-size: 12px; opacity: 0.75;">{{ lightbox.index + 1 }} / {{ lightbox.list.length }}</span>
+          <span style="font-size: 11px; opacity: 0.5; margin-left: 10px;">(Lăn chuột để phóng to · Nhấn ESC để đóng)</span>
+        </div>
+      </div>
+
+      <!-- Nav next -->
+      <button v-if="lightbox.list.length > 1" class="lightbox-nav lightbox-next" @click="lightboxStep(1)" title="Ảnh sau (→)">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>
+
+      <!-- Close button -->
+      <button class="lightbox-close" @click="closeLightbox" title="Đóng (ESC)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+  </Teleport>
+
 </template>
 
 <script setup lang="ts">
@@ -417,7 +517,7 @@ import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, Ch
 // @ts-ignore
 import { SelectFolder, GetStreamURL, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
 // @ts-ignore
-import { OpenOutputFolder, EnqueueThumbnailTasks, ClearQueue, CancelQueue } from '../../wailsjs/go/browserai/Service'
+import { OpenOutputFolder, EnqueueThumbnailTasks, ClearQueue, CancelQueue, DeleteResultFiles } from '../../wailsjs/go/browserai/Service'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 
 const mediaType = 'image'
@@ -650,6 +750,11 @@ const previewURLs = ref<string[]>([])
 // TẮT → chế độ cũ: hiện preview cho người dùng chọn rồi mới tải (chỉ khi TỔNG = 1 task).
 const autoDownload = ref(true)
 
+// Tách prompt: BẬT → mỗi đoạn cách nhau bằng 1 dòng trống (2 lần Enter) tính là 1
+// prompt RIÊNG (chạy thành nhiều task song song). TẮT → toàn bộ nội dung trong ô
+// tính là 1 prompt DUY NHẤT dù có dòng trống (giữ nguyên bố cục nhiều dòng).
+const splitPrompts = ref(true)
+
 // Thu gọn khối "Cấu hình yêu cầu" để tập trung vào phần nhập prompt.
 const configCollapsed = ref(false)
 
@@ -697,31 +802,71 @@ watch(
 )
 
 // Danh sách task thực tế sẽ chạy:
-// - Nếu CHỈ có 1 card và card đó KHÔNG có ảnh → tách text theo dòng trống thành
-//   nhiều task (giữ trải nghiệm gõ nhiều prompt trong 1 ô như cũ).
-// - Ngược lại → mỗi card là 1 task riêng (kèm đúng ảnh của card đó).
+// - Tách text trong mỗi ô theo 2 lần xuống dòng (\n\s*\n) thành danh sách các prompt.
+// - Nếu card CÓ ĐÍNH KÈM ẢNH: sinh số task = số lượng ảnh. Mỗi ảnh ghép ngẫu nhiên với 1 prompt trong danh sách (hoặc prompt rỗng).
+// - Nếu card KHÔNG CÓ ẢNH: mỗi prompt tách ra sinh thành 1 task độc lập.
 interface PromptTask {
   prompt: string
   images: InputImage[]
 }
 const effectiveTasks = computed<PromptTask[]>(() => {
-  const cards = promptCards.value
-  if (cards.length === 1 && cards[0].images.length === 0) {
-    return cards[0].text
-      .split(/\n\s*\n/)
-      .map(b => b.split('\n').map(l => l.trim()).filter(l => l !== '').join('\n').trim())
-      .filter(b => b !== '')
-      .map(text => ({ prompt: text, images: [] as InputImage[] }))
+  const tasks: PromptTask[] = []
+  
+  for (const card of promptCards.value) {
+    // BẬT tách: cắt theo dòng trống (2 lần Enter) → nhiều prompt riêng.
+    // TẮT tách: giữ nguyên toàn bộ ô làm 1 prompt duy nhất (chỉ trim 2 đầu).
+    let promptsList: string[]
+    if (splitPrompts.value) {
+      promptsList = card.text
+        .split(/\n\s*\n/)
+        .map(b => b.split('\n').map(l => l.trim()).filter(l => l !== '').join('\n').trim())
+        .filter(b => b !== '')
+    } else {
+      const whole = card.text.trim()
+      promptsList = whole !== '' ? [whole] : []
+    }
+
+    if (card.images.length > 0) {
+      // Trường hợp có ảnh: sinh số task bằng số lượng ảnh đã đính kèm
+      for (const img of card.images) {
+        let chosenPrompt = ''
+        if (promptsList.length > 0) {
+          const randomIndex = Math.floor(Math.random() * promptsList.length)
+          chosenPrompt = promptsList[randomIndex]
+        }
+        tasks.push({
+          prompt: chosenPrompt,
+          images: [img]
+        })
+      }
+    } else {
+      // Trường hợp không có ảnh: mỗi prompt thành 1 task riêng
+      if (promptsList.length > 0) {
+        for (const pText of promptsList) {
+          tasks.push({
+            prompt: pText,
+            images: []
+          })
+        }
+      }
+    }
   }
-  return cards
-    .filter(c => c.text.trim() !== '')
-    .map(c => ({ prompt: c.text.trim(), images: c.images }))
+  
+  return tasks
 })
 
 // Trạng thái Hàng Đợi AI khi chạy nhiều prompt song song trên trang này.
 const queueMode = ref(false)
 const queueStatus = reactive({ total: 0, completed: 0, failed: 0, isRunning: false })
 const queueResultPaths = ref<string[]>([])
+// Đường dẫn file thật (local path) tương ứng từng ảnh trong queueResultPaths — để
+// gọi xóa file khỏi thư mục. Song song 1-1 với queueResultPaths theo chỉ số.
+const queueResultLocalPaths = ref<string[]>([])
+// Ghi lại chế độ "tự động tải" tại lúc bấm tạo. TẮT → lưới kết quả hiện công cụ
+// tick chọn + nút xóa để người dùng dọn ảnh thừa khỏi thư mục sau khi tải hết.
+const queueAutoDownload = ref(true)
+// Các ảnh kết quả đang được tick chọn (chỉ dùng khi queueAutoDownload=false).
+const selectedResultIndexes = ref<Set<number>>(new Set())
 
 // Phần trăm hoàn tất hàng đợi (đã xong / tổng), làm tròn để hiển thị trên thanh tiến độ.
 const queuePercent = computed(() =>
@@ -741,6 +886,53 @@ const queueLogs = ref<QueueLogLine[]>([])
 const queueLogCollapsed = ref(false)
 const queueLogBox = ref<HTMLElement | null>(null)
 let queueLogSeq = 0
+
+const clearQueueLogs = () => {
+  queueLogs.value = []
+}
+
+// ===== LIGHTBOX =====
+const lightboxEl = ref<HTMLElement | null>(null)
+const lightbox = reactive({
+  open: false,
+  list: [] as string[],
+  index: 0,
+  scale: 1,
+})
+
+const openLightbox = (list: string[], index: number) => {
+  lightbox.list = list
+  lightbox.index = index
+  lightbox.scale = 1
+  lightbox.open = true
+  nextTick(() => lightboxEl.value?.focus())
+}
+
+const closeLightbox = () => {
+  lightbox.open = false
+  lightbox.scale = 1
+}
+
+const lightboxStep = (dir: number) => {
+  lightbox.scale = 1
+  lightbox.index = (lightbox.index + dir + lightbox.list.length) % lightbox.list.length
+}
+
+const onLightboxWheel = (e: WheelEvent) => {
+  const delta = e.deltaY < 0 ? 0.15 : -0.15
+  lightbox.scale = Math.min(5, Math.max(0.5, lightbox.scale + delta))
+}
+
+const onLightboxKey = (e: KeyboardEvent) => {
+  if (!lightbox.open) return
+  if (e.key === 'Escape') closeLightbox()
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') lightboxStep(-1)
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') lightboxStep(1)
+}
+
+onMounted(() => { window.addEventListener('keydown', onLightboxKey) })
+onUnmounted(() => { window.removeEventListener('keydown', onLightboxKey) })
+
 
 // Tự cuộn xuống dòng log mới nhất khi có bước mới (chỉ khi đang mở).
 // Watch theo id dòng CUỐI (luôn tăng) thay vì .length — vì khi log đạt trần 200
@@ -792,11 +984,6 @@ const handlePasteImageToCard = (cardId: string, e: ClipboardEvent) => {
     if (item.type.indexOf('image') !== -1) {
       const file = item.getAsFile()
       if (file) {
-        if (card.images.length >= 3) {
-          showToast("Mỗi prompt chỉ thêm tối đa 3 ảnh!", "warning")
-          e.preventDefault()
-          return
-        }
         const reader = new FileReader()
         reader.onload = (event) => {
           const base64 = event.target?.result as string
@@ -818,19 +1005,11 @@ const handlePasteImageToCard = (cardId: string, e: ClipboardEvent) => {
 const addImageToCard = async (cardId: string) => {
   const card = promptCards.value.find(c => c.id === cardId)
   if (!card) return
-  if (card.images.length >= 3) {
-    showToast("Mỗi prompt chỉ thêm tối đa 3 ảnh!", "warning")
-    return
-  }
   try {
     const paths = await SelectImageFiles()
     if (paths && paths.length > 0) {
       let added = 0
       for (const path of paths) {
-        if (card.images.length >= 3) {
-          showToast("Chỉ chọn được tối đa 3 ảnh/prompt, ảnh thừa đã bỏ qua.", "warning")
-          break
-        }
         if (card.images.some(img => img.path === path)) continue
         const url = await GetStreamURL(path)
         card.images.push({
@@ -941,6 +1120,7 @@ const saveBrowserAISettings = async () => {
     gSettings[`browserAIResolution_${suffix}`] = selectedResolution.value
     gSettings[`browserAIConfirmBeforeCreate_${suffix}`] = confirmBeforeCreate.value
     gSettings[`browserAIConfigCollapsed_${suffix}`] = configCollapsed.value
+    gSettings[`browserAISplitPrompts_${suffix}`] = splitPrompts.value
 
     await SaveGlobalSettings(JSON.stringify(gSettings))
   } catch (err) {
@@ -950,7 +1130,7 @@ const saveBrowserAISettings = async () => {
 
 let saveSettingsTimeout: any = null
 watch(
-  [selectedModel, aspectRatio, selectedBatchSize, selectedResolution, confirmBeforeCreate, configCollapsed],
+  [selectedModel, aspectRatio, selectedBatchSize, selectedResolution, confirmBeforeCreate, configCollapsed, splitPrompts],
   () => {
     if (!isSettingsLoaded.value) return
     if (saveSettingsTimeout) clearTimeout(saveSettingsTimeout)
@@ -978,6 +1158,7 @@ onMounted(async () => {
       if (gSettings[`browserAIResolution_${suffix}`]) selectedResolution.value = gSettings[`browserAIResolution_${suffix}`]
       if (gSettings[`browserAIConfirmBeforeCreate_${suffix}`]) confirmBeforeCreate.value = gSettings[`browserAIConfirmBeforeCreate_${suffix}`]
       if (gSettings[`browserAIConfigCollapsed_${suffix}`] !== undefined) configCollapsed.value = gSettings[`browserAIConfigCollapsed_${suffix}`]
+      if (gSettings[`browserAISplitPrompts_${suffix}`] !== undefined) splitPrompts.value = gSettings[`browserAISplitPrompts_${suffix}`]
     }
   } catch (err) {
     console.error("Lỗi tải cấu hình BrowserAI từ settings.json:", err)
@@ -996,12 +1177,20 @@ onMounted(async () => {
     queueStatus.isRunning = status.isRunning || false
 
     if (queueMode.value && Array.isArray(status.tasks)) {
-      const paths = status.tasks
-        .filter((t: any) => t && t.resultPath)
-        .map((t: any) => t.resultPath)
-      // Chuyển đường dẫn cục bộ sang stream URL để <img> hiển thị được.
-      Promise.all(paths.map((p: string) => GetStreamURL(p).catch(() => '')))
-        .then((urls) => { queueResultPaths.value = urls.filter((u: string) => u !== '') })
+      const allPaths: string[] = []
+      for (const t of status.tasks) {
+        if (t) {
+          if (Array.isArray(t.resultPaths) && t.resultPaths.length > 0) {
+            allPaths.push(...t.resultPaths)
+          } else if (t.resultPath) {
+            allPaths.push(t.resultPath)
+          }
+        }
+      }
+      // Giữ đường dẫn cục bộ (để xóa file sau) song song với stream URL (để <img> hiển thị).
+      queueResultLocalPaths.value = allPaths
+      Promise.all(allPaths.map((p: string) => GetStreamURL(p).catch(() => '')))
+        .then((urls) => { queueResultPaths.value = urls })
     }
 
     if (queueMode.value && !status.isRunning && status.total > 0) {
@@ -1052,68 +1241,48 @@ const startGeneration = async () => {
 
   const baseName = fileName.value.trim() || `ai_image_${Date.now()}`
 
-  // Tắt tự tải CHỈ dùng được khi đúng 1 task (luồng xem-trước-chọn-tay tuần tự).
-  // Nhiều task luôn chạy song song qua Hàng Đợi AI (tự tải).
-  const useQueue = tasksList.length > 1 || autoDownload.value
-
-  if (useQueue) {
-    const single = tasksList.length === 1
-    const tasks = tasksList.map((t, i) => ({
-      id: `img_prompt_${Date.now()}_${i}`,
-      clipName: `Prompt #${i + 1}`,
-      clipPath: '',
-      outputDir: outputDir.value,
-      fileName: single ? baseName : `${baseName}_${i + 1}`,
-      prompt: t.prompt,
-      inputImagePath: '',
-      inputImagePaths: t.images.map(im => im.path).filter(p => p !== ''),
-      inputImageBase64s: t.images.map(im => im.base64).filter(b => b !== ''),
-      provider: provider.value,
-      model: selectedModel.value,
-      aspectRatio: aspectRatio.value,
-      resolution: selectedResolution.value,
-      state: '',
-      errorMessage: '',
-      resultPath: '',
-      source: 'ai-image'
-    }))
-
-    queueResultPaths.value = []
-    queueStatus.total = tasks.length
-    queueStatus.completed = 0
-    queueStatus.failed = 0
-    queueStatus.isRunning = true
-    queueMode.value = true
-
-    try {
-      await EnqueueThumbnailTasks(tasks as any)
-      showToast(`Đã nạp ${tasks.length} prompt vào Hàng Đợi AI. Đang tạo song song...`, 'info')
-    } catch (err: any) {
-      queueMode.value = false
-      queueStatus.isRunning = false
-      showToast('Lỗi nạp hàng đợi: ' + String(err), 'error')
-    }
-    return
-  }
-
-  // Luồng đơn cũ: đúng 1 task + tắt tự tải → hiện preview cho người dùng chọn.
-  const only = tasksList[0]
-  await generate({
-    provider: provider.value,
-    mediaType: 'image',
-    prompt: only.prompt,
-    aspectRatio: aspectRatio.value,
+  // LUÔN chạy qua Hàng Đợi AI (kể cả 1 prompt) để giao diện đồng nhất giữa 2 chế
+  // độ tick/không tick tự tải. Mọi ảnh đều được tự tải; nếu người dùng TẮT "tự
+  // động tải" thì sau khi xong họ tick chọn và xóa bớt ảnh thừa khỏi thư mục.
+  const single = tasksList.length === 1
+  const tasks = tasksList.map((t, i) => ({
+    id: `img_prompt_${Date.now()}_${i}`,
+    clipName: `Prompt #${i + 1}`,
+    clipPath: '',
     outputDir: outputDir.value,
-    fileName: baseName,
-    timeoutSecond: 300,
-    showChrome: props.showChrome,
+    fileName: single ? baseName : `${baseName}_${i + 1}`,
+    prompt: t.prompt,
+    inputImagePath: '',
+    inputImagePaths: t.images.map(im => im.path).filter(p => p !== ''),
+    inputImageBase64s: t.images.map(im => im.base64).filter(b => b !== ''),
+    provider: provider.value,
     model: selectedModel.value,
+    aspectRatio: aspectRatio.value,
     batchSize: selectedBatchSize.value,
-    confirmBeforeCreate: confirmBeforeCreate.value,
     resolution: selectedResolution.value,
-    inputImagePaths: only.images.map(im => im.path).filter(p => p !== ''),
-    inputImageBase64s: only.images.map(im => im.base64).filter(b => b !== '')
-  })
+    state: '',
+    errorMessage: '',
+    resultPath: '',
+    source: 'ai-image'
+  }))
+
+  queueResultPaths.value = []
+  queueStatus.total = tasks.length
+  queueStatus.completed = 0
+  queueStatus.failed = 0
+  queueStatus.isRunning = true
+  queueMode.value = true
+  // Nhớ chế độ tải để lưới kết quả biết có cần hiện công cụ chọn/xóa hay không.
+  queueAutoDownload.value = autoDownload.value
+
+  try {
+    await EnqueueThumbnailTasks(tasks as any)
+    showToast(`Đã nạp ${tasks.length} prompt vào Hàng Đợi AI. Đang tạo song song...`, 'info')
+  } catch (err: any) {
+    queueMode.value = false
+    queueStatus.isRunning = false
+    showToast('Lỗi nạp hàng đợi: ' + String(err), 'error')
+  }
 }
 
 const applyAsThemeImage = (path?: string) => {
@@ -1148,7 +1317,51 @@ const resetForm = () => {
   queueStatus.failed = 0
   queueStatus.isRunning = false
   queueResultPaths.value = []
+  queueResultLocalPaths.value = []
+  selectedResultIndexes.value = new Set()
   try { ClearQueue() } catch (_) {}
+}
+
+// Tick chọn / bỏ chọn 1 ảnh kết quả (chỉ hiện khi tắt tự động tải).
+const toggleResultImage = (idx: number) => {
+  if (selectedResultIndexes.value.has(idx)) {
+    selectedResultIndexes.value.delete(idx)
+  } else {
+    selectedResultIndexes.value.add(idx)
+  }
+  // Kích hoạt reactivity cho Set.
+  selectedResultIndexes.value = new Set(selectedResultIndexes.value)
+}
+
+// Chọn tất cả / bỏ chọn tất cả ảnh kết quả.
+const toggleSelectAllResults = () => {
+  if (selectedResultIndexes.value.size === queueResultPaths.value.length) {
+    selectedResultIndexes.value = new Set()
+  } else {
+    selectedResultIndexes.value = new Set(queueResultPaths.value.map((_, i) => i))
+  }
+}
+
+// Xóa các ảnh ĐANG TICK CHỌN khỏi thư mục lưu (không đảo ngược được). Sau khi xóa,
+// bỏ chúng khỏi lưới kết quả và reset lựa chọn.
+const deleteSelectedResults = async () => {
+  const idxs = Array.from(selectedResultIndexes.value).sort((a, b) => a - b)
+  if (idxs.length === 0) return
+  const pathsToDelete = idxs
+    .map(i => queueResultLocalPaths.value[i])
+    .filter((p): p is string => !!p)
+  if (pathsToDelete.length === 0) return
+  try {
+    await DeleteResultFiles(pathsToDelete)
+    // Loại các chỉ số đã xóa khỏi cả 2 mảng song song.
+    const drop = new Set(idxs)
+    queueResultPaths.value = queueResultPaths.value.filter((_, i) => !drop.has(i))
+    queueResultLocalPaths.value = queueResultLocalPaths.value.filter((_, i) => !drop.has(i))
+    selectedResultIndexes.value = new Set()
+    showToast(`Đã xóa ${pathsToDelete.length} ảnh khỏi thư mục.`, 'success')
+  } catch (err: any) {
+    showToast('Lỗi xóa ảnh: ' + String(err), 'error')
+  }
 }
 
 const cancelQueue = () => {

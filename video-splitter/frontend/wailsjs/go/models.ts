@@ -97,10 +97,12 @@ export namespace browserai {
 	    provider: string;
 	    model: string;
 	    aspectRatio: string;
+	    batchSize: string;
 	    resolution: string;
 	    state: string;
 	    errorMessage: string;
 	    resultPath: string;
+	    resultPaths: string[];
 	    source: string;
 	
 	    static createFrom(source: any = {}) {
@@ -121,10 +123,12 @@ export namespace browserai {
 	        this.provider = source["provider"];
 	        this.model = source["model"];
 	        this.aspectRatio = source["aspectRatio"];
+	        this.batchSize = source["batchSize"];
 	        this.resolution = source["resolution"];
 	        this.state = source["state"];
 	        this.errorMessage = source["errorMessage"];
 	        this.resultPath = source["resultPath"];
+	        this.resultPaths = source["resultPaths"];
 	        this.source = source["source"];
 	    }
 	}

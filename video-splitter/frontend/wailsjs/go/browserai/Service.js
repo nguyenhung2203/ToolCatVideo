@@ -30,6 +30,10 @@ export function ConfirmSelectedImages(arg1, arg2, arg3, arg4) {
   return window['go']['browserai']['Service']['ConfirmSelectedImages'](arg1, arg2, arg3, arg4);
 }
 
+export function DeleteResultFiles(arg1) {
+  return window['go']['browserai']['Service']['DeleteResultFiles'](arg1);
+}
+
 export function EnqueueThumbnailTasks(arg1) {
   return window['go']['browserai']['Service']['EnqueueThumbnailTasks'](arg1);
 }

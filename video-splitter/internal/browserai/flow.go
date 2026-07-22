@@ -2,6 +2,7 @@ package browserai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -566,6 +568,7 @@ func GenerateFlowVideo(
 		if attempt > 1 {
 			logDebug("Phát hiện lỗi từ Google Flow hoặc quá trình tạo thất bại. Tự động gửi lại prompt (Thử lại lần %d/%d)...", attempt, maxAttempts)
 			tm.EmitStatus(TaskStateSubmitting, fmt.Sprintf("Gặp lỗi, đang tự động gửi lại prompt (Lần %d/3)...", attempt), 35)
+			mile(fmt.Sprintf("⚠ Gặp lỗi, thử lại lần %d/%d...", attempt, maxAttempts))
 			
 			// Refind prompt input
 			promptInput, err = FindFirstVisible(ctx, page, FlowSelectors.PromptInputs, 5*time.Second)
@@ -590,8 +593,10 @@ func GenerateFlowVideo(
 				session.UnlockPaste()
 			}
 		}
-		// Đưa cửa sổ này lên foreground để Ctrl+V thật ăn đúng vào nó.
-		_, _ = page.Activate()
+		// Đưa cửa sổ này lên foreground để Ctrl+V thật ăn đúng vào nó (chỉ khi hiện trình duyệt).
+		if req.ShowChrome {
+			_, _ = page.Activate()
+		}
 
 		// THỨ TỰ QUAN TRỌNG: ĐIỀN PROMPT TRƯỚC, DÁN ẢNH SAU.
 		// Trước đây dán ảnh trước → ô Slate có thẻ ảnh (void node) → caret kẹt tại đó
@@ -612,17 +617,33 @@ func GenerateFlowVideo(
 			continue
 		}
 
-		// 2. Dán ảnh bằng Ctrl+V thật (sau khi prompt đã yên vị trong ô)
+		// 2. Dán ảnh vào ô prompt.
+		// ƯU TIÊN cách JS thuần (PasteImageViaJS): dựng File+DataTransfer rồi bắn 'paste'
+		// event thẳng vào editor — KHÔNG cần clipboard OS/foreground nên chạy được CẢ KHI
+		// ẨN trình duyệt. Chỉ khi đính JS thất bại (Google không nhận event tổng hợp) mới
+		// fallback về Ctrl+V native, và Ctrl+V chỉ có tác dụng khi cửa sổ đang hiện.
 		if len(req.InputImagePaths) > 0 {
-			logDebug("Phát hiện yêu cầu gửi kèm ảnh (%d ảnh). Đang nạp vào Clipboard Windows và bấm Ctrl+V thật...", len(req.InputImagePaths))
+			logDebug("Phát hiện yêu cầu gửi kèm ảnh (%d ảnh). Thử dán bằng JS (chạy được cả khi ẩn)...", len(req.InputImagePaths))
 			mile(fmt.Sprintf("Đang đính %d ảnh đầu vào...", len(req.InputImagePaths)))
 
 			for _, imgPath := range req.InputImagePaths {
-				_ = PasteImageNativeCtrlV(ctx, page, promptInput, imgPath, logDebug)
+				_ = PasteImageViaJS(ctx, page, promptInput, imgPath, logDebug)
 			}
 
-			logDebug("Đã bấm Ctrl+V! Đang chờ DOM tải xong 100% (thẻ ảnh hiển thị trong ô prompt)...")
-			WaitUntilImageAttachedAndLoaded(ctx, page, 50*time.Second, logDebug)
+			logDebug("Đã bắn paste JS. Đang chờ thẻ ảnh hiển thị trong ô prompt...")
+			attachedJS := WaitUntilImageAttachedAndLoaded(ctx, page, 15*time.Second, logDebug)
+
+			// Fallback: JS không đính được VÀ đang hiện trình duyệt → thử Ctrl+V thật.
+			if !attachedJS && req.ShowChrome {
+				logDebug("Dán JS chưa đính được ảnh. Fallback sang Ctrl+V native (chỉ dùng khi hiện trình duyệt)...")
+				mile("Ảnh chưa đính, thử lại bằng Ctrl+V...")
+				for _, imgPath := range req.InputImagePaths {
+					_ = PasteImageNativeCtrlV(ctx, page, promptInput, imgPath, logDebug)
+				}
+				WaitUntilImageAttachedAndLoaded(ctx, page, 50*time.Second, logDebug)
+			} else if !attachedJS {
+				logDebug("CẢNH BÁO: Dán JS chưa xác nhận đính ảnh và đang ẩn trình duyệt (không thể fallback Ctrl+V). Vẫn tiếp tục gửi prompt...")
+			}
 			sleep(1500 * time.Millisecond) // Chờ thêm 1.5 giây cho React cập nhật state
 
 			// Quét tìm lại ô prompt sau khi đính kèm ảnh
@@ -758,7 +779,18 @@ func GenerateFlowVideo(
 
 		if req.MediaType == MediaTypeImage {
 			tm.EmitStatus(TaskStateGenerating, "Google AI đang tạo hình ảnh...", 50)
-			
+
+			// Số ảnh kỳ vọng theo Batch Size (1x/2x/3x/4x). Google Flow render từng ảnh
+			// một nên ta phải CHỜ ĐỦ số ảnh này rồi mới chốt, thay vì thấy ảnh đầu tiên
+			// đã dừng (bug cũ: 2x/4x chỉ bắt được 1 tấm rồi đóng tab).
+			expectedImages := 1
+			if d := strings.TrimSpace(strings.ToLower(strings.ReplaceAll(req.BatchSize, "x", ""))); d != "" {
+				if n, errConv := strconv.Atoi(d); errConv == nil && n > 0 {
+					expectedImages = n
+				}
+			}
+			logDebug("Batch size yêu cầu: %s → chờ đủ %d ảnh mới sinh.", req.BatchSize, expectedImages)
+
 			var previewBase64s []string
 			tickerImg := time.NewTicker(2 * time.Second)
 
@@ -776,7 +808,13 @@ func GenerateFlowVideo(
 				if pollCount % 3 == 1 {
 					logDebug("Đang chờ Google AI tạo xong hình ảnh... (Đã chờ %d giây)", pollCount*2)
 				}
-				
+
+				// Nhịp báo ra log card mỗi ~14s (7 vòng * 2s) để người dùng biết luồng
+				// VẪN đang chạy trong lúc chờ AI tạo (giai đoạn im lặng dài nhất 30-90s).
+				if pollCount > 0 && pollCount % 7 == 0 {
+					mile(fmt.Sprintf("Vẫn đang chờ AI tạo ảnh... (%ds)", pollCount*2))
+				}
+
 				if time.Now().After(deadlineImg) {
 					finalErr = NewError(ErrGenerationTimeout, "Quá thời gian chờ tạo hình ảnh từ Google Flow.")
 					generationFailed = true
@@ -905,11 +943,10 @@ func GenerateFlowVideo(
 					}
 
 					if isNew {
-						logDebug("Phát hiện nhóm ảnh mới đã sinh xong! Số lượng mới sinh: %d ảnh. URL: %v", len(currentUrls), currentUrls)
-						sleep(2000 * time.Millisecond) // Chờ thêm 2 giây để ảnh load hoàn toàn
-						
-						// Đọc lại danh sách URL chính xác nhất sau khi đã load xong
-						currentUrlsObjSec, errCurrSec := page.Eval(`(lastGroupUrls) => {
+						logDebug("Phát hiện nhóm ảnh mới bắt đầu sinh! Ảnh đầu tiên đã xuất hiện, chờ đủ %d ảnh của batch...", expectedImages)
+
+						// JS đọc danh sách URL nhóm ảnh MỚI (chưa có trong lastGroupUrls).
+						readNewGroupJS := `(lastGroupUrls) => {
 							const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
 								const src = img.getAttribute('src') || '';
 								return src.includes('getMediaUrl') || src.includes('/fx/api/');
@@ -934,14 +971,63 @@ func GenerateFlowVideo(
 								});
 							}
 							return newUrls;
-						}`, lastGroupUrls)
-						if errCurrSec == nil && currentUrlsObjSec != nil {
-							newGroupUrls := []string{}
-							for _, v := range currentUrlsObjSec.Value.Arr() {
-								newGroupUrls = append(newGroupUrls, v.Str())
+						}`
+
+						// Chờ đủ số ảnh của batch. Google Flow render từng ảnh một nên phải
+						// poll tới khi số ảnh mới == expectedImages, hoặc hết grace timeout
+						// (trường hợp Google trả ít hơn do lọc chính sách một vài ảnh). Đếm
+						// số vòng ảnh KHÔNG tăng thêm để chốt sớm nếu batch trả thiếu.
+						newGroupUrls := []string{}
+						graceDeadline := time.Now().Add(90 * time.Second)
+						stableCount := 0
+						for time.Now().Before(graceDeadline) {
+							select {
+							case <-ctx.Done():
+								return nil, ctx.Err()
+							default:
 							}
-							logDebug("Tìm thấy nhóm ảnh mới sinh thành công! Số lượng: %d", len(newGroupUrls))
-							
+
+							curObj, errCur := page.Eval(readNewGroupJS, lastGroupUrls)
+							cur := []string{}
+							if errCur == nil && curObj != nil {
+								for _, v := range curObj.Value.Arr() {
+									cur = append(cur, v.Str())
+								}
+							}
+
+							if len(cur) >= expectedImages {
+								newGroupUrls = cur[:expectedImages]
+								logDebug("Đã đủ %d/%d ảnh của batch.", len(newGroupUrls), expectedImages)
+								break
+							}
+
+							if len(cur) > len(newGroupUrls) {
+								newGroupUrls = cur
+								stableCount = 0
+								logDebug("Đã sinh %d/%d ảnh, tiếp tục chờ...", len(cur), expectedImages)
+							} else {
+								stableCount++
+								// Số ảnh đứng yên ~16 giây (8 vòng * 2s) → coi như batch chốt ở
+								// mức này (Google có thể đã lọc bỏ vài ảnh vi phạm chính sách).
+								if stableCount >= 8 && len(newGroupUrls) > 0 {
+									logDebug("Số ảnh đứng yên ở %d (kỳ vọng %d). Chốt ở mức hiện có.", len(newGroupUrls), expectedImages)
+									break
+								}
+							}
+							sleep(2000 * time.Millisecond)
+						}
+
+						{
+							if len(newGroupUrls) == 0 {
+								// Grace timeout mà không bắt được ảnh nào → thử đọc lần cuối.
+								if curObj, errCur := page.Eval(readNewGroupJS, lastGroupUrls); errCur == nil && curObj != nil {
+									for _, v := range curObj.Value.Arr() {
+										newGroupUrls = append(newGroupUrls, v.Str())
+									}
+								}
+							}
+							logDebug("Chốt nhóm ảnh mới sinh: %d ảnh (kỳ vọng %d).", len(newGroupUrls), expectedImages)
+
 							// Kiểm tra tổng số ảnh trên toàn trang để tránh lag
 							totalCardsCountObj, errTotalCount := page.Eval(`() => {
 								const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
@@ -2282,6 +2368,91 @@ func PasteImageNativeCtrlV(ctx context.Context, page *rod.Page, promptInput *rod
 
 	return nil
 }
+
+// imageMimeFromExt suy ra MIME type từ đuôi file ảnh (mặc định image/png).
+func imageMimeFromExt(imagePath string) string {
+	switch strings.ToLower(filepath.Ext(imagePath)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".bmp":
+		return "image/bmp"
+	default:
+		return "image/png"
+	}
+}
+
+// PasteImageViaJS dán ảnh vào ô prompt Slate HOÀN TOÀN bằng JS, KHÔNG dùng clipboard
+// OS và KHÔNG cần cửa sổ foreground — nên chạy được cả khi ẩn trình duyệt (headless
+// hoặc cửa sổ nền). Cơ chế: đọc file ở Go → base64 → JS dựng lại File + DataTransfer
+// rồi bắn một 'paste' event tổng hợp thẳng vào editor (giống hệt khi người dùng Ctrl+V).
+// Trả về true nếu editor có vẻ đã nhận (không đảm bảo 100% vì tùy Google xử lý event).
+func PasteImageViaJS(ctx context.Context, page *rod.Page, promptInput *rod.Element, imagePath string, logDebug func(string, ...interface{})) bool {
+	data, err := os.ReadFile(imagePath)
+	if err != nil {
+		if logDebug != nil {
+			logDebug("PasteImageViaJS: không đọc được file ảnh %s: %v", imagePath, err)
+		}
+		return false
+	}
+	mime := imageMimeFromExt(imagePath)
+	dataURL := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+	fileName := filepath.Base(imagePath)
+
+	_ = promptInput.Focus()
+
+	res, errEval := promptInput.Eval(`async (dataURL, mime, fileName) => {
+		try {
+			// data URL → Blob → File (mô phỏng file người dùng dán từ clipboard)
+			const resp = await fetch(dataURL);
+			const blob = await resp.blob();
+			const file = new File([blob], fileName, { type: mime });
+
+			const dt = new DataTransfer();
+			dt.items.add(file);
+
+			// Bắn 'paste' event tổng hợp mang theo file vào editor. React/Slate của
+			// Google Flow lắng nghe onPaste và tự đọc clipboardData.files để đính ảnh.
+			const target = this.querySelector('[data-slate-editor="true"]') || this;
+			target.focus();
+			const ev = new ClipboardEvent('paste', {
+				bubbles: true,
+				cancelable: true,
+				clipboardData: dt,
+			});
+			// Một số bản Chrome không cho set clipboardData qua constructor → gán lại thủ công.
+			try {
+				Object.defineProperty(ev, 'clipboardData', { value: dt });
+			} catch (e) {}
+			target.dispatchEvent(ev);
+			return true;
+		} catch (e) {
+			return 'ERR:' + (e && e.message ? e.message : String(e));
+		}
+	}`, dataURL, mime, fileName)
+
+	if errEval != nil {
+		if logDebug != nil {
+			logDebug("PasteImageViaJS: lỗi dispatch paste event: %v", errEval)
+		}
+		return false
+	}
+	if res != nil && res.Value.Str() != "" && strings.HasPrefix(res.Value.Str(), "ERR:") {
+		if logDebug != nil {
+			logDebug("PasteImageViaJS: JS báo lỗi: %s", res.Value.Str())
+		}
+		return false
+	}
+	if logDebug != nil {
+		logDebug("PasteImageViaJS: đã bắn paste event mang ảnh %s vào editor.", fileName)
+	}
+	time.Sleep(500 * time.Millisecond)
+	return true
+}
+
 // WaitUntilImageAttachedAndLoaded chờ cho tới khi ảnh upload đã hiển thị hoàn toàn trong ô prompt
 func WaitUntilImageAttachedAndLoaded(ctx context.Context, page *rod.Page, timeout time.Duration, logDebug func(string, ...interface{})) bool {
 	deadline := time.Now().Add(timeout)

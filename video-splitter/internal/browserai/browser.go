@@ -19,6 +19,7 @@ type BrowserSession struct {
 	page        *rod.Page
 	profileDir  string
 	downloadDir string
+	isHeadless  bool
 	// downloadMu tuần tự hóa đoạn tải file giữa nhiều tab song song: WaitDownload
 	// hoạt động ở cấp browser nên nếu 2 tab tải cùng lúc dễ bắt nhầm file của nhau.
 	downloadMu sync.Mutex
@@ -106,22 +107,25 @@ func (b *BrowserSession) Start(
 	defer b.mu.Unlock()
 
 	if b.browser != nil {
-		// Check if browser is actually connected and working
-		var errCheck error
-		if b.page != nil {
-			_, errCheck = b.page.Info()
-		} else {
-			errCheck = fmt.Errorf("no page reference")
-		}
-		if errCheck == nil && b.page != nil {
-			// Browser is already running, just navigate/create target
-			page, err := b.browser.Page(proto.TargetCreateTarget{URL: startURL})
-			if err == nil {
-				b.page = page
-				return nil
+		if b.isHeadless == headless {
+			// Check if browser is actually connected and working
+			var errCheck error
+			if b.page != nil {
+				_, errCheck = b.page.Info()
+			} else {
+				errCheck = fmt.Errorf("no page reference")
+			}
+			if errCheck == nil && b.page != nil {
+				// Browser is already running with requested headless mode, just navigate/create target
+				page, err := b.browser.Page(proto.TargetCreateTarget{URL: startURL})
+				if err == nil {
+					enableFocusEmulation(page)
+					b.page = page
+					return nil
+				}
 			}
 		}
-		// If check or page creation failed, clean up the dead browser reference and recreate it
+		// If check failed or headless mode changed, clean up the old browser reference and recreate it
 		if b.browser != nil {
 			_ = b.browser.Close()
 			b.browser = nil
@@ -151,9 +155,12 @@ func (b *BrowserSession) Start(
 	l := launcher.New().
 		Headless(headless).
 		UserDataDir(profileDir).
-		Set("start-maximized").
 		Set("no-first-run").
 		Set("no-default-browser-check")
+
+	if !headless {
+		l = l.Set("start-maximized")
+	}
 
 	// Delete default automation flags to bypass Google anti-bot login block
 	l.Delete("enable-automation")
@@ -187,14 +194,29 @@ func (b *BrowserSession) Start(
 		l.Kill()
 		return fmt.Errorf("open page: %w", err)
 	}
+	enableFocusEmulation(page)
 
 	b.launcher = l
 	b.browser = browser
 	b.page = page
 	b.profileDir = profileDir
 	b.downloadDir = downloadDir
+	b.isHeadless = headless
 
 	return nil
+}
+
+// enableFocusEmulation ép Chrome coi trang LUÔN đang được focus + active, độc lập
+// với việc cửa sổ có hiển thị/foreground hay không. BẮT BUỘC cho chế độ ẩn trình
+// duyệt: ô nhập Slate (contenteditable của React) từ chối nhận text khi
+// document.hasFocus()==false — headless không bao giờ có focus nên mọi cách điền
+// prompt (InsertText/execCommand/Ctrl+V/Input) đều trượt. Cũng có lợi khi chạy
+// song song nhiều cửa sổ (chỉ 1 cửa sổ thật sự foreground tại một thời điểm).
+func enableFocusEmulation(page *rod.Page) {
+	if page == nil {
+		return
+	}
+	_ = proto.EmulationSetFocusEmulationEnabled{Enabled: true}.Call(page)
 }
 
 func (b *BrowserSession) GetPage() (*rod.Page, error) {
@@ -223,6 +245,7 @@ func (b *BrowserSession) NewPage(startURL string) (*rod.Page, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mở cửa sổ mới: %w", err)
 	}
+	enableFocusEmulation(page)
 	return page, nil
 }
 
@@ -259,6 +282,12 @@ func (b *BrowserSession) IsOpen() bool {
 	}
 	_, err := b.page.Info()
 	return err == nil
+}
+
+func (b *BrowserSession) IsHeadless() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.isHeadless
 }
 
 func (b *BrowserSession) Close() error {
