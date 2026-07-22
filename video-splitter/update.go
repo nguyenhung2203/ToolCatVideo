@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -20,7 +21,7 @@ import (
 
 // CurrentAppVersion là phiên bản đang chạy. NÂNG số này mỗi lần phát hành bản mới,
 // khớp with tag GitHub Release (release.ps1 tự đọc const này để đặt tag).
-const CurrentAppVersion = "v1.0.4"
+const CurrentAppVersion = "v1.0.5"
 
 // updateRepo là repo GitHub chứa các bản Release + manifest.json.
 const updateRepo = "nguyenhung2203/ToolCatVideo"
@@ -195,10 +196,14 @@ func fetchManifest() (*Manifest, string, error) {
 	if err != nil {
 		return nil, release.HTMLURL, fmt.Errorf("không tải được manifest.json: %v", err)
 	}
-	defer mResp.Body.Close()
+	bodyBytes, err := io.ReadAll(mResp.Body)
+	if err != nil {
+		return nil, release.HTMLURL, fmt.Errorf("không đọc được manifest.json: %v", err)
+	}
+	bodyBytes = bytes.TrimPrefix(bodyBytes, []byte("\xef\xbb\xbf"))
 
 	var m Manifest
-	if err := json.NewDecoder(mResp.Body).Decode(&m); err != nil {
+	if err := json.Unmarshal(bodyBytes, &m); err != nil {
 		return nil, release.HTMLURL, fmt.Errorf("manifest.json không hợp lệ: %v", err)
 	}
 	if m.Version == "" {
