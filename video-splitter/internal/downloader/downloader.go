@@ -209,6 +209,7 @@ func runYtDlpProbe(ctx context.Context, rawURL string, cookieBrowser string, max
 		"--dump-json",
 		"--no-warnings",
 		"--ignore-errors",
+		"--extractor-args", "youtube:player_client=android",
 		"--socket-timeout", "15",
 		"--retries", "2",
 	}
@@ -456,6 +457,7 @@ func DownloadVideo(
 		"--no-playlist",           // luôn tải 1 video (không cả playlist)
 		"--newline",               // mỗi update progress trên 1 dòng (dễ parse)
 		"--no-warnings",
+		"--extractor-args", "youtube:player_client=android,web",
 		"--progress",
 		"--console-title",
 		// === TẢI VIDEO SẠCH: không logo, không watermark, không metadata thừa ===
@@ -480,9 +482,10 @@ func DownloadVideo(
 			"-f", "best[format_note!*=watermark]/best",
 		)
 	default:
-		// YouTube, FB, etc: chọn chất lượng tốt nhất
+		// YouTube, FB, etc: chọn chất lượng tốt nhất với fallback tương thích
 		args = append(args,
-			"-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+			"--extractor-args", "youtube:player_client=android",
+			"-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
 		)
 	}
 

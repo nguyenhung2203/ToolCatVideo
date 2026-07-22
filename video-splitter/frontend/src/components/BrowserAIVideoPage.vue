@@ -14,49 +14,84 @@
       
       <!-- Left Column: Config Form -->
       <div class="config-panel" :class="{ 'panel-disabled': isGenerating }">
-        <h3 class="panel-section-title">Cấu hình yêu cầu</h3>
+        <button
+          type="button"
+          @click="configCollapsed = !configCollapsed"
+          style="display: flex; align-items: center; justify-content: space-between; width: 100%; background: none; border: none; cursor: pointer; padding: 0; margin-bottom: 8px;"
+          :title="configCollapsed ? 'Mở rộng cấu hình' : 'Thu gọn cấu hình để tập trung vào prompt'"
+        >
+          <h3 class="panel-section-title" style="margin: 0;">Cấu hình yêu cầu</h3>
+          <ChevronDown v-if="configCollapsed" :size="18" style="color: var(--wx-brand-accent);" />
+          <ChevronUp v-else :size="18" style="color: var(--wx-brand-accent);" />
+        </button>
 
-        <div class="form-row" v-if="provider === 'flow'">
-          <label class="img-label">Model Google AI:</label>
-          <div class="img-source-pills">
-            <button v-for="m in modelsList" :key="m" :class="{ active: selectedModel === m }" @click="selectedModel = m" class="img-source-pill">
-              {{ m }}
-            </button>
+        <div v-show="!configCollapsed">
+          <div class="form-row" v-if="provider === 'flow'">
+            <label class="img-label">Model Google AI:</label>
+            <div class="img-source-pills">
+              <button v-for="m in modelsList" :key="m" :class="{ active: selectedModel === m }" @click="selectedModel = m" class="img-source-pill">
+                {{ m }}
+              </button>
+            </div>
           </div>
-        </div>
 
-        <div class="form-row">
-          <label class="img-label">Tỷ lệ khung hình:</label>
-          <div class="img-source-pills">
-            <button v-for="r in ratios" :key="r" :class="{ active: aspectRatio === r }" @click="aspectRatio = r" class="img-source-pill">
-              {{ r }}
-            </button>
-          </div>
-        </div>
-
-        <div class="form-row" v-if="provider === 'flow'">
-          <label class="img-label">Số lượng sinh mỗi lần:</label>
-          <div class="img-source-pills">
-            <button v-for="b in ['1x', '2x', '3x', '4x']" :key="b" :class="{ active: selectedBatchSize === b }" @click="selectedBatchSize = b" class="img-source-pill">
-              {{ b }}
-            </button>
-          </div>
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1.2fr 0.8fr; gap: var(--wx-space-2);">
-          <div class="form-row">
-            <label class="img-label">Thư mục lưu:</label>
-            <div style="display: flex; gap: var(--wx-space-1);">
-              <input type="text" v-model="outputDir" class="img-text-input read-only-input" readonly style="flex: 1;" />
-              <button @click="pickOutputDir" class="img-dir-btn" style="height: 38px; width: 38px; padding: 0;" title="Chọn thư mục lưu">
-                <FolderOpen :size="14" />
+          <div class="form-row" v-if="provider === 'flow'">
+            <label class="img-label">Thời lượng Video:</label>
+            <div class="img-source-pills">
+              <button v-for="d in ['4s', '6s', '8s']" :key="d" :class="{ active: selectedDuration === d }" @click="selectedDuration = d" class="img-source-pill">
+                {{ d }}
               </button>
             </div>
           </div>
 
           <div class="form-row">
-            <label class="img-label">Tên file lưu trữ:</label>
-            <input type="text" v-model="fileName" placeholder="Tên file..." class="img-text-input" />
+            <label class="img-label">Tỷ lệ khung hình:</label>
+            <div class="img-source-pills">
+              <button v-for="r in ratios" :key="r" :class="{ active: aspectRatio === r }" @click="aspectRatio = r" class="img-source-pill">
+                {{ r }}
+              </button>
+            </div>
+          </div>
+
+          <div class="form-row" v-if="provider === 'flow'">
+            <label class="img-label">Số lượng sinh mỗi lần:</label>
+            <div class="img-source-pills">
+              <button v-for="b in ['1x', '2x', '3x', '4x']" :key="b" :class="{ active: selectedBatchSize === b }" @click="selectedBatchSize = b" class="img-source-pill">
+                {{ b }}
+              </button>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--wx-space-2); align-items: start;">
+            <div class="form-row" style="margin-bottom: 0;">
+              <div style="height: 22px; display: flex; align-items: center; margin-bottom: 6px;">
+                <label class="img-label" style="margin-bottom: 0;">Thư mục lưu:</label>
+              </div>
+              <div style="display: flex; gap: var(--wx-space-1); height: 38px;">
+                <input type="text" v-model="outputDir" class="img-text-input read-only-input" readonly style="flex: 1; height: 38px;" />
+                <button @click="pickOutputDir" class="img-dir-btn" style="height: 38px; width: 38px; padding: 0; flex: none;" title="Chọn thư mục lưu">
+                  <FolderOpen :size="14" />
+                </button>
+              </div>
+            </div>
+
+            <div class="form-row" style="margin-bottom: 0;">
+              <div style="height: 22px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px;">
+                <label class="img-label" style="margin-bottom: 0; white-space: nowrap; flex: none;">Tên file video:</label>
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; color: var(--wx-text-muted); white-space: nowrap; margin-left: auto;" title="Bật: Tự động đặt tên file theo nội dung Prompt hoặc ngày giờ. Tắt: Sử dụng tên file nhập thủ công.">
+                  <input type="checkbox" v-model="autoNaming" style="width: 13px; height: 13px; accent-color: var(--wx-brand-primary);" />
+                  Tự động đặt tên
+                </label>
+              </div>
+              <input
+                type="text"
+                v-model="fileName"
+                :disabled="autoNaming"
+                :placeholder="autoNaming ? 'Tự động theo Prompt (VD: ai_video_1...)' : 'Tên file...'"
+                class="img-text-input"
+                :style="{ height: '38px', opacity: autoNaming ? '0.6' : '1', cursor: autoNaming ? 'not-allowed' : 'text' }"
+              />
+            </div>
           </div>
         </div>
 
@@ -302,7 +337,7 @@
 <script setup lang="ts">
 import { ref, reactive, watch, onMounted, computed, nextTick } from 'vue'
 import { useBrowserAI } from './composables/useBrowserAI'
-import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, CheckCircle, RefreshCw, ImageIcon, Check, Download } from 'lucide-vue-next'
+import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, CheckCircle, RefreshCw, ImageIcon, Check, Download, ChevronDown, ChevronUp } from 'lucide-vue-next'
 // @ts-ignore
 import { SelectFolder, GetStreamURL, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
 // @ts-ignore
@@ -648,10 +683,13 @@ const getFilename = (path: string) => {
   return parts[parts.length - 1]
 }
 
-const selectedModel = ref('Omni Flash')
+const selectedModel = ref('Veo 3.1 - Lite [Lower Priority]')
 const selectedBatchSize = ref('1x')
+const selectedDuration = ref('8s')
+const autoNaming = ref(true)
+const configCollapsed = ref(false)
 const confirmBeforeCreate = ref('never')
-const modelsList = ['Omni Flash', 'Veo 3.1 - Quality', 'Veo 3.1 - Fast', 'Veo 3.1 - Lite', 'Veo 3.1 - Lite [Lower Priority]']
+const modelsList = ['Veo 3.1 - Lite [Lower Priority]', 'Veo 3.1 - Lite', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality', 'Omni Flash']
 
 // Elapsed time counter
 const elapsedSeconds = ref(0)
@@ -725,6 +763,8 @@ const saveBrowserAISettings = async () => {
     gSettings[`browserAIModel_${suffix}`] = selectedModel.value
     gSettings[`browserAIAspectRatio_${suffix}`] = aspectRatio.value
     gSettings[`browserAIBatchSize_${suffix}`] = selectedBatchSize.value
+    gSettings[`browserAIDuration_${suffix}`] = selectedDuration.value
+    gSettings[`browserAIAutoNaming_${suffix}`] = autoNaming.value
     gSettings[`browserAIConfirmBeforeCreate_${suffix}`] = confirmBeforeCreate.value
     
     await SaveGlobalSettings(JSON.stringify(gSettings))
@@ -735,7 +775,7 @@ const saveBrowserAISettings = async () => {
 
 let saveSettingsTimeout: any = null
 watch(
-  [selectedModel, aspectRatio, selectedBatchSize, confirmBeforeCreate],
+  [selectedModel, aspectRatio, selectedBatchSize, selectedDuration, autoNaming, confirmBeforeCreate],
   () => {
     if (!isSettingsLoaded.value) return
     if (saveSettingsTimeout) clearTimeout(saveSettingsTimeout)
@@ -760,6 +800,8 @@ onMounted(async () => {
       if (gSettings[`browserAIModel_${suffix}`]) selectedModel.value = gSettings[`browserAIModel_${suffix}`]
       if (gSettings[`browserAIAspectRatio_${suffix}`]) aspectRatio.value = gSettings[`browserAIAspectRatio_${suffix}`]
       if (gSettings[`browserAIBatchSize_${suffix}`]) selectedBatchSize.value = gSettings[`browserAIBatchSize_${suffix}`]
+      if (gSettings[`browserAIDuration_${suffix}`]) selectedDuration.value = gSettings[`browserAIDuration_${suffix}`]
+      if (gSettings[`browserAIAutoNaming_${suffix}`] !== undefined) autoNaming.value = gSettings[`browserAIAutoNaming_${suffix}`]
       if (gSettings[`browserAIConfirmBeforeCreate_${suffix}`]) confirmBeforeCreate.value = gSettings[`browserAIConfirmBeforeCreate_${suffix}`]
     }
   } catch (err) {
@@ -785,8 +827,9 @@ const startGeneration = async () => {
   if (!prompt.value.trim()) return
 
   let finalFileName = fileName.value.trim()
-  if (!finalFileName) {
-    finalFileName = `ai_video_${Date.now()}`
+  if (autoNaming.value || !finalFileName) {
+    const cleanPrompt = prompt.value.trim().replace(/[^a-zA-Z0-9_]/g, '_').substring(0, 30)
+    finalFileName = cleanPrompt ? `ai_video_${cleanPrompt}` : `ai_video_${Date.now()}`
   }
 
   const filePaths = inputImages.value.map(i => i.path).filter(p => p !== '')

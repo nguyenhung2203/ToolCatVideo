@@ -720,6 +720,90 @@ func ffFilterPath(p string) string {
 	return p
 }
 
+// PrependThumbnailIntro ghép một đoạn intro (ảnh thumbnail đứng yên introDur giây,
+// audio IM LẶNG) vào ĐẦU clip video, xuất ra outputPath. Toàn bộ được re-encode để
+// intro và clip đồng nhất khung/fps/codec (concat filter yêu cầu điều này).
+//
+// Khung/fps chuẩn hóa theo chính clip (probeFrame) nên intro luôn khớp tỷ lệ clip.
+// Audio intro là anullsrc (im lặng) — theo lựa chọn "im lặng khi hiện thumbnail".
+// Audio clip giữ nguyên. Nếu clip không có audio track, dùng nhánh fallback nối
+// silent cho cả clip để concat không lỗi.
+func PrependThumbnailIntro(ctx context.Context, clipPath, imagePath, outputPath string, introDur float64, preset string, crf int, hwAccel string) error {
+	if introDur <= 0 {
+		introDur = 2.0
+	}
+	if preset == "" {
+		preset = "fast"
+	}
+	if crf <= 0 || crf > 51 {
+		crf = 23
+	}
+
+	w, h, fps := probeFrame(clipPath)
+
+	// Clip có audio hay không → quyết định cách map audio.
+	clipHasAudio := false
+	if info, err := media.GetVideoInfo(clipPath); err == nil && info != nil {
+		clipHasAudio = info.HasAudio
+	}
+
+	scalePad := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%s", w, h, w, h, fps)
+
+	var filter string
+	if clipHasAudio {
+		// [0]=ảnh loop, [1]=silent audio intro, [2]=clip. Nối intro(v+silent) + clip(v+a).
+		filter = fmt.Sprintf(
+			"[0:v]%s[iv];[2:v]%s[cv];[iv][1:a][cv][2:a]concat=n=2:v=1:a=1[vout][aout]",
+			scalePad, scalePad)
+	} else {
+		// Clip không audio → silent cho cả intro lẫn clip để track audio đồng nhất.
+		filter = fmt.Sprintf(
+			"[0:v]%s[iv];[2:v]%s[cv];[iv][1:a][cv][3:a]concat=n=2:v=1:a=1[vout][aout]",
+			scalePad, scalePad)
+	}
+
+	buildArgs := func(vcodec string, extraArgs []string) []string {
+		args := []string{
+			"-y",
+			"-loop", "1", "-t", fmt.Sprintf("%.3f", introDur), "-i", imagePath,
+			"-f", "lavfi", "-t", fmt.Sprintf("%.3f", introDur), "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+			"-i", clipPath,
+		}
+		if !clipHasAudio {
+			// Input [3]: silent audio phủ toàn clip (dài dư cũng được, concat cắt theo video).
+			args = append(args, "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100")
+		}
+		args = append(args,
+			"-filter_complex", filter,
+			"-map", "[vout]", "-map", "[aout]",
+			"-c:v", vcodec,
+		)
+		args = append(args, extraArgs...)
+		args = append(args,
+			"-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+			"-movflags", "+faststart", outputPath)
+		return args
+	}
+
+	encoder, encoderArgs := getEncoderParams(hwAccel, preset, crf)
+	if encoder != "libx264" {
+		cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), buildArgs(encoder, encoderArgs)...)
+		utils.HideCmdWindow(cmd)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+		_ = os.Remove(outputPath)
+	}
+
+	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), buildArgs("libx264", []string{"-preset", preset, "-crf", strconv.Itoa(crf)})...)
+	utils.HideCmdWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ffmpeg prepend intro error: %v, output: %s", err, string(out))
+	}
+	return nil
+}
+
 // copyFile sao chép file (dùng khi ghép chỉ có 1 clip).
 func copyFile(src, dst string) error {
 	data, err := os.ReadFile(src)

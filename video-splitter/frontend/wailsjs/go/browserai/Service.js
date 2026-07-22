@@ -10,6 +10,10 @@ export function CancelQueue() {
   return window['go']['browserai']['Service']['CancelQueue']();
 }
 
+export function CancelQueueSource(arg1) {
+  return window['go']['browserai']['Service']['CancelQueueSource'](arg1);
+}
+
 export function CheckLogin(arg1) {
   return window['go']['browserai']['Service']['CheckLogin'](arg1);
 }

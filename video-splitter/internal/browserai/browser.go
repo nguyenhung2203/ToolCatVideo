@@ -169,7 +169,7 @@ func (b *BrowserSession) Start(
 
 	l = l.Bin(chromeExecutable)
 
-	controlURL, err := l.Launch()
+	controlURL, err := launchBrowserHidden(l)
 	if err != nil {
 		return fmt.Errorf("launch Chrome: %w", err)
 	}

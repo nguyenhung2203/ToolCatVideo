@@ -32,6 +32,7 @@ import (
 	"video-splitter/internal/storage"
 	"video-splitter/internal/utils"
 	"video-splitter/internal/browserai"
+	"video-splitter/internal/sysmonitor"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"google.golang.org/genai"
@@ -85,6 +86,10 @@ func (a *App) startup(ctx context.Context) {
 	a.downloadCancelFuncs = make(map[string]context.CancelFunc)
 	a.isDownloadCancelled = false
 	a.imageDownloadCancel = nil
+
+	// Dọn file *.old / *.new còn sót từ lần cập nhật trước (bản mới đã chạy nên
+	// file cũ không còn bị khóa). Chạy nền để không làm chậm khởi động.
+	go cleanupOldUpdateFiles()
 
 	// Mở kho lưu trữ SQLite (lưu project/clip/config để mở lại không mất việc).
 	// Lỗi mở db không nên chặn app khởi động — chỉ mất tính năng lưu.
@@ -227,7 +232,7 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 
 	// Thư mục tạm riêng theo từng video (hash đường dẫn).
 	key := hashPath(sourcePath)
-	workDir := filepath.Join(os.TempDir(), "video-splitter", key)
+	workDir := filepath.Join(os.TempDir(), "TrafficTool", key)
 	_ = os.MkdirAll(workDir, 0755)
 	proxyPath := filepath.Join(workDir, "proxy.mp4")
 	audioPath := filepath.Join(workDir, "audio.wav")
@@ -566,7 +571,7 @@ func (a *App) CancelAnalysis() {
 // đường dẫn ảnh. Dùng khi frontend chia/sửa clip và cần ảnh xem trước mới.
 // Ảnh lưu trong workDir theo video (giữ lại để UI hiển thị).
 func (a *App) GenerateThumbnail(sourcePath string, timeSec float64) (string, error) {
-	workDir := filepath.Join(os.TempDir(), "video-splitter", hashPath(sourcePath), "thumbnails")
+	workDir := filepath.Join(os.TempDir(), "TrafficTool", hashPath(sourcePath), "thumbnails")
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return "", err
 	}
@@ -636,15 +641,24 @@ func sanitizeFilename(s string) string {
 
 // ExportClips xuất nhiều clip song song sử dụng ffmpeg.
 // Tên video đầu ra được đặt theo định dạng: [Tên dự án]_[Tên video gốc]_[Số thứ tự clip].mp4
-func (a *App) ExportClips(projectName string, sourcePath string, clips []project.Clip, outDir string, outImageDir string, cfg project.AnalyzerConfig, jobs int) ([]ExportResult, error) {
+func (a *App) ExportClips(projectName string, sourcePath string, clips []project.Clip, outDir string, outImageDir string, cfg project.AnalyzerConfig, jobs int, introDuration float64) ([]ExportResult, error) {
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return nil, fmt.Errorf("không tạo được thư mục xuất: %v", err)
 	}
 	if jobs <= 0 {
 		jobs = 2
 	}
-	if jobs > 8 {
-		jobs = 8
+	if jobs > 32 {
+		jobs = 32
+	}
+
+	// prependMode: khi bật "Xuất kèm Thumbnail" (outImageDir != ""), đảo luồng — cắt
+	// clip ra file TẠM rồi enqueue task tạo thumbnail; worker sau khi tạo xong (hoặc
+	// fallback frame gốc nếu AI lỗi) sẽ ghép ảnh thành intro dài introDuration giây
+	// vào ĐẦU clip → ghi ra đích cuối. introDuration<=0 → mặc định 2s.
+	prependMode := outImageDir != ""
+	if introDuration <= 0 {
+		introDuration = 2.0
 	}
 
 	// Phân giải GPU tự động khi xuất
@@ -722,15 +736,25 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 			if jobs > 1 {
 				threads = 2 // Giới hạn 2 threads mỗi clip để chạy song song mượt mà
 			}
+
+			// prependMode: cắt clip ra file TẠM (cliptmp_*) trong TempDir. Video đích
+			// cuối (outPath) sẽ do worker ghi ra sau khi ghép intro vào đầu clip tạm.
+			// Chế độ thường: cắt thẳng ra outPath như cũ.
+			cutTarget := outPath
+			if prependMode {
+				_ = os.MkdirAll(filepath.Join(os.TempDir(), "TrafficTool"), 0755)
+				cutTarget = filepath.Join(os.TempDir(), "TrafficTool", fmt.Sprintf("cliptmp_%s_%d.mp4", clip.ID, clip.Index))
+			}
+
 			runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Đang cắt video...", filepath.Base(sourcePath), clip.Index))
-			err := exporter.CutVideo(clipCtx, sourcePath, clip, outPath, cfg.ExportPreset, cfg.ExportCRF, threads, cfg.HardwareAccel, cfg.Mode)
+			err := exporter.CutVideo(clipCtx, sourcePath, clip, cutTarget, cfg.ExportPreset, cfg.ExportCRF, threads, cfg.HardwareAccel, cfg.Mode)
 			if err != nil {
 				if clipCtx.Err() != nil {
 					res.Error = "Tiến trình bị dừng"
 				} else {
 					res.Error = err.Error()
 				}
-			} else if dur, verr := exporter.VerifyOutput(outPath, clip.EndTime-clip.StartTime, 0.5); verr != nil {
+			} else if dur, verr := exporter.VerifyOutput(cutTarget, clip.EndTime-clip.StartTime, 0.5); verr != nil {
 				if dur <= 0 {
 					if clipCtx.Err() != nil {
 						res.Error = "Tiến trình bị dừng"
@@ -747,29 +771,49 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 				res.Duration = dur
 			}
 
-			// Copy hoặc tự sinh thumbnail sang outImageDir nếu có cấu hình và video xuất thành công
+			// prependMode (outImageDir != ""): đảo luồng — clip đã cắt ra file TẠM
+			// (cutTarget), giờ dựng ảnh bìa thành intro rồi ghép vào ĐẦU clip tạm để
+			// tạo ra video đích cuối (outPath). Ảnh bìa lấy từ: ảnh _ai chỉnh tay sẵn
+			// → ghép thẳng; hoặc trích frame gốc rồi enqueue task AI (worker tạo
+			// thumbnail rồi ghép, lỗi thì fallback dùng frame gốc). Nếu không có ảnh
+			// nào → chuyển clip tạm ra đích (video vẫn xuất, chỉ thiếu intro).
 			if res.OK && outImageDir != "" {
 				destThumbName := fmt.Sprintf("%s_%s_%d.jpg", cleanProjName, cleanVideoName, clip.Index)
-				destThumbPath := filepath.Join(outImageDir, destThumbName)
 				_ = os.MkdirAll(outImageDir, 0755)
 
-				// Nếu clip đã có sẵn ảnh bìa AI chỉnh tay (có chữ _ai trong tên file), chỉ cần copy sang
+				// moveTmpToFinal: khi không ghép được intro, đưa clip tạm ra đích cuối
+				// (copy+remove để an toàn khi TempDir và outDir khác ổ đĩa).
+				moveTmpToFinal := func() {
+					if cutTarget != outPath {
+						if err := copyFile(cutTarget, outPath); err == nil {
+							_ = os.Remove(cutTarget)
+						}
+					}
+				}
+
 				if clip.Thumbnail != "" && strings.Contains(clip.Thumbnail, "_ai") {
+					// Đã có ảnh bìa AI chỉnh tay sẵn → ghép thẳng vào đầu clip (không cần
+					// hàng đợi AI). Vẫn lưu 1 bản ảnh bìa vào thư mục image.
+					destThumbPath := filepath.Join(outImageDir, destThumbName)
 					if _, errStat := os.Stat(clip.Thumbnail); errStat == nil {
 						_ = copyFile(clip.Thumbnail, destThumbPath)
+						errMerge := exporter.PrependThumbnailIntro(clipCtx, cutTarget, clip.Thumbnail, outPath, introDuration, cfg.ExportPreset, cfg.ExportCRF, cfg.HardwareAccel)
+						if errMerge != nil {
+							moveTmpToFinal()
+							res.Error = "cảnh báo: ghép ảnh bìa vào đầu video lỗi: " + errMerge.Error()
+						} else {
+							_ = os.Remove(cutTarget)
+						}
+					} else {
+						moveTmpToFinal()
 					}
 				} else {
-					// Trích xuất 1 khung hình rõ nét (tự động lọc bỏ khung hình bị đen/tối)
+					// Trích 1 khung hình rõ nét từ VIDEO GỐC (lấy được trước cả khi cắt xong).
 					clipDuration := clip.EndTime - clip.StartTime
-					clearFramePath := filepath.Join(os.TempDir(), "video-splitter", fmt.Sprintf("clearframe_%s_%d.jpg", clip.ID, clip.Index))
+					clearFramePath := filepath.Join(os.TempDir(), "TrafficTool", fmt.Sprintf("clearframe_%s_%d.jpg", clip.ID, clip.Index))
 					extractedFrame, errFrame := media.ExtractClearFrame(clipCtx, sourcePath, clipDuration, clearFramePath)
 
 					if errFrame == nil && extractedFrame != "" {
-						// KHÔNG copy frame gốc vào thư mục image nữa (theo yêu cầu: chỉ giữ
-						// ảnh AI, không lẫn frame chưa có chữ). Đánh đổi: nếu AI tạo lỗi thì
-						// clip này KHÔNG có thumbnail nào trong thư mục — worker sẽ phát cảnh
-						// báo qua export_log để người dùng biết clip nào cần tạo lại.
-
 						theme := cfg.Prompt
 						if theme == "" {
 							theme = "Tạo ảnh thumbnail đẹp, ấn tượng và thu hút cho video ngắn"
@@ -791,7 +835,7 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 						task := browserai.ThumbnailTask{
 							ID:             fmt.Sprintf("task_thumb_%s_%d", clip.ID, clip.Index),
 							ClipName:       fmt.Sprintf("Clip #%d (%s)", clip.Index, cleanVideoName),
-							ClipPath:       outPath,
+							ClipPath:       cutTarget, // clip đã cắt (file tạm) để ghép intro
 							OutputDir:      outImageDir,
 							FileName:       strings.TrimSuffix(destThumbName, ".jpg"),
 							Prompt:         theme,
@@ -800,6 +844,14 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 							Model:          "Nano Banana 2",
 							AspectRatio:    aspectRatio,
 							Source:         "video-cut",
+							// Đảo luồng: worker sẽ ghép ảnh (AI hoặc fallback frame gốc)
+							// thành intro rồi nối vào đầu clip tạm → ghi ra outPath.
+							PrependToVideo: true,
+							IntroDuration:  introDuration,
+							FinalVideoPath: outPath,
+							ExportPreset:   cfg.ExportPreset,
+							ExportCRF:      cfg.ExportCRF,
+							ExportHWAccel:  cfg.HardwareAccel,
 						}
 
 						// Nạp task vào Hàng Đợi AI NGAY khi clip này cắt xong (vừa xuất
@@ -810,11 +862,14 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 							mu.Lock()
 							enqueuedCount++
 							mu.Unlock()
+						} else {
+							// Không có service AI → không ghép được, đưa clip tạm ra đích.
+							moveTmpToFinal()
 						}
-					} else if clip.Thumbnail != "" {
-						if _, errStat := os.Stat(clip.Thumbnail); errStat == nil {
-							_ = copyFile(clip.Thumbnail, destThumbPath)
-						}
+					} else {
+						// Trích frame lỗi → không có ảnh bìa để ghép. Video vẫn xuất (chỉ
+						// thiếu intro): đưa clip tạm ra đích cuối.
+						moveTmpToFinal()
 					}
 				}
 			}
@@ -871,7 +926,7 @@ func (a *App) MergeClips(sourcePath string, clips []project.Clip, outPath string
 		return "", fmt.Errorf("không tạo được thư mục xuất: %v", err)
 	}
 
-	tmpDir := filepath.Join(os.TempDir(), "video-splitter", hashPath(sourcePath), "merge")
+	tmpDir := filepath.Join(os.TempDir(), "TrafficTool", hashPath(sourcePath), "merge")
 	_ = os.MkdirAll(tmpDir, 0755)
 	defer os.RemoveAll(tmpDir)
 
@@ -998,7 +1053,7 @@ func (a *App) DeleteProject(id string) error {
 
 func (a *App) analyzeFixed(sourcePath string, cfg project.AnalyzerConfig) ([]project.Clip, error) {
 	key := hashPath(sourcePath)
-	workDir := filepath.Join(os.TempDir(), "video-splitter", key)
+	workDir := filepath.Join(os.TempDir(), "TrafficTool", key)
 	_ = os.MkdirAll(workDir, 0755)
 
 	ctx, cancel := context.WithCancel(a.ctx)
@@ -1096,9 +1151,17 @@ func getSettingsFilePath() string {
 	if err != nil || dir == "" {
 		dir = os.TempDir()
 	}
-	appDir := filepath.Join(dir, "video-splitter")
+	appDir := filepath.Join(dir, "TrafficTool")
 	_ = os.MkdirAll(appDir, 0755)
-	return filepath.Join(appDir, "settings.json")
+
+	newSettings := filepath.Join(appDir, "settings.json")
+	if _, err := os.Stat(newSettings); os.IsNotExist(err) {
+		oldSettings := filepath.Join(dir, "video-splitter", "settings.json")
+		if _, errOld := os.Stat(oldSettings); errOld == nil {
+			_ = os.Rename(oldSettings, newSettings)
+		}
+	}
+	return newSettings
 }
 
 // SaveGlobalSettings lưu cấu hình cài đặt chung của người dùng vào file settings.json
@@ -1127,7 +1190,7 @@ func (a *App) ExtractClipFrames(videoPath string, startTime float64, endTime flo
 	if err != nil || dir == "" {
 		dir = os.TempDir()
 	}
-	tempDir := filepath.Join(dir, "video-splitter", "temp_frames")
+	tempDir := filepath.Join(dir, "TrafficTool", "temp_frames")
 	_ = os.MkdirAll(tempDir, 0755)
 
 	// Dọn dẹp các frame cũ
@@ -1430,7 +1493,7 @@ Return only the final English image prompt without headings, explanations, markd
 	if err != nil || dirUser == "" {
 		dirUser = os.TempDir()
 	}
-	workDir := filepath.Join(dirUser, "video-splitter", "projects", h)
+	workDir := filepath.Join(dirUser, "TrafficTool", "projects", h)
 	aiThumbDir := filepath.Join(workDir, "ai_thumbnails")
 	_ = os.MkdirAll(aiThumbDir, 0755)
 
@@ -1608,7 +1671,7 @@ func (a *App) GetDefaultDownloadDir() string {
 	if err != nil {
 		home = os.TempDir()
 	}
-	dir := filepath.Join(home, "Videos", "VideoSplitter_Downloads")
+	dir := filepath.Join(home, "Videos", "TrafficTool_Downloads")
 	_ = os.MkdirAll(dir, 0755)
 	return dir
 }
@@ -1725,7 +1788,14 @@ func (a *App) GetDefaultImageDownloadDir() string {
 	if err != nil {
 		home = os.TempDir()
 	}
-	dir := filepath.Join(home, "Pictures", "VideoSplitter_Images")
+	dir := filepath.Join(home, "Pictures", "TrafficTool_Images")
 	_ = os.MkdirAll(dir, 0755)
 	return dir
 }
+
+// GetSystemStats trả về thông số CPU, RAM, GPU và các tiến trình tác vụ đang chạy.
+func (a *App) GetSystemStats() sysmonitor.SystemStats {
+	return sysmonitor.GetStats()
+}
+
+

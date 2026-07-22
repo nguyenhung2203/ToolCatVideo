@@ -62,20 +62,35 @@
             </div>
           </div>
 
-          <div style="display: grid; grid-template-columns: 1.2fr 0.8fr; gap: var(--wx-space-2);">
-            <div class="form-row">
-              <label class="img-label">Thư mục lưu:</label>
-              <div style="display: flex; gap: var(--wx-space-1);">
-                <input type="text" v-model="outputDir" class="img-text-input read-only-input" readonly style="flex: 1;" />
-                <button @click="pickOutputDir" class="img-dir-btn" style="height: 38px; width: 38px; padding: 0;" title="Chọn thư mục lưu">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--wx-space-2); align-items: start;">
+            <div class="form-row" style="margin-bottom: 0;">
+              <div style="height: 22px; display: flex; align-items: center; margin-bottom: 6px;">
+                <label class="img-label" style="margin-bottom: 0;">Thư mục lưu:</label>
+              </div>
+              <div style="display: flex; gap: var(--wx-space-1); height: 38px;">
+                <input type="text" v-model="outputDir" class="img-text-input read-only-input" readonly style="flex: 1; height: 38px;" />
+                <button @click="pickOutputDir" class="img-dir-btn" style="height: 38px; width: 38px; padding: 0; flex: none;" title="Chọn thư mục lưu">
                   <FolderOpen :size="14" />
                 </button>
               </div>
             </div>
 
-            <div class="form-row">
-              <label class="img-label">Tên file lưu trữ:</label>
-              <input type="text" v-model="fileName" placeholder="Tên file..." class="img-text-input" />
+            <div class="form-row" style="margin-bottom: 0;">
+              <div style="height: 22px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px;">
+                <label class="img-label" style="margin-bottom: 0; white-space: nowrap; flex: none;">Tên file ảnh:</label>
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; color: var(--wx-text-muted); white-space: nowrap; margin-left: auto;" title="Bật: Tự động tạo tên file theo nội dung Prompt hoặc ngày giờ. Tắt: Sử dụng tên file nhập thủ công.">
+                  <input type="checkbox" v-model="autoNaming" style="width: 13px; height: 13px; accent-color: var(--wx-brand-primary);" />
+                  Tự động đặt tên
+                </label>
+              </div>
+              <input
+                type="text"
+                v-model="fileName"
+                :disabled="autoNaming"
+                :placeholder="autoNaming ? 'Tự động theo Prompt (VD: Co_gai_xinh_1...)' : 'Tên file...'"
+                class="img-text-input"
+                :style="{ height: '38px', opacity: autoNaming ? '0.6' : '1', cursor: autoNaming ? 'not-allowed' : 'text' }"
+              />
             </div>
           </div>
         </div>
@@ -230,47 +245,6 @@
             </div>
           </div>
 
-          <!-- Card log tiến trình: mỗi dòng 1 bước ngắn gọn, có nút xóa & thu nhỏ -->
-          <div v-if="queueLogs.length > 0" style="flex-shrink: 0; margin-top: 8px; border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); background: var(--wx-surface-sunken, #0e1626); overflow: hidden;">
-            <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 6px 10px; background: rgba(0,0,0,0.15); border-bottom: 1px solid var(--wx-border-subtle, rgba(255,255,255,0.05));">
-              <span style="font-size: 11.5px; font-weight: 700; color: var(--wx-brand-accent); display: inline-flex; align-items: center; gap: 6px;">
-                Nhật ký tiến trình ({{ queueLogs.length }})
-              </span>
-              <div style="display: flex; align-items: center; gap: 6px;">
-                <button
-                  type="button"
-                  @click="clearQueueLogs"
-                  title="Xóa nhật ký tiến trình"
-                  style="background: none; border: none; cursor: pointer; color: var(--wx-text-muted, #94a3b8); padding: 2px 4px; display: inline-flex; align-items: center; border-radius: 4px; transition: color 0.15s ease;"
-                  onmouseover="this.style.color='#fca5a5'"
-                  onmouseout="this.style.color='var(--wx-text-muted, #94a3b8)'"
-                >
-                  <Trash2 :size="14" />
-                </button>
-                <button
-                  type="button"
-                  @click="queueLogCollapsed = !queueLogCollapsed"
-                  style="background: none; border: none; cursor: pointer; color: var(--wx-brand-accent); padding: 2px 4px; display: inline-flex; align-items: center;"
-                  :title="queueLogCollapsed ? 'Mở rộng log' : 'Thu nhỏ log'"
-                >
-                  <ChevronDown v-if="queueLogCollapsed" :size="16" />
-                  <ChevronUp v-else :size="16" />
-                </button>
-              </div>
-            </div>
-            <div v-show="!queueLogCollapsed" ref="queueLogBox" style="max-height: 300px; overflow-y: auto; padding: 4px 10px 8px; font-size: 11px; font-family: 'Consolas', monospace; line-height: 1.55;">
-              <div
-                v-for="line in queueLogs"
-                :key="line.id"
-                :style="{ color: line.level === 'error' ? '#fca5a5' : (line.level === 'success' ? '#86efac' : 'var(--l-text-muted)'), whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }"
-                :title="`[W${line.worker} ${line.name}] ${line.step}`"
-              >
-                <span style="opacity: 0.6;">{{ line.time }}</span>
-                <span style="opacity: 0.85; font-weight: 600;"> W{{ line.worker }}</span>
-                <span> · {{ line.step }}</span>
-              </div>
-            </div>
-          </div>
         </div>
 
         <!-- Selection Required State (Choose which images to download) -->
@@ -461,6 +435,54 @@
             </button>
           </div>
         </div>
+
+        <!-- Card log tiến trình (ĐỘC LẬP): hiện bất kể trạng thái trang, gộp log CẢ 2
+             nguồn (cắt video + tạo ảnh AI), mỗi dòng có nhãn nguồn để phân biệt. Nhờ
+             tách khỏi block queueMode nên khi cắt video chạy mà trang AI đang ở màn
+             chờ, log vẫn hiện. -->
+        <div v-if="queueLogs.length > 0" style="flex-shrink: 0; margin-top: 8px; border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); background: var(--wx-surface-sunken, #0e1626); overflow: hidden;">
+          <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 6px 10px; background: rgba(0,0,0,0.15); border-bottom: 1px solid var(--wx-border-subtle, rgba(255,255,255,0.05));">
+            <span style="font-size: 11.5px; font-weight: 700; color: var(--wx-brand-accent); display: inline-flex; align-items: center; gap: 6px;">
+              Nhật ký tiến trình ({{ queueLogs.length }})
+            </span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <button
+                type="button"
+                @click="clearQueueLogs"
+                title="Xóa nhật ký tiến trình"
+                style="background: none; border: none; cursor: pointer; color: var(--wx-text-muted, #94a3b8); padding: 2px 4px; display: inline-flex; align-items: center; border-radius: 4px; transition: color 0.15s ease;"
+                onmouseover="this.style.color='#fca5a5'"
+                onmouseout="this.style.color='var(--wx-text-muted, #94a3b8)'"
+              >
+                <Trash2 :size="14" />
+              </button>
+              <button
+                type="button"
+                @click="queueLogCollapsed = !queueLogCollapsed"
+                style="background: none; border: none; cursor: pointer; color: var(--wx-brand-accent); padding: 2px 4px; display: inline-flex; align-items: center;"
+                :title="queueLogCollapsed ? 'Mở rộng log' : 'Thu nhỏ log'"
+              >
+                <ChevronDown v-if="queueLogCollapsed" :size="16" />
+                <ChevronUp v-else :size="16" />
+              </button>
+            </div>
+          </div>
+          <div v-show="!queueLogCollapsed" ref="queueLogBox" style="max-height: 300px; overflow-y: auto; padding: 4px 10px 8px; font-size: 11px; font-family: 'Consolas', monospace; line-height: 1.55;">
+            <div
+              v-for="line in queueLogs"
+              :key="line.id"
+              :style="{ color: line.level === 'error' ? '#fca5a5' : (line.level === 'success' ? '#86efac' : 'var(--l-text-muted)'), whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }"
+              :title="`[${line.source === 'video-cut' ? 'Cắt video' : 'Tạo ảnh'} · W${line.worker} ${line.name}] ${line.step}`"
+            >
+              <span style="opacity: 0.6;">{{ line.time }}</span>
+              <span
+                :style="{ fontWeight: 700, marginLeft: '4px', padding: '0 5px', borderRadius: '4px', fontSize: '10px', color: line.source === 'video-cut' ? '#fcd34d' : '#93c5fd', background: line.source === 'video-cut' ? 'rgba(252,211,77,0.12)' : 'rgba(147,197,253,0.12)' }"
+              >{{ line.source === 'video-cut' ? 'CẮT VIDEO' : 'TẠO ẢNH' }}</span>
+              <span style="opacity: 0.85; font-weight: 600;"> W{{ line.worker }}</span>
+              <span> · {{ line.step }}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -517,7 +539,7 @@ import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, Ch
 // @ts-ignore
 import { SelectFolder, GetStreamURL, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
 // @ts-ignore
-import { OpenOutputFolder, EnqueueThumbnailTasks, ClearQueue, CancelQueue, DeleteResultFiles } from '../../wailsjs/go/browserai/Service'
+import { OpenOutputFolder, EnqueueThumbnailTasks, CancelQueueSource, DeleteResultFiles } from '../../wailsjs/go/browserai/Service'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 
 const mediaType = 'image'
@@ -750,6 +772,33 @@ const previewURLs = ref<string[]>([])
 // TẮT → chế độ cũ: hiện preview cho người dùng chọn rồi mới tải (chỉ khi TỔNG = 1 task).
 const autoDownload = ref(true)
 
+// Tự động đặt tên: BẬT → tự động tạo tên file sạch theo nội dung Prompt hoặc ngày giờ.
+// TẮT → sử dụng tên file do người dùng tự nhập.
+const autoNaming = ref(true)
+
+const generateAutoFileName = (promptText: string, index: number, total: number) => {
+  let clean = (promptText || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd').replace(/Đ/g, 'D')
+    .replace(/[^a-zA-Z0-9\s]/g, '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 4)
+    .join('_')
+    .substring(0, 30)
+    .replace(/_$/, '')
+
+  if (!clean) {
+    const now = new Date()
+    const timeStr = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`
+    clean = `Anh_AI_${timeStr}`
+  }
+
+  return total > 1 ? `${clean}_${index + 1}` : clean
+}
+
 // Tách prompt: BẬT → mỗi đoạn cách nhau bằng 1 dòng trống (2 lần Enter) tính là 1
 // prompt RIÊNG (chạy thành nhiều task song song). TẮT → toàn bộ nội dung trong ô
 // tính là 1 prompt DUY NHẤT dù có dòng trống (giữ nguyên bố cục nhiều dòng).
@@ -881,6 +930,9 @@ interface QueueLogLine {
   name: string
   level: string
   step: string
+  // Nguồn tạo log: "video-cut" (thumbnail từ cắt video) hoặc "ai-image" (tạo ảnh
+  // AI riêng). Dùng để gắn nhãn phân biệt khi hiện chung 2 nguồn trên cùng card log.
+  source: string
 }
 const queueLogs = ref<QueueLogLine[]>([])
 const queueLogCollapsed = ref(false)
@@ -1171,20 +1223,25 @@ onMounted(async () => {
   // Lấy resultPath trực tiếp từ status.tasks (không nghe clip_ai_thumb_completed
   // riêng để tránh xung đột EventsOff với listener cùng tên ở component cha).
   EventsOn('browser-ai:queue-progress', (status: any) => {
-    queueStatus.total = status.total || 0
-    queueStatus.completed = status.completed || 0
-    queueStatus.failed = status.failed || 0
-    queueStatus.isRunning = status.isRunning || false
+    // Trang Tạo Ảnh AI CHỈ quan tâm task nguồn "ai-image" — lọc bỏ task "video-cut"
+    // (thumbnail từ luồng cắt video) để 2 nguồn chạy chung hàng đợi không đếm lẫn nhau.
+    const mine = Array.isArray(status.tasks)
+      ? status.tasks.filter((t: any) => t && (t.source === 'ai-image' || !t.source))
+      : []
 
-    if (queueMode.value && Array.isArray(status.tasks)) {
+    queueStatus.total = mine.length
+    queueStatus.completed = mine.filter((t: any) => t.state === 'completed').length
+    queueStatus.failed = mine.filter((t: any) => t.state === 'failed').length
+    // Đang chạy nếu còn task ai-image chưa kết thúc (pending/processing).
+    queueStatus.isRunning = mine.some((t: any) => t.state === 'pending' || t.state === 'processing')
+
+    if (queueMode.value) {
       const allPaths: string[] = []
-      for (const t of status.tasks) {
-        if (t) {
-          if (Array.isArray(t.resultPaths) && t.resultPaths.length > 0) {
-            allPaths.push(...t.resultPaths)
-          } else if (t.resultPath) {
-            allPaths.push(t.resultPath)
-          }
+      for (const t of mine) {
+        if (Array.isArray(t.resultPaths) && t.resultPaths.length > 0) {
+          allPaths.push(...t.resultPaths)
+        } else if (t.resultPath) {
+          allPaths.push(t.resultPath)
         }
       }
       // Giữ đường dẫn cục bộ (để xóa file sau) song song với stream URL (để <img> hiển thị).
@@ -1193,14 +1250,15 @@ onMounted(async () => {
         .then((urls) => { queueResultPaths.value = urls })
     }
 
-    if (queueMode.value && !status.isRunning && status.total > 0) {
-      const ok = status.completed || 0
-      const fail = status.failed || 0
+    if (queueMode.value && !queueStatus.isRunning && queueStatus.total > 0) {
+      const ok = queueStatus.completed
+      const fail = queueStatus.failed
       showToast(`Hoàn tất Hàng Đợi AI: ${ok} thành công, ${fail} lỗi.`, fail > 0 ? 'warning' : 'success')
     }
   })
 
-  // Card log: mỗi bước ngắn gọn từ worker (bắt đầu/vào dự án/điền prompt/đính ảnh/đã gửi/xong/lỗi).
+  // Card log: nhận log của CẢ 2 nguồn (video-cut + ai-image) để hiện chung, mỗi
+  // dòng gắn nhãn nguồn để phân biệt log từ trang nào.
   EventsOn('browser-ai:queue-log', (e: any) => {
     if (!e) return
     const d = new Date()
@@ -1210,7 +1268,8 @@ onMounted(async () => {
       worker: e.worker || 0,
       name: e.name || '',
       level: e.level || 'info',
-      step: e.step || ''
+      step: e.step || '',
+      source: e.source || 'ai-image'
     })
     // Giới hạn 200 dòng gần nhất để tránh phình bộ nhớ khi chạy nhiều task.
     if (queueLogs.value.length > 200) {
@@ -1239,34 +1298,50 @@ const startGeneration = async () => {
   const tasksList = effectiveTasks.value
   if (tasksList.length === 0) return
 
-  const baseName = fileName.value.trim() || `ai_image_${Date.now()}`
+  const tasks = tasksList.map((t, i) => {
+    let taskFileName = ''
+    if (autoNaming.value) {
+      taskFileName = generateAutoFileName(t.prompt, i, tasksList.length)
+    } else {
+      const userCustom = fileName.value.trim()
+      if (userCustom) {
+        taskFileName = tasksList.length === 1 ? userCustom : `${userCustom}_${i + 1}`
+      } else {
+        taskFileName = generateAutoFileName(t.prompt, i, tasksList.length)
+      }
+    }
 
-  // LUÔN chạy qua Hàng Đợi AI (kể cả 1 prompt) để giao diện đồng nhất giữa 2 chế
-  // độ tick/không tick tự tải. Mọi ảnh đều được tự tải; nếu người dùng TẮT "tự
-  // động tải" thì sau khi xong họ tick chọn và xóa bớt ảnh thừa khỏi thư mục.
-  const single = tasksList.length === 1
-  const tasks = tasksList.map((t, i) => ({
-    id: `img_prompt_${Date.now()}_${i}`,
-    clipName: `Prompt #${i + 1}`,
-    clipPath: '',
-    outputDir: outputDir.value,
-    fileName: single ? baseName : `${baseName}_${i + 1}`,
-    prompt: t.prompt,
-    inputImagePath: '',
-    inputImagePaths: t.images.map(im => im.path).filter(p => p !== ''),
-    inputImageBase64s: t.images.map(im => im.base64).filter(b => b !== ''),
-    provider: provider.value,
-    model: selectedModel.value,
-    aspectRatio: aspectRatio.value,
-    batchSize: selectedBatchSize.value,
-    resolution: selectedResolution.value,
-    state: '',
-    errorMessage: '',
-    resultPath: '',
-    source: 'ai-image'
-  }))
+    return {
+      id: `img_prompt_${Date.now()}_${i}`,
+      clipName: `Prompt #${i + 1}`,
+      clipPath: '',
+      outputDir: outputDir.value,
+      fileName: taskFileName,
+      prompt: t.prompt,
+      inputImagePath: '',
+      inputImagePaths: t.images.map(im => im.path).filter(p => p !== ''),
+      inputImageBase64s: t.images.map(im => im.base64).filter(b => b !== ''),
+      provider: provider.value,
+      model: selectedModel.value,
+      aspectRatio: aspectRatio.value,
+      batchSize: selectedBatchSize.value,
+      resolution: selectedResolution.value,
+      state: '',
+      errorMessage: '',
+      resultPath: '',
+      source: 'ai-image'
+    }
+  })
+
+  // DỌN task ai-image CŨ trước khi nạp job mới (chỉ nguồn của trang này — KHÔNG
+  // đụng task video-cut đang chạy). Backend Enqueue APPEND, nên nếu không dọn thì
+  // task ai-image lỗi/hoàn tất của lần trước bị đếm lẫn vào job mới.
+  try { await CancelQueueSource('ai-image') } catch (_) {}
 
   queueResultPaths.value = []
+  queueResultLocalPaths.value = []
+  selectedResultIndexes.value = new Set()
+  queueLogs.value = []
   queueStatus.total = tasks.length
   queueStatus.completed = 0
   queueStatus.failed = 0
@@ -1319,7 +1394,8 @@ const resetForm = () => {
   queueResultPaths.value = []
   queueResultLocalPaths.value = []
   selectedResultIndexes.value = new Set()
-  try { ClearQueue() } catch (_) {}
+  // Chỉ dọn task nguồn ai-image, giữ nguyên task video-cut nếu đang chạy.
+  try { CancelQueueSource('ai-image') } catch (_) {}
 }
 
 // Tick chọn / bỏ chọn 1 ảnh kết quả (chỉ hiện khi tắt tự động tải).
@@ -1365,9 +1441,11 @@ const deleteSelectedResults = async () => {
 }
 
 const cancelQueue = () => {
-  try { CancelQueue() } catch (_) {}
+  // Chỉ dừng task nguồn ai-image của trang này, KHÔNG đụng thumbnail đang chạy
+  // từ luồng cắt video (nguồn video-cut) — 2 nguồn dùng chung hàng đợi.
+  try { CancelQueueSource('ai-image') } catch (_) {}
   queueStatus.isRunning = false
-  showToast('Đã dừng Hàng Đợi AI.', 'warning')
+  showToast('Đã dừng tạo ảnh AI.', 'warning')
 }
 
 const formatSize = (bytes: number) => {

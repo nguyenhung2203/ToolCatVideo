@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, reactive, watch, onUnmounted } from 'vue'
-import { GetVideoInfo, Analyze, ExportClips, SelectFiles, CancelAnalysis, GetStreamURL, GetDefaultConfig, GenerateThumbnail, SaveProject, LoadProjectBySource, ListProjects, DeleteProject, SelectImageFile, SelectAudioFile, SelectFolder, CancelExport, SaveGlobalSettings, GetGlobalSettings, ExtractClipFrames, GenerateAIThumbnail } from '../../wailsjs/go/main/App'
+import { GetVideoInfo, Analyze, ExportClips, SelectFiles, CancelAnalysis, GetStreamURL, GetDefaultConfig, GenerateThumbnail, SaveProject, LoadProjectBySource, ListProjects, DeleteProject, SelectImageFile, SelectAudioFile, SelectFolder, CancelExport, SaveGlobalSettings, GetGlobalSettings, ExtractClipFrames, GenerateAIThumbnail, CheckForUpdates, GetAppVersion, OpenWebURL, ApplyManifestUpdate } from '../../wailsjs/go/main/App'
 import { project, storage, main } from '../../wailsjs/go/models'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { useTheme } from '../ui-system/composables/useTheme'
@@ -105,8 +105,98 @@ const isMultiExportRunning = ref(false)
 const globalSettingsOutDir = ref('D:\\Output')
 const outDir = ref('D:\\Output')
 const outImageDir = ref('D:\\Output')
-const autoCreateSubfolders = ref(true)
+const autoCreateSubfolders = ref(false)
 const exportWithThumbnails = ref(true)
+// Thời lượng (giây) đoạn ảnh bìa thumbnail chèn vào ĐẦU mỗi video ngắn khi bật
+// "Xuất kèm Thumbnail". Mặc định 0.5s. Tự động lưu vào cấu hình chung.
+const thumbnailIntroDuration = ref(0.5)
+
+// === Đo tài nguyên hệ thống (RAM, CPU, GPU & Tiến trình) ===
+const sysStats = ref({
+  appRamMB: 0,
+  sysRamPercent: 0,
+  sysCpuPercent: 0,
+  gpuPercent: 0,
+  activeTasks: ''
+})
+let sysStatsTimer: any = null
+
+// === Update Checking System (Kiểm tra cập nhật & phiên bản) ===
+const appVersion = ref('v1.0.0')
+const isCheckingUpdate = ref(false)
+const updateResult = ref<main.UpdateInfo | null>(null)
+let updateHideTimer: any = null
+
+const checkUpdate = async () => {
+  if (updateHideTimer) {
+    clearTimeout(updateHideTimer)
+    updateHideTimer = null
+  }
+  isCheckingUpdate.value = true
+  updateResult.value = null
+  try {
+    const res = await CheckForUpdates()
+    updateResult.value = res
+    if (res.hasUpdate) {
+      showToast(`Đã có bản cập nhật mới ${res.latestVersion}!`, 'success')
+    } else {
+      if (res.error) {
+        showToast(res.error, 'warning')
+      } else {
+        showToast('Bạn đang sử dụng phiên bản mới nhất!', 'info')
+      }
+      // Tự động ẩn khung thông báo sau 5 giây nếu không có bản mới hoặc báo lỗi
+      updateHideTimer = setTimeout(() => {
+        updateResult.value = null
+      }, 5000)
+    }
+  } catch (err) {
+    showToast('Lỗi kiểm tra cập nhật: ' + String(err), 'error')
+    updateResult.value = {
+      hasUpdate: false,
+      latestVersion: '',
+      currentVersion: appVersion.value,
+      downloadUrl: '',
+      releaseNotes: '',
+      changedCount: 0,
+      downloadSize: 0,
+      error: String(err)
+    }
+    updateHideTimer = setTimeout(() => {
+      updateResult.value = null
+    }, 5000)
+  } finally {
+    isCheckingUpdate.value = false
+  }
+}
+
+const openDownloadPage = async (urlStr?: string) => {
+  const target = urlStr || updateResult.value?.downloadUrl || 'https://github.com/nguyenhung2203/ToolCatVideo/releases'
+  try {
+    await OpenWebURL(target)
+  } catch (err) {
+    showToast('Không mở được link: ' + String(err), 'error')
+  }
+}
+
+// Chế độ Tải & Tự Động Nâng Cấp trực tiếp
+const isUpdatingApp = ref(false)
+const updateProgressPercent = ref(0)
+const updateStatusMsg = ref('')
+
+const startAutoUpdate = async () => {
+  if (!updateResult.value || !updateResult.value.hasUpdate) return
+  isUpdatingApp.value = true
+  updateProgressPercent.value = 0
+  updateStatusMsg.value = 'Đang chuẩn bị tải cập nhật...'
+  try {
+    // Manifest-based: backend tự so sánh SHA256, chỉ tải file đã đổi rồi thay + restart.
+    await ApplyManifestUpdate()
+  } catch (err) {
+    showToast('Cập nhật thất bại: ' + String(err), 'error')
+    isUpdatingApp.value = false
+  }
+}
 
 // Thư mục ảnh truyền sang trang Tạo Ảnh AI: khớp đúng nơi thumbnail từ luồng cắt
 // video được lưu. Bật tạo thư mục con → outDir\image; tắt → dùng outImageDir riêng.
@@ -492,6 +582,7 @@ const saveGlobalSettings = async () => {
     gSettings.outImageDir = outImageDir.value
     gSettings.autoCreateSubfolders = autoCreateSubfolders.value
     gSettings.exportWithThumbnails = exportWithThumbnails.value
+    gSettings.thumbnailIntroDuration = thumbnailIntroDuration.value
     gSettings.geminiAPIKey = geminiAPIKey.value
     gSettings.browserAIShowChrome = browserAIShowChrome.value
     gSettings.browserAIConcurrency = browserAIConcurrency.value
@@ -508,7 +599,7 @@ const saveGlobalSettings = async () => {
 }
 
 let saveTimeout: any = null
-watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, autoCreateSubfolders, exportWithThumbnails, geminiAPIKey, browserAIShowChrome, browserAIConcurrency, namingConfig, promptPresets, namedProjects, activeProjectId], () => {
+watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, autoCreateSubfolders, exportWithThumbnails, thumbnailIntroDuration, geminiAPIKey, browserAIShowChrome, browserAIConcurrency, namingConfig, promptPresets, namedProjects, activeProjectId], () => {
   if (!isSettingsLoaded.value) return
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(() => {
@@ -584,7 +675,7 @@ const computedVideoSrc = computed(() => {
 })
 
 // === QUẢN LÝ PROMPT THUMBNAIL MẪU (PRESETS) ===
-const selectedPromptPresetId = ref('')
+const selectedPresetIds = ref<Set<string>>(new Set())
 const newPresetName = ref('')
 const showAddPresetForm = ref(false)
 
@@ -668,22 +759,42 @@ const savePromptPresets = () => {
 }
 
 const selectPresetTag = (preset: PromptPreset) => {
-  if (selectedPromptPresetId.value === preset.id) {
-    selectedPromptPresetId.value = ''
+  const ids = new Set(selectedPresetIds.value)
+  if (ids.has(preset.id)) {
+    ids.delete(preset.id)
   } else {
-    selectedPromptPresetId.value = preset.id
-    analyzerConfig.prompt = preset.content
+    ids.add(preset.id)
   }
+  selectedPresetIds.value = ids
+  // Nếu chỉ chọn đúng 1 tag → điền sẵn prompt vào ô để dễ chỉnh
+  if (ids.size === 1) {
+    const selectedId = [...ids][0]
+    const found = promptPresets.value.find(p => p.id === selectedId)
+    if (found) analyzerConfig.prompt = found.content
+  }
+}
+
+// Lấy prompt ngẫu nhiên từ các tag đang được chọn (dùng khi xuất)
+const getRandomPresetPrompt = (): string => {
+  if (selectedPresetIds.value.size === 0) return analyzerConfig.prompt
+  const selected = promptPresets.value.filter(p => selectedPresetIds.value.has(p.id))
+  if (selected.length === 0) return analyzerConfig.prompt
+  return selected[Math.floor(Math.random() * selected.length)].content
 }
 
 const deletePresetById = (id: string) => {
   promptPresets.value = promptPresets.value.filter(p => p.id !== id)
   savePromptPresets()
-  if (selectedPromptPresetId.value === id) {
-    selectedPromptPresetId.value = ''
+  const ids = new Set(selectedPresetIds.value)
+  if (ids.has(id)) {
+    ids.delete(id)
+    selectedPresetIds.value = ids
   }
   showToast('Đã xóa mẫu prompt.', 'info')
 }
+
+// ID preset đang được edit (nếu có)
+const editingPresetId = ref('')
 
 const addNewPreset = () => {
   if (!newPresetName.value.trim()) {
@@ -694,21 +805,57 @@ const addNewPreset = () => {
     showToast('Vui lòng nhập nội dung prompt trước khi lưu thành mẫu!', 'warning')
     return
   }
-  const id = Date.now().toString()
-  promptPresets.value.push({
-    id,
-    name: newPresetName.value.trim(),
-    content: analyzerConfig.prompt.trim()
-  })
-  savePromptPresets()
-  selectedPromptPresetId.value = id
+
+  if (editingPresetId.value) {
+    // Cập nhật preset đang được edit
+    const idx = promptPresets.value.findIndex(p => p.id === editingPresetId.value)
+    if (idx !== -1) {
+      promptPresets.value[idx] = {
+        id: editingPresetId.value,
+        name: newPresetName.value.trim(),
+        content: analyzerConfig.prompt.trim()
+      }
+    }
+    savePromptPresets()
+    showToast('Đã cập nhật mẫu prompt!', 'success')
+  } else {
+    // Tạo mới
+    const id = Date.now().toString()
+    promptPresets.value.push({
+      id,
+      name: newPresetName.value.trim(),
+      content: analyzerConfig.prompt.trim()
+    })
+    savePromptPresets()
+    const newIds = new Set(selectedPresetIds.value)
+    newIds.add(id)
+    selectedPresetIds.value = newIds
+    showToast('Đã lưu mẫu prompt mới!', 'success')
+  }
+
+  editingPresetId.value = ''
   newPresetName.value = ''
   showAddPresetForm.value = false
-  showToast('Đã lưu mẫu prompt mới!', 'success')
 }
 
+const editPreset = (preset: PromptPreset) => {
+  editingPresetId.value = preset.id
+  newPresetName.value = preset.name
+  analyzerConfig.prompt = preset.content
+  showAddPresetForm.value = true
+}
 
 onMounted(async () => {
+  EventsOn('update_progress', (percent: number) => {
+    updateProgressPercent.value = Math.round(percent)
+  })
+  EventsOn('update_status', (msg: string) => {
+    updateStatusMsg.value = msg
+  })
+  try {
+    const ver = await GetAppVersion()
+    if (ver) appVersion.value = ver
+  } catch (_) {}
   // 1. Tải cấu hình cài đặt chung toàn cục (settings.json)
   try {
     const globalSettingsStr = await GetGlobalSettings()
@@ -737,6 +884,9 @@ onMounted(async () => {
       }
       if (gSettings.exportWithThumbnails !== undefined) {
         exportWithThumbnails.value = gSettings.exportWithThumbnails
+      }
+      if (gSettings.thumbnailIntroDuration !== undefined) {
+        thumbnailIntroDuration.value = gSettings.thumbnailIntroDuration
       }
       if (gSettings.geminiAPIKey !== undefined) {
         geminiAPIKey.value = gSettings.geminiAPIKey
@@ -901,20 +1051,31 @@ onMounted(async () => {
   })
 
   EventsOn('browser-ai:queue-progress', (status: any) => {
-    aiQueueState.total = status.total || 0
-    aiQueueState.completed = status.completed || 0
-    aiQueueState.failed = status.failed || 0
-    aiQueueState.current = status.current || 0
-    aiQueueState.isRunning = status.isRunning || false
-    aiQueueState.tasks = status.tasks || []
+    // Trang cắt video CHỈ quan tâm task nguồn "video-cut" (thumbnail tự sinh từ
+    // luồng cắt) — lọc bỏ task "ai-image" (tạo ảnh AI riêng) để 2 nguồn chạy chung
+    // hàng đợi không đếm lẫn nhau.
+    const mine = Array.isArray(status.tasks)
+      ? status.tasks.filter((t: any) => t && t.source === 'video-cut')
+      : []
+    const total = mine.length
+    const completed = mine.filter((t: any) => t.state === 'completed').length
+    const failed = mine.filter((t: any) => t.state === 'failed').length
+    const running = mine.some((t: any) => t.state === 'pending' || t.state === 'processing')
 
-    if (status.isRunning) {
+    aiQueueState.total = total
+    aiQueueState.completed = completed
+    aiQueueState.failed = failed
+    aiQueueState.current = 0
+    aiQueueState.isRunning = running
+    aiQueueState.tasks = mine
+
+    if (running) {
       isMultiExportRunning.value = true
-      exportStatusText.value = `🔥 [Hàng Đợi AI] Đang tự động tạo Thumbnail (${status.completed + status.failed}/${status.total})...`
-    } else if (status.total > 0 && status.completed + status.failed === status.total) {
+      exportStatusText.value = `🔥 [Hàng Đợi AI] Đang tự động tạo Thumbnail (${completed + failed}/${total})...`
+    } else if (total > 0 && completed + failed === total) {
       isMultiExportRunning.value = false
-      exportStatusText.value = `✓ [Hàng Đợi AI] Đã hoàn thành toàn bộ ${status.completed} Thumbnail AI!`
-      showToast(`🎉 Hoàn tất 100%! Đã xuất xong video kèm ${status.completed} Thumbnail AI!`, 'success', 6000)
+      exportStatusText.value = `✓ [Hàng Đợi AI] Đã hoàn thành toàn bộ ${completed} Thumbnail AI!`
+      showToast(`🎉 Hoàn tất 100%! Đã xuất xong video kèm ${completed} Thumbnail AI!`, 'success', 6000)
     }
   })
 
@@ -986,10 +1147,25 @@ onMounted(async () => {
       displayProgressMap.value[path] = current
     }
   }, 100)
+
+  // 📊 Đo tài nguyên hệ thống (RAM, CPU, GPU & Tiến trình tác vụ)
+  const fetchStats = async () => {
+    try {
+      if ((window as any).go?.main?.App?.GetSystemStats) {
+        const res = await (window as any).go.main.App.GetSystemStats()
+        if (res) {
+          sysStats.value = res
+        }
+      }
+    } catch (_) {}
+  }
+  fetchStats()
+  sysStatsTimer = setInterval(fetchStats, 500)
 })
 
 onUnmounted(() => {
   if (timerInterval) clearInterval(timerInterval)
+  if (sysStatsTimer) clearInterval(sysStatsTimer)
 })
 
 const currentTimeRef = ref(Date.now())
@@ -1773,10 +1949,11 @@ const stopExport = async () => {
   try {
     await CancelExport()
     isExporting.value = false
-    // Nút Dừng giờ hiện cả khi export đã xong mà Hàng Đợi AI còn chạy → hủy luôn queue.
+    // Nút Dừng chỉ hủy task thumbnail của LUỒNG CẮT VIDEO (nguồn "video-cut"),
+    // KHÔNG đụng task tạo ảnh AI riêng ("ai-image") đang chạy song song ở trang kia.
     if (aiQueueState.isRunning) {
       await import('../../wailsjs/go/browserai/Service').then(async (srv) => {
-        try { await srv.CancelQueue() } catch (_) {}
+        try { await srv.CancelQueueSource('video-cut') } catch (_) {}
       })
       aiQueueState.isRunning = false
       isMultiExportRunning.value = false
@@ -1814,10 +1991,14 @@ const exportClips = async () => {
   const groupedKeys = Object.keys(clipsToExportMap)
   const finalTotal = Object.values(clipsToExportMap).reduce((acc, list) => acc + list.length, 0)
 
+  // Folder video đích của lần xuất này. Chỉ cảnh báo TRÙNG khi clip đã từng xuất
+  // vào ĐÚNG folder này — đổi sang folder khác thì không phải trùng (bug cũ: chỉ
+  // xét clip.status nên đổi folder vẫn báo trùng).
+  const currentExportDir = autoCreateSubfolders.value ? outDir.value + '\\video' : outDir.value
   const alreadyCompleted = []
   for (const [videoPath, list] of Object.entries(clipsToExportMap)) {
     for (const clip of list) {
-      if (clip.status === 'completed') {
+      if (clip.status === 'completed' && (clip as any).exportedDir === currentExportDir) {
         const vidName = videoPath.split('\\').pop() || 'Video'
         alreadyCompleted.push(`${vidName} (Clip #${clip.index})`)
       }
@@ -1828,6 +2009,17 @@ const exportClips = async () => {
     const listStr = alreadyCompleted.slice(0, 3).join(', ') + (alreadyCompleted.length > 3 ? ` và ${alreadyCompleted.length - 3} clip khác` : '')
     const confirmReExport = await showCustomConfirm(`Phát hiện ${alreadyCompleted.length} clip đã được xuất trước đó (${listStr}). Bạn có muốn tiếp tục xuất lại để ghi đè không?`)
     if (!confirmReExport) return
+  }
+
+  // Dọn task "video-cut" CŨ (thumbnail từ lần xuất trước) trước khi xuất mới, để
+  // không đếm lẫn lỗi/hoàn tất cũ vào lần này. CHỈ dọn nguồn video-cut — task
+  // "ai-image" của trang Tạo Ảnh AI (nếu đang chạy) giữ nguyên.
+  if (exportWithThumbnails.value) {
+    try {
+      await import('../../wailsjs/go/browserai/Service').then(async (srv) => {
+        try { await srv.CancelQueueSource('video-cut') } catch (_) {}
+      })
+    } catch (_) {}
   }
 
   isExporting.value = true
@@ -1874,7 +2066,11 @@ const exportClips = async () => {
       const imageDestDir = exportWithThumbnails.value 
         ? (autoCreateSubfolders.value ? outDir.value + '\\image' : outImageDir.value)
         : ''
-      const results = await ExportClips(projName, videoPath, list, exportDestDir, imageDestDir, analyzerConfig, exportJobs.value)
+      // Nếu có ≥2 preset được chọn: random prompt cho từng video
+      if (selectedPresetIds.value.size > 1) {
+        analyzerConfig.prompt = getRandomPresetPrompt()
+      }
+      const results = await ExportClips(projName, videoPath, list, exportDestDir, imageDestDir, analyzerConfig, exportJobs.value, thumbnailIntroDuration.value)
       unlisten()
 
       const stopped = results.some(r => r.error === 'Tiến trình xuất bị dừng' || r.error === 'Tiến trình bị dừng')
@@ -1886,7 +2082,12 @@ const exportClips = async () => {
       const okIds = new Set(results.filter(r => r.ok).map(r => r.clipId))
       const allClipsOfThisVideo = clipsMap.value[videoPath] || []
       allClipsOfThisVideo.forEach(c => {
-        if (okIds.has(c.id)) c.status = 'completed'
+        if (okIds.has(c.id)) {
+          c.status = 'completed'
+          // Ghi nhớ folder đã xuất để check trùng folder-aware (xuất sang folder
+          // khác thì không tính là trùng nữa).
+          ;(c as any).exportedDir = exportDestDir
+        }
       })
 
       okCount += results.filter(r => r.ok).length
@@ -1954,7 +2155,11 @@ const exportSelectedVideos = async () => {
       exportStatusText.value = 'Đang bắt đầu...'
       videoDoneCount.value = 0
       thumbDoneCount.value = 0
-      const results = await ExportClips(projName, path, clips, exportDestDir, imageDestDir, analyzerConfig, exportJobs.value)
+      // Nếu có ≥2 preset được chọn: random prompt cho lần xuất này
+      if (selectedPresetIds.value.size > 1) {
+        analyzerConfig.prompt = getRandomPresetPrompt()
+      }
+      const results = await ExportClips(projName, path, clips, exportDestDir, imageDestDir, analyzerConfig, exportJobs.value, thumbnailIntroDuration.value)
       
       const stopped = results.some(r => r.error === 'Tiến trình xuất bị dừng' || r.error === 'Tiến trình bị dừng')
       if (stopped) {
@@ -1963,7 +2168,12 @@ const exportSelectedVideos = async () => {
       }
 
       const okIds = new Set(results.filter(r => r.ok).map(r => r.clipId))
-      clips.forEach(c => { if (okIds.has(c.id)) c.status = 'completed' })
+      clips.forEach(c => {
+        if (okIds.has(c.id)) {
+          c.status = 'completed'
+          ;(c as any).exportedDir = exportDestDir
+        }
+      })
       okTotal += results.filter(r => r.ok).length
       clipTotal += results.length
     }
@@ -2775,7 +2985,7 @@ const formatSize = (bytes: number) => {
     <header class="header">
       <div class="header-left">
         <Video class="header-icon" :size="26" />
-        <h1>Smart Splitter</h1>
+        <h1>TrafficTool</h1>
         
         <!-- Bảng chọn dự án -->
         <div class="project-selector-container" :class="{ 'panel-disabled': isAnalyzing || isExporting }">
@@ -2797,13 +3007,13 @@ const formatSize = (bytes: number) => {
         <!-- Menu chọn chức năng chính (Segmented tabs cực đẹp) -->
         <div class="nav-segmented-control">
           <button class="nav-segment-btn" :class="{ active: activeView === 'split' }" @click="activeView = 'split'">
-            <Scissors :size="13" /> Cắt Video
+            <Scissors :size="13" /> Cắt & Xuất Video
           </button>
           <button class="nav-segment-btn" :class="{ active: activeView === 'download-video' }" @click="activeView = 'download-video'">
             <Download :size="13" /> Tải Video
           </button>
           <button class="nav-segment-btn" :class="{ active: activeView === 'download-image' }" @click="activeView = 'download-image'">
-            <ImageIcon :size="13" /> Tải Ảnh
+            <Download :size="13" /> Tải Ảnh
           </button>
           <button class="nav-segment-btn" :class="{ active: activeView === 'ai-image' }" @click="activeView = 'ai-image'">
             <Sparkles :size="13" style="color: var(--wx-brand-accent);" /> Tạo Ảnh AI
@@ -3038,11 +3248,11 @@ const formatSize = (bytes: number) => {
               <div class="compact-setting-row" style="margin-top: 8px;">
                 <label class="setting-title-lbl">Tăng tốc phần cứng (GPU):</label>
                 <select v-model="analyzerConfig.hardwareAccel" class="compact-select">
-                  <option value="auto">🚀 Tự động phát hiện (khuyên dùng)</option>
+                  <option value="auto">Tự động phát hiện (khuyên dùng)</option>
                   <option value="nvidia">NVIDIA (Card rời NVIDIA)</option>
                   <option value="intel">Intel (Card tích hợp Intel)</option>
                   <option value="amd">AMD (Card rời AMD)</option>
-                  <option value="none">❌ Không tăng tốc (chỉ dùng CPU)</option>
+                  <option value="none">Không tăng tốc (chỉ dùng CPU)</option>
                 </select>
               </div>
             </div>
@@ -3138,76 +3348,67 @@ const formatSize = (bytes: number) => {
               <div style="display: flex; align-items: center; justify-content: space-between;">
                 <span class="option-title-compact" style="color: var(--wx-brand-accent); font-weight: 700; margin-bottom: 0; font-size: 12.5px; display: inline-flex; align-items: center; gap: 5px;">
                   <Sparkles :size="14" style="color: var(--wx-brand-accent);" />
-                  Chủ đề Video (Prompt AI)
+                  Chủ đề Thumbnail
                 </span>
                 
-                <!-- Nút thêm mẫu -->
-                <button @click="showAddPresetForm = !showAddPresetForm" class="text-btn" style="font-size: 11px; color: var(--accent-color); background: none; border: none; cursor: pointer; padding: 2px 8px; border-radius: 4px; background: rgba(99, 102, 241, 0.08); display: inline-flex; align-items: center; gap: 4px; font-weight: 600;" title="Lưu prompt hiện tại thành mẫu mới">
-                  <Save :size="12" />
-                  Lưu mẫu hiện tại
+                <!-- Nút mở form thêm mẫu mới -->
+                <button @click="showAddPresetForm = !showAddPresetForm; if(!showAddPresetForm) editingPresetId = ''" class="text-btn"
+                  style="font-size: 11px; color: var(--accent-color); background: rgba(99, 102, 241, 0.08); border: none; cursor: pointer; padding: 2px 8px; border-radius: 4px; display: inline-flex; align-items: center; gap: 4px; font-weight: 600;">
+                  <Plus :size="12" />
+                  {{ showAddPresetForm ? 'Hủy' : 'Thêm mẫu' }}
                 </button>
               </div>
 
-              <!-- Form thêm mẫu mới -->
+              <!-- Form thêm mẫu mới: tên + nội dung prompt -->
               <div v-if="showAddPresetForm" style="display: flex; flex-direction: column; gap: 6px; padding: 8px; background: rgba(255,255,255,0.02); border-radius: 6px; border: 1px solid rgba(255,255,255,0.06); animation: fadeIn 0.2s ease;">
-                <input type="text" v-model="newPresetName" placeholder="Tên mẫu gợi nhớ (ví dụ: Điện ảnh sắc nét)..." style="font-size: 11.5px; height: 28px; padding: 4px 8px; border-radius: 4px; background: var(--l-bg); border: 1px solid var(--border-color); color: var(--l-text); width: 100%; box-sizing: border-box; outline: none;" />
+                <div style="font-size: 10.5px; color: var(--accent-color); font-weight: 600; margin-bottom: 2px;">
+                  {{ editingPresetId ? '⚙️ Sửa mẫu' : '➕ Thêm mẫu mới' }}
+                </div>
+                <input type="text" v-model="newPresetName" placeholder="Tên mẫu (ví dụ: Điện ảnh sắc nét)..."
+                  style="font-size: 11.5px; height: 28px; padding: 4px 8px; border-radius: 4px; background: var(--l-bg); border: 1px solid var(--border-color); color: var(--l-text); width: 100%; box-sizing: border-box; outline: none;" />
+                <textarea v-model="analyzerConfig.prompt"
+                  placeholder="Nội dung prompt gửi cho AI (ví dụ: cô gái xinh nhảy múa, bối cảnh sang trọng...)..."
+                  style="font-size: 11.5px; min-height: 60px; padding: 6px 8px; border-radius: 4px; background: var(--l-bg); border: 1px solid var(--border-color); color: var(--l-text); width: 100%; box-sizing: border-box; outline: none; resize: vertical; font-family: inherit; line-height: 1.45;">
+                </textarea>
                 <div style="display: flex; gap: 6px; justify-content: flex-end;">
-                  <button @click="showAddPresetForm = false" style="font-size: 10.5px; padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border-color); background: none; color: var(--l-text); cursor: pointer;">Hủy</button>
-                  <button @click="addNewPreset" style="font-size: 10.5px; padding: 3px 10px; border-radius: 4px; border: none; background: var(--accent-color); color: white; cursor: pointer; font-weight: 600;">Lưu</button>
+                  <button @click="showAddPresetForm = false; editingPresetId = ''" style="font-size: 10.5px; padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border-color); background: none; color: var(--l-text); cursor: pointer;">Hủy</button>
+                  <button @click="addNewPreset" style="font-size: 10.5px; padding: 3px 10px; border-radius: 4px; border: none; background: var(--accent-color); color: white; cursor: pointer; font-weight: 600;">{{ editingPresetId ? 'Lưu thay đổi' : 'Lưu mẫu' }}</button>
                 </div>
               </div>
 
               <!-- Chọn nhanh mẫu bằng Tag/Pill trực quan -->
               <div style="display: flex; flex-direction: column; gap: 4px;">
-                <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px;">
-                  <div v-for="preset in promptPresets" :key="preset.id" 
-                       style="position: relative; display: inline-flex; align-items: center;">
-                    
-                    <!-- Tag bấm để chọn -->
-                    <span @click="selectPresetTag(preset)"
-                          style="font-size: 11px; padding: 4px 10px; border-radius: 20px; cursor: pointer; transition: all 0.2s; user-select: none; font-weight: 500;"
-                          :style="{
-                            background: selectedPromptPresetId === preset.id ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.03)',
-                            border: selectedPromptPresetId === preset.id ? '1px solid var(--accent-color)' : '1px solid rgba(255,255,255,0.08)',
-                            color: selectedPromptPresetId === preset.id ? 'var(--accent-color)' : 'var(--l-text-muted)'
-                          }">
-                      {{ preset.name }}
+                <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; max-height: 90px; overflow-y: auto; padding-right: 2px;">
+                  <div v-for="preset in promptPresets" :key="preset.id" class="preset-chip-wrap">
+                    <span class="preset-chip" @click="selectPresetTag(preset)"
+                          :class="{ 'preset-chip--active': selectedPresetIds.has(preset.id) }">
+                      <span class="chip-label">{{ preset.name }}</span>
+                      <span class="chip-edit" @click.stop="editPreset(preset)" title="Sửa mẫu này">✏</span>
+                      <span class="chip-del" @click.stop="deletePresetById(preset.id)" title="Xóa mẫu này">×</span>
                     </span>
-
-                    <!-- Nút xóa tag nếu không phải mặc định -->
-                    <button v-if="!['default_auto','1','2','3','4'].includes(preset.id)"
-                            @click.stop="deletePresetById(preset.id)"
-                            style="margin-left: -6px; background: var(--wx-danger-solid); color: var(--wx-text-inverse); border: none; border-radius: 50%; width: 12px; height: 12px; font-size: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 2; box-shadow: 0 1px 3px var(--wx-surface-overlay); padding: 0;"
-                            title="Xóa mẫu này">
-                      ✕
-                    </button>
+                  </div>
+                  <!-- Hint random khi chọn nhiều -->
+                  <div v-if="selectedPresetIds.size > 1" style="width: 100%; margin-top: 4px; font-size: 10.5px; color: var(--accent-color); opacity: 0.8; display: flex; align-items: center; gap: 4px;">
+                    🎲 Random {{ selectedPresetIds.size }} chủ đề — mỗi clip sẽ dùng 1 prompt ngẫu nhiên
+                  </div>
+                  <!-- Hint khi chọn đúng 1 -->
+                  <div v-else-if="selectedPresetIds.size === 1" style="width: 100%; margin-top: 4px; font-size: 10.5px; color: var(--l-text-muted); display: flex; align-items: center; gap: 4px;">
+                    ✓ Đã chọn 1 chủ đề
                   </div>
                 </div>
               </div>
-
-              <!-- Nội dung Prompt -->
-              <div style="display: flex; flex-direction: column; gap: 4px;">
-                <span style="font-size: 11px; color: var(--l-text-muted); font-weight: 500;">Nội dung mô tả (được gửi cho AI):</span>
-                <textarea v-model="analyzerConfig.prompt" 
-                          placeholder="Mô tả nội dung cần phân tích (ví dụ: cô gái xinh nhảy múa, bối cảnh sang trọng...). Để trống sẽ tự nhận diện theo hình ảnh video." 
-                          class="text-content-input" 
-                          style="margin-bottom: 0; font-size: 11.5px; height: 60px; min-height: 45px; padding: 8px; border-radius: 6px; box-sizing: border-box; width: 100%; resize: vertical; font-family: inherit; line-height: 1.45; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); color: var(--l-text); outline: none;"></textarea>
-              </div>
             </div>
+
           </div>
 
 
 
             <!-- Áp dụng hàng loạt -->
             <div style="margin-top: auto; border-top: 1px solid var(--border-color); padding-top: 8px;">
-              <label class="auto-apply-label-compact" style="margin-bottom: 6px; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); cursor: pointer;">
+              <label class="auto-apply-label-compact" style="margin-bottom: 0; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); cursor: pointer;">
                 <input type="checkbox" v-model="globalRemix.autoApply" />
                 <span>Tự động áp dụng khi quét mới</span>
               </label>
-              <button @click="applyGlobalRemixToAllActive" class="btn primary-btn flex-center font-bold" style="width: 100%; padding: 6px; border-radius: 6px; background-color: var(--accent-color); color: white; border: none; cursor: pointer; font-size: 11.5px; display: flex; align-items: center; justify-content: center; gap: 4px;">
-                <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
-                Áp hiệu ứng cho tất cả clip hiện tại
-              </button>
             </div>
         </div>
 
@@ -3465,24 +3666,42 @@ const formatSize = (bytes: number) => {
       <!-- PANEL XUẤN BẢN CỐ ĐỊNH Ở CUỐI GÓC DƯỚI CLIPS -->
       <div class="clips-export-publisher-bar" v-if="selectedClips.size > 0" :class="{ 'panel-disabled': isAnalyzing }">
         <div class="pub-left" style="display: flex; align-items: center; flex: none; flex-shrink: 0;">
-          <label class="toggle-row inline" style="cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 8px; margin-bottom: 0; user-select: none; font-weight: 600; color: var(--l-text); white-space: nowrap; flex-shrink: 0;">
-            <input type="checkbox" v-model="exportWithThumbnails" style="width: 16px; height: 16px; accent-color: var(--wx-brand-primary);" />
-            Xuất kèm ảnh Thumbnail
-          </label>
+          <!-- Cụm tính năng Thumbnail: gom chung checkbox + thời lượng bìa đầu clip -->
+          <div style="display: inline-flex; align-items: center; gap: 8px; background: rgba(0, 0, 0, 0.35); padding: 4px 10px; border-radius: 8px; border: 1px solid var(--wx-border-default); flex: none;">
+            <label style="cursor: pointer; font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; margin: 0; user-select: none; color: var(--wx-text-primary); white-space: nowrap;">
+              <input type="checkbox" v-model="exportWithThumbnails" style="width: 15px; height: 15px; accent-color: var(--wx-brand-primary);" />
+              Xuất kèm Thumbnail
+            </label>
+            <template v-if="exportWithThumbnails && !isExporting">
+              <span style="color: var(--wx-border-default); opacity: 0.6; font-size: 11px;">|</span>
+              <div style="display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; color: var(--wx-text-secondary); white-space: nowrap;" title="Thời lượng chèn đoạn ảnh bìa (thumbnail) vào ĐẦU mỗi video ngắn">
+                <span>Bìa đầu clip:</span>
+                <input type="number" step="0.5" min="0.5" max="15" v-model.number="thumbnailIntroDuration" style="width: 52px; height: 26px; text-align: center; border-radius: 5px; border: 1px solid var(--wx-border-default); background: var(--wx-surface-sunken, #0e1626); color: var(--wx-text-primary); font-size: 12px; font-weight: bold; outline: none;" />
+                <span style="color: var(--wx-text-muted); font-size: 11.5px;">giây</span>
+              </div>
+            </template>
+          </div>
         </div>
 
-        <!-- Thư mục xuất chung mặc định (chỉ hiện khi chưa xuất) -->
-        <div v-if="!isExporting" style="display: flex; align-items: center; gap: 6px; flex: 1; margin: 0 12px; min-width: 140px; max-width: 380px; align-self: center;">
-          <span style="font-size: 12.5px; font-weight: 600; color: var(--wx-text-primary); white-space: nowrap; line-height: 1; display: inline-flex; align-items: center;">
-            Lưu vào:
-          </span>
-          <input type="text" v-model="outDir" class="file-path-input dl-pub-dir-input" readonly :title="outDir" />
-          <button class="btn dl-pub-dir-btn-icon" @click="chooseOutDir" title="Chọn thư mục">
-            <FolderOpen :size="14" />
-          </button>
+        <!-- Thư mục xuất: Chọn riêng thư mục lưu Video và thư mục lưu Ảnh rộng rãi -->
+        <div v-if="!isExporting" style="display: flex; align-items: center; gap: 14px; flex: 1; margin: 0 12px; min-width: 0; align-self: center;">
+          <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 120px;">
+            <span style="font-size: 12px; font-weight: 600; color: var(--wx-text-primary); white-space: nowrap; flex: none;">Video:</span>
+            <input type="text" v-model="outDir" class="file-path-input dl-pub-dir-input" readonly :title="`Thư mục lưu Video: ${outDir}`" style="flex: 1; height: 32px; font-size: 11.5px; min-width: 80px;" />
+            <button class="btn dl-pub-dir-btn-icon" @click="chooseOutDir" title="Chọn thư mục lưu Video" style="height: 32px; width: 32px; padding: 0; flex: none;">
+              <FolderOpen :size="13" />
+            </button>
+          </div>
+          <div v-if="exportWithThumbnails" style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 120px;">
+            <span style="font-size: 12px; font-weight: 600; color: var(--wx-text-primary); white-space: nowrap; flex: none;">Thumbnail:</span>
+            <input type="text" v-model="outImageDir" class="file-path-input dl-pub-dir-input" readonly :title="`Thư mục lưu Ảnh Thumbnail: ${outImageDir}`" style="flex: 1; height: 32px; font-size: 11.5px; min-width: 80px;" />
+            <button class="btn dl-pub-dir-btn-icon" @click="chooseOutImageDir" title="Chọn thư mục lưu Ảnh Thumbnail" style="height: 32px; width: 32px; padding: 0; flex: none;">
+              <FolderOpen :size="13" />
+            </button>
+          </div>
         </div>
 
-        <div class="pub-right" :style="{ display: 'flex', alignItems: 'center', gap: '10px', flex: '1', minWidth: '0', justifyContent: 'flex-end' }">
+        <div class="pub-right" :style="{ display: 'flex', alignItems: 'center', gap: '10px', flex: isRunningAny ? '1' : '0 0 auto', minWidth: '0', justifyContent: 'flex-end' }">
           <!-- Tiến trình xuất -->
           <div v-if="isRunningAny && exportProgress.total > 0" class="pub-progress-box"
                :style="{
@@ -3550,23 +3769,46 @@ const formatSize = (bytes: number) => {
       </template>
 
       <!-- BỐ CỤC CHO PHẦN TẢI VIDEO ONLINE INLINE -->
-      <VideoDownloader v-show="activeView === 'download-video'" :video-paths="videoPaths" :show-toast="showToast" @back="activeView = 'split'" />
+      <KeepAlive><VideoDownloader v-if="activeView === 'download-video'" :video-paths="videoPaths" :show-toast="showToast" @back="activeView = 'split'" /></KeepAlive>
 
       <!-- BỐ CỤC CHO PHẦN TẢI ẢNH CHỦ ĐỀ INLINE -->
-      <ImageDownloader v-show="activeView === 'download-image'" :show-toast="showToast" @back="activeView = 'split'" />
+      <KeepAlive><ImageDownloader v-if="activeView === 'download-image'" :show-toast="showToast" @back="activeView = 'split'" /></KeepAlive>
 
       <!-- BỐ CỤC CHO PHẦN TẠO ẢNH AI INLINE -->
-      <BrowserAIImagePage v-show="activeView === 'ai-image'" :default-output-dir="aiImageOutputDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-image="handleApplyAIImage" @show-toast="showToast" />
+      <KeepAlive><BrowserAIImagePage v-if="activeView === 'ai-image'" :default-output-dir="aiImageOutputDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-image="handleApplyAIImage" @show-toast="showToast" /></KeepAlive>
 
       <!-- BỐ CỤC CHO PHẦN TẠO VIDEO AI INLINE -->
-      <BrowserAIVideoPage v-show="activeView === 'ai-video'" :default-output-dir="outDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-video="handleApplyAIVideo" @show-toast="showToast" />
+      <KeepAlive><BrowserAIVideoPage v-if="activeView === 'ai-video'" :default-output-dir="outDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-video="handleApplyAIVideo" @show-toast="showToast" /></KeepAlive>
 
     </div>
 
-    <!-- Thanh trạng thái CapCut-style dưới đáy -->
-    <footer class="system-status-footer">
-      <div class="status-indicator-dot" :class="{ active: isAnalyzing || isExporting }"></div>
-      <span class="status-msg-text">{{ statusText }}</span>
+    <!-- Thanh trạng thái CapCut-style dưới đáy (Đo tài nguyên Real-time) -->
+    <footer class="system-status-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 4px 16px;">
+      <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;">
+        <div class="status-indicator-dot" :class="{ active: isAnalyzing || isExporting }"></div>
+        <span class="status-msg-text" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ statusText }}</span>
+      </div>
+
+      <!-- Hiển thị tài nguyên CPU, RAM, GPU bên phải với Vector SVG icons -->
+      <div class="system-metrics-badge" style="display: flex; align-items: center; gap: 16px; font-size: 11.5px; font-weight: 600; color: var(--wx-text-secondary); flex-shrink: 0; margin-left: 16px;">
+        <span :title="sysStats.activeTasks ? `RAM Tool & tiến trình (${sysStats.activeTasks}): ${sysStats.appRamMB.toFixed(0)} MB` : `RAM chiếm dụng bởi Tool: ${sysStats.appRamMB.toFixed(0)} MB`" style="display: inline-flex; align-items: center; gap: 5px;">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 19v2m4-2v2m4-2v2m4-2v2M6 3v2m4-2v2m4-2v2m4-2v2M3 6h2m-2 4h2m-2 4h2m-2 4h2m14-14h2m-2 4h2m-2 4h2m-2 4h2"/><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+          <span style="opacity: 0.8;">RAM:</span>
+          <strong style="color: var(--wx-text-primary);">{{ sysStats.appRamMB > 0 ? sysStats.appRamMB.toFixed(0) + ' MB' : sysStats.sysRamPercent.toFixed(0) + '%' }}</strong>
+        </span>
+
+        <span :title="`CPU toàn hệ thống: ${sysStats.sysCpuPercent.toFixed(0)}%`" style="display: inline-flex; align-items: center; gap: 5px;">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M20 15h2M20 9h2M2 15h2M2 9h2"/></svg>
+          <span style="opacity: 0.8;">CPU:</span>
+          <strong style="color: var(--wx-text-primary);">{{ sysStats.sysCpuPercent.toFixed(0) }}%</strong>
+        </span>
+
+        <span :title="`GPU xử lý đồ họa/video`" style="display: inline-flex; align-items: center; gap: 5px;">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <span style="opacity: 0.8;">GPU:</span>
+          <strong style="color: var(--wx-text-primary);">{{ (isAnalyzing || isExporting) ? 'Đang chạy' : 'Sẵn sàng' }}</strong>
+        </span>
+      </div>
     </footer>
 
     <!-- ===== TOAST NOTIFICATIONS ===== -->
@@ -4178,15 +4420,6 @@ const formatSize = (bytes: number) => {
                 Cấu hình hiệu năng & hệ thống
               </h4>
               <div class="settings-grid" style="grid-template-columns: 1fr; gap: 15px; margin-bottom: 15px;">
-                <!-- Checkbox tự động tạo thư mục con -->
-                <div class="setting-item" style="margin-bottom: 5px;">
-                  <label class="toggle-row inline" style="font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 8px;">
-                    <input type="checkbox" v-model="autoCreateSubfolders" style="width:16px; height:16px;" />
-                    Tự động tạo thư mục con (Video / Ảnh) bên trong thư mục xuất
-                  </label>
-                </div>
-
-                
                 <div class="settings-grid" style="grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 5px;">
                   <div>
                     <label style="font-size: 12.5px; font-weight: 600; white-space: nowrap; display: block; margin-bottom: 4px;">Cắt song song:</label>
@@ -4195,6 +4428,10 @@ const formatSize = (bytes: number) => {
                       <option :value="2" style="background: #0e1626; color: #f8fafc; padding: 6px;">2 video</option>
                       <option :value="3" style="background: #0e1626; color: #f8fafc; padding: 6px;">3 video</option>
                       <option :value="4" style="background: #0e1626; color: #f8fafc; padding: 6px;">4 video</option>
+                      <option :value="6" style="background: #0e1626; color: #f8fafc; padding: 6px;">6 video</option>
+                      <option :value="8" style="background: #0e1626; color: #f8fafc; padding: 6px;">8 video (máy mạnh)</option>
+                      <option :value="10" style="background: #0e1626; color: #f8fafc; padding: 6px;">10 video</option>
+                      <option :value="12" style="background: #0e1626; color: #f8fafc; padding: 6px;">12 video (tối đa)</option>
                     </select>
                   </div>
                   <div>
@@ -4205,9 +4442,102 @@ const formatSize = (bytes: number) => {
                       <option :value="3" style="background: #0e1626; color: #f8fafc; padding: 6px;">3 clip</option>
                       <option :value="4" style="background: #0e1626; color: #f8fafc; padding: 6px;">4 clip</option>
                       <option :value="6" style="background: #0e1626; color: #f8fafc; padding: 6px;">6 clip</option>
-                      <option :value="8" style="background: #0e1626; color: #f8fafc; padding: 6px;">8 clip (mạnh)</option>
+                      <option :value="8" style="background: #0e1626; color: #f8fafc; padding: 6px;">8 clip</option>
+                      <option :value="10" style="background: #0e1626; color: #f8fafc; padding: 6px;">10 clip</option>
+                      <option :value="12" style="background: #0e1626; color: #f8fafc; padding: 6px;">12 clip (máy mạnh)</option>
+                      <option :value="16" style="background: #0e1626; color: #f8fafc; padding: 6px;">16 clip</option>
+                      <option :value="20" style="background: #0e1626; color: #f8fafc; padding: 6px;">20 clip</option>
+                      <option :value="24" style="background: #0e1626; color: #f8fafc; padding: 6px;">24 clip</option>
+                      <option :value="32" style="background: #0e1626; color: #f8fafc; padding: 6px;">32 clip (siêu tốc)</option>
                     </select>
                   </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Cấu hình cập nhật ứng dụng & Phiên bản -->
+            <div class="settings-group" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--wx-border-default, #2a364f);">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <h4 style="margin: 0; color: var(--wx-brand-accent); font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                    <Sparkles :size="15" />
+                    Phiên bản ứng dụng: <span style="color: var(--wx-text-primary); font-family: monospace;">{{ appVersion }}</span>
+                  </h4>
+                  <span style="font-size: 11.5px; color: var(--text-muted); display: block; margin-top: 2px;">Phiên bản TrafficTool hiện tại trên máy của bạn</span>
+                </div>
+
+                <button
+                  @click="checkUpdate"
+                  :disabled="isCheckingUpdate"
+                  class="btn flex-center"
+                  style="padding: 6px 14px; font-size: 12px; font-weight: 600; border-radius: 6px; background: var(--wx-brand-primary, #6366f1); color: #fff; border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;"
+                >
+                  <Loader2 v-if="isCheckingUpdate" :size="13" class="spin-hourglass" />
+                  <RefreshCw v-else :size="13" />
+                  {{ isCheckingUpdate ? 'Đang kiểm tra...' : 'Kiểm tra cập nhật' }}
+                </button>
+              </div>
+
+              <!-- Thông báo kết quả kiểm tra -->
+              <div v-if="updateResult" style="margin-top: 12px; padding: 10px 28px 10px 12px; border-radius: 8px; font-size: 12px; position: relative;"
+                :style="{
+                  background: updateResult.hasUpdate ? 'rgba(34, 197, 94, 0.12)' : updateResult.error ? 'rgba(239, 68, 68, 0.12)' : 'rgba(99, 102, 241, 0.12)',
+                  border: '1px solid ' + (updateResult.hasUpdate ? 'rgba(34, 197, 94, 0.3)' : updateResult.error ? 'rgba(239, 68, 68, 0.3)' : 'rgba(99, 102, 241, 0.3)')
+                }"
+              >
+                <!-- Nút tắt thông báo nhanh -->
+                <button
+                  @click="updateResult = null"
+                  style="position: absolute; top: 6px; right: 8px; background: none; border: none; color: var(--wx-text-secondary); cursor: pointer; font-size: 13px; font-weight: bold; line-height: 1; opacity: 0.7;"
+                  title="Đóng thông báo"
+                >✕</button>
+                <div v-if="updateResult.hasUpdate" style="display: flex; flex-direction: column; gap: 8px;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;">
+                    <span style="font-weight: 700; color: #4ade80;">🎉 Đã có phiên bản mới: {{ updateResult.latestVersion }}<span v-if="updateResult.changedCount > 0" style="font-weight: 500; color: var(--text-muted); font-size: 11px; margin-left: 6px;">(cần tải {{ updateResult.changedCount }} file · {{ (updateResult.downloadSize / 1024 / 1024).toFixed(1) }} MB)</span></span>
+
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                      <button
+                        @click="startAutoUpdate"
+                        :disabled="isUpdatingApp"
+                        class="btn flex-center"
+                        style="padding: 5px 12px; font-size: 11.5px; background: linear-gradient(135deg, #10b981, #059669); color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);"
+                      >
+                        <Zap :size="13" /> {{ isUpdatingApp ? 'Đang cập nhật...' : '⚡ Tải & Tự động nâng cấp' }}
+                      </button>
+
+                      <button
+                        @click="openDownloadPage(updateResult.downloadUrl)"
+                        :disabled="isUpdatingApp"
+                        class="btn"
+                        style="padding: 5px 10px; font-size: 11px; background: rgba(255, 255, 255, 0.1); color: var(--wx-text-secondary); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; cursor: pointer;"
+                      >
+                        Mở GitHub ↗
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Tiến trình tải bản cập nhật -->
+                  <div v-if="isUpdatingApp" style="margin-top: 4px; background: rgba(0,0,0,0.3); padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(16, 185, 129, 0.3);">
+                    <div style="display: flex; justify-content: space-between; font-size: 11px; color: #4ade80; font-weight: 600; margin-bottom: 4px;">
+                      <span>{{ updateStatusMsg || 'Đang tiến hành cập nhật...' }}</span>
+                      <span>{{ updateProgressPercent }}%</span>
+                    </div>
+                    <div style="width: 100%; height: 6px; background: rgba(255, 255, 255, 0.1); border-radius: 3px; overflow: hidden;">
+                      <div :style="{ width: updateProgressPercent + '%' }" style="height: 100%; background: linear-gradient(90deg, #10b981, #34d399); transition: width 0.2s ease;"></div>
+                    </div>
+                  </div>
+
+                  <div v-if="updateResult.releaseNotes" style="font-size: 11px; color: var(--text-muted); max-height: 80px; overflow-y: auto; white-space: pre-wrap; background: rgba(0,0,0,0.25); padding: 6px 8px; border-radius: 4px; margin-top: 4px;">
+                    {{ updateResult.releaseNotes }}
+                  </div>
+                </div>
+
+                <div v-else-if="updateResult.error" style="color: #f87171;">
+                  ⚠️ {{ updateResult.error }}
+                </div>
+
+                <div v-else style="color: #4ade80; display: flex; align-items: center; gap: 6px;">
+                  ✅ Bạn đang sử dụng phiên bản mới nhất ({{ updateResult.currentVersion }})!
                 </div>
               </div>
             </div>

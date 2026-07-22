@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"video-splitter/internal/utils"
+
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/proto"
@@ -430,7 +432,7 @@ func GenerateFlowVideo(
 	}
 
 	// Configure default settings in Google Flow (Model, aspect ratio, confirmation prompt, etc.)
-	if err := ConfigureFlowSettings(ctx, page, req, tm); err != nil {
+	if err := ConfigureFlowSettings(ctx, page, req, tm, mile); err != nil {
 		return nil, fmt.Errorf("cấu hình cài đặt thất bại: %w", err)
 	}
 
@@ -1108,6 +1110,7 @@ func GenerateFlowVideo(
 			var selectedIndexes []int
 			if req.ConfirmBeforeCreate == "auto" {
 				logDebug("Tác vụ tự động từ Hàng Đợi (ConfirmBeforeCreate=auto): Tự động chọn tải ảnh...")
+				mile(fmt.Sprintf("✓ Đã sinh %d ảnh, bắt đầu tải về...", len(previewBase64s)))
 				for i := 0; i < len(previewBase64s); i++ {
 					selectedIndexes = append(selectedIndexes, i)
 				}
@@ -1133,6 +1136,7 @@ func GenerateFlowVideo(
 			var downloadedPaths []string
 			for idx, selIdx := range selectedIndexes {
 				logDebug("Đang tải hình ảnh được chọn thứ %d/%d (chỉ mục trong nhóm: %d)...", idx+1, len(selectedIndexes), selIdx)
+				mile(fmt.Sprintf("Đang mở chi tiết ảnh %d/%d...", idx+1, len(selectedIndexes)))
 
 				// Click the image card at index `selIdx` among the newly generated images
 				clickedObj, errClick := page.Eval(`(selIdx) => {
@@ -1152,11 +1156,13 @@ func GenerateFlowVideo(
 
 				if errClick != nil || clickedObj == nil || !clickedObj.Value.Bool() {
 					logDebug("Không thể click vào ảnh thứ %d ở chỉ mục %d, bỏ qua", idx+1, selIdx)
+					mile(fmt.Sprintf("⚠ Không mở được chi tiết ảnh %d/%d, bỏ qua", idx+1, len(selectedIndexes)))
 					continue
 				}
 
 				sleep(1500 * time.Millisecond) // wait for overlay to open fully
-				
+				mile(fmt.Sprintf("Đã mở chi tiết ảnh %d/%d, tìm nút tải...", idx+1, len(selectedIndexes)))
+
 				// 3. Find the download dropdown button in the detail overlay
 				dlBtn, errDlBtn := page.ElementByJS(rod.Eval(`() => {
 					const buttons = Array.from(document.querySelectorAll('button'));
@@ -1168,6 +1174,7 @@ func GenerateFlowVideo(
 				}`))
 				if errDlBtn != nil || dlBtn == nil {
 					logDebug("Không tìm thấy nút tải xuống cho ảnh thứ %d, bỏ qua", idx+1)
+					mile(fmt.Sprintf("⚠ Không thấy nút tải cho ảnh %d/%d, bỏ qua", idx+1, len(selectedIndexes)))
 					// Try to close overlay using exact text search
 					_, _ = page.Eval(`() => {
 						const closeBtn = Array.from(document.querySelectorAll('button')).find(el => {
@@ -1196,6 +1203,7 @@ func GenerateFlowVideo(
 				}
 
 				logDebug("Đang chọn độ phân giải %s cho ảnh thứ %d/%d...", strings.ToUpper(targetRes), idx+1, len(selectedIndexes))
+				mile(fmt.Sprintf("Chọn độ phân giải %s cho ảnh %d/%d...", strings.ToUpper(targetRes), idx+1, len(selectedIndexes)))
 
 				// Click resolution button (1K, 2K, 4K) in dropdown
 				optionBtn, errOpt := page.ElementByJS(rod.Eval(`(target) => {
@@ -1217,6 +1225,7 @@ func GenerateFlowVideo(
 				
 				if optionBtn == nil {
 					logDebug("Không thể chọn độ phân giải cho ảnh thứ %d, bỏ qua", idx+1)
+					mile(fmt.Sprintf("⚠ Không chọn được độ phân giải cho ảnh %d, bỏ qua", idx+1))
 					_, _ = page.Eval(`() => {
 						const closeBtn = Array.from(document.querySelectorAll('button')).find(el => {
 							const txt = el.textContent.toLowerCase().trim();
@@ -1242,13 +1251,16 @@ func GenerateFlowVideo(
 				// Click resolution option to trigger download / upscaling
 				_ = optionBtn.Click(proto.InputMouseButtonLeft, 1)
 				logDebug("Đã click chọn độ phân giải %s. Đang chờ file được tải về máy...", strings.ToUpper(targetRes))
+				mile(fmt.Sprintf("Đã chọn %s cho ảnh %d/%d, đang chờ tải file về...", strings.ToUpper(targetRes), idx+1, len(selectedIndexes)))
 				filePath, errMove := WaitAndMoveDownload(ctx, waitDownload, session.downloadDir, req.OutputDir, customFileName, MediaTypeImage)
 				session.UnlockDownload()
 				if errMove == nil {
 					logDebug("Tải ảnh thứ %d/%d thành công (%s): %s", idx+1, len(selectedIndexes), strings.ToUpper(targetRes), filePath)
+					mile(fmt.Sprintf("✓ Đã tải xong ảnh %d/%d (%s)", idx+1, len(selectedIndexes), strings.ToUpper(targetRes)))
 					downloadedPaths = append(downloadedPaths, filePath)
 				} else {
 					logDebug("Lỗi khi tải/lưu ảnh %d: %v", idx+1, errMove)
+					mile(fmt.Sprintf("⚠ Lỗi tải ảnh %d/%d: %v", idx+1, len(selectedIndexes), errMove))
 				}
 				
 				// Close the detail overlay
@@ -1448,9 +1460,15 @@ func GenerateFlowVideo(
 	return nil, fmt.Errorf("quá trình tạo nội dung Google AI không thành công sau %d lần thử", maxAttempts)
 }
 
-func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequest, tm *TaskManager) error {
+func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequest, tm *TaskManager, milestone func(step string)) error {
 	logDebug := func(msg string, args ...interface{}) {
 		flowLogf(req.LogPrefix+msg, args...)
+	}
+	// mile phát 1 bước NGẮN GỌN ra card log ở giao diện (nil thì bỏ qua).
+	mile := func(step string) {
+		if milestone != nil {
+			milestone(step)
+		}
 	}
 
 	// Lấy hệ số delay multiplier từ yêu cầu của người dùng (ví dụ Độ trễ: 2 giây)
@@ -1645,14 +1663,18 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 				finalCheck, _ := agentBtn.Eval("function() { return this.getAttribute('aria-pressed') === 'true'; }")
 				if finalCheck != nil && finalCheck.Value.Bool() {
 					logDebug("LỖI: Không thể tắt nút Tác nhân.")
+					mile("⚠ Không tắt được nút Tác nhân")
 				} else {
 					logDebug("Đã tắt nút Tác nhân thành công sau lần click thứ 2.")
+					mile("Đã tắt nút Tác nhân")
 				}
 			} else {
 				logDebug("Đã tắt nút Tác nhân thành công (aria-pressed=false).")
+				mile("Đã tắt nút Tác nhân")
 			}
 		} else {
 			logDebug("Nút Tác nhân đã ở trạng thái TẮT (aria-pressed=false) sau khi đã chờ React load. Bỏ qua.")
+			mile("Nút Tác nhân đã tắt sẵn")
 		}
 	} else {
 		logDebug("Không tìm thấy nút Tác nhân (Agent) trên giao diện hoặc gặp lỗi: %v", errAgent)
@@ -1750,10 +1772,12 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 
 	if isAllMatch {
 		logDebug("Cấu hình hiện tại ĐÃ TRÙNG KHỚP hoàn toàn với yêu cầu. BỎ QUA toàn bộ các bước mở cấu hình.")
+		mile("Cấu hình đã đúng sẵn (model/tỷ lệ/số lượng)")
 		return nil
 	}
-	
+
 	logDebug("Cấu hình chưa trùng khớp (Model: %v, Ratio: %v, Batch: %v). Tiến hành mở popover để điều chỉnh duy nhất các phần chưa đúng...", isModelMatch, isRatioMatch, isBatchMatch)
+	mile("Đang mở cấu hình để chỉnh model/tỷ lệ/số lượng...")
 
 	// 3. Kiểm tra xem popover đang mở hay đóng
 	isOpened := isFlowPopoverOpen(page)
@@ -1857,8 +1881,10 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 				_, _ = clickRatioBtn.Eval("function() { this.click(); }")
 			}
 			sleep(500 * time.Millisecond)
+			mile(fmt.Sprintf("Đã chỉnh tỷ lệ khung hình → %s", req.AspectRatio))
 		} else {
 			logDebug("Không cấu hình được tỷ lệ khung hình: %v", errRatio)
+			mile("⚠ Không chỉnh được tỷ lệ khung hình")
 		}
 	} else if isRatioMatch {
 		logDebug("Tỷ lệ khung hình (%s) đã đúng sẵn, bỏ qua không chỉnh lại.", req.AspectRatio)
@@ -1893,8 +1919,10 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 				_, _ = clickBatchBtn.Eval("function() { this.click(); }")
 			}
 			sleep(500 * time.Millisecond)
+			mile(fmt.Sprintf("Đã chỉnh số lượng sinh → %s", req.BatchSize))
 		} else {
 			logDebug("Không cấu hình được số lượng batch size: %v", errBatch)
+			mile("⚠ Không chỉnh được số lượng sinh")
 		}
 	} else if isBatchMatch {
 		logDebug("Số lượng Batch Size (%s) đã đúng sẵn, bỏ qua không chỉnh lại.", req.BatchSize)
@@ -1961,11 +1989,14 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 					_, _ = modelItem.Eval("function() { this.click(); }")
 				}
 				sleep(500 * time.Millisecond)
+				mile(fmt.Sprintf("Đã chỉnh model → %s", modelToSelect))
 			} else {
 				logDebug("Không cấu hình được model item %s: %v", modelToSelect, errItem)
+				mile("⚠ Không chỉnh được model")
 			}
 		} else {
 			logDebug("Không tìm thấy nút dropdown chọn Model trong popover: %v", errModelDropdown)
+			mile("⚠ Không tìm thấy dropdown model")
 		}
 	} else if isModelMatch {
 		logDebug("Model (%s) đã đúng sẵn, bỏ qua không chỉnh lại.", req.Model)
@@ -2170,6 +2201,7 @@ func CopyTextToClipboardWindows(text string) error {
 	escaped := strings.ReplaceAll(text, "'", "''")
 	cmdStr := fmt.Sprintf(`Add-Type -Assembly System.Windows.Forms; [System.Windows.Forms.Clipboard]::SetText('%s')`, escaped)
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", cmdStr)
+	utils.HideCmdWindow(cmd)
 	return cmd.Run()
 }
 
@@ -2269,11 +2301,7 @@ func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string, log
 }
 
 func getSettingsPath() string {
-	dirUser, err := os.UserConfigDir()
-	if err != nil {
-		dirUser, _ = os.UserHomeDir()
-	}
-	return filepath.Join(dirUser, "video-splitter", "settings.json")
+	return getSettingsFilePath()
 }
 
 func readProjectURL() string {
@@ -2336,6 +2364,7 @@ func CopyImageToClipboardWindows(imagePath string) error {
 
 	cmdStr := fmt.Sprintf(`Add-Type -Assembly System.Windows.Forms; Add-Type -Assembly System.Drawing; $img = [System.Drawing.Image]::FromFile('%s'); [System.Windows.Forms.Clipboard]::SetImage($img); $img.Dispose()`, absPath)
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", cmdStr)
+	utils.HideCmdWindow(cmd)
 	return cmd.Run()
 }
 

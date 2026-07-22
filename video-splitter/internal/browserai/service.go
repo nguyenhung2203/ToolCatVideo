@@ -127,6 +127,12 @@ func (s *Service) ClearQueue() {
 	s.qm.Clear()
 }
 
+// CancelQueueSource dừng + ẩn CHỈ task của một nguồn ("video-cut" hoặc "ai-image"),
+// giữ nguyên nguồn kia đang chạy. Dùng cho nút Dừng ở mỗi trang.
+func (s *Service) CancelQueueSource(source string) {
+	s.qm.CancelSource(source)
+}
+
 func (s *Service) GetQueueStatus() QueueStatus {
 	return s.qm.GetStatus()
 }

@@ -43,7 +43,17 @@ func DefaultDBPath() string {
 	if err != nil || dir == "" {
 		dir = os.TempDir()
 	}
-	return filepath.Join(dir, "video-splitter", "projects.db")
+	newDir := filepath.Join(dir, "TrafficTool")
+	_ = os.MkdirAll(newDir, 0755)
+
+	newDB := filepath.Join(newDir, "projects.db")
+	if _, err := os.Stat(newDB); os.IsNotExist(err) {
+		oldDB := filepath.Join(dir, "video-splitter", "projects.db")
+		if _, errOld := os.Stat(oldDB); errOld == nil {
+			_ = os.Rename(oldDB, newDB)
+		}
+	}
+	return newDB
 }
 
 func (s *Store) init() error {

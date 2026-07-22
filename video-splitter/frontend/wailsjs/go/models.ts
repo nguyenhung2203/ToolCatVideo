@@ -104,6 +104,14 @@ export namespace browserai {
 	    resultPath: string;
 	    resultPaths: string[];
 	    source: string;
+	    prependToVideo: boolean;
+	    introDuration: number;
+	    finalVideoPath: string;
+	    exportPreset: string;
+	    exportCRF: number;
+	    exportHWAccel: string;
+	    hwAccel: string;
+	    hidden: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ThumbnailTask(source);
@@ -130,6 +138,14 @@ export namespace browserai {
 	        this.resultPath = source["resultPath"];
 	        this.resultPaths = source["resultPaths"];
 	        this.source = source["source"];
+	        this.prependToVideo = source["prependToVideo"];
+	        this.introDuration = source["introDuration"];
+	        this.finalVideoPath = source["finalVideoPath"];
+	        this.exportPreset = source["exportPreset"];
+	        this.exportCRF = source["exportCRF"];
+	        this.exportHWAccel = source["exportHWAccel"];
+	        this.hwAccel = source["hwAccel"];
+	        this.hidden = source["hidden"];
 	    }
 	}
 	export class QueueStatus {
@@ -388,6 +404,32 @@ export namespace main {
 	        this.ok = source["ok"];
 	        this.outPath = source["outPath"];
 	        this.duration = source["duration"];
+	        this.error = source["error"];
+	    }
+	}
+	export class UpdateInfo {
+	    currentVersion: string;
+	    latestVersion: string;
+	    hasUpdate: boolean;
+	    releaseNotes: string;
+	    downloadUrl: string;
+	    downloadSize: number;
+	    changedCount: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.currentVersion = source["currentVersion"];
+	        this.latestVersion = source["latestVersion"];
+	        this.hasUpdate = source["hasUpdate"];
+	        this.releaseNotes = source["releaseNotes"];
+	        this.downloadUrl = source["downloadUrl"];
+	        this.downloadSize = source["downloadSize"];
+	        this.changedCount = source["changedCount"];
 	        this.error = source["error"];
 	    }
 	}
@@ -808,6 +850,31 @@ export namespace storage {
 	        this.status = source["status"];
 	        this.clipCount = source["clipCount"];
 	        this.updatedAt = source["updatedAt"];
+	    }
+	}
+
+}
+
+export namespace sysmonitor {
+	
+	export class SystemStats {
+	    appRamMB: number;
+	    sysRamPercent: number;
+	    sysCpuPercent: number;
+	    gpuPercent: number;
+	    activeTasks: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SystemStats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.appRamMB = source["appRamMB"];
+	        this.sysRamPercent = source["sysRamPercent"];
+	        this.sysCpuPercent = source["sysCpuPercent"];
+	        this.gpuPercent = source["gpuPercent"];
+	        this.activeTasks = source["activeTasks"];
 	    }
 	}
 

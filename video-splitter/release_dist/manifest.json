@@ -1,0 +1,36 @@
+﻿{
+    "version":  "v1.0.2",
+    "notes":  "TrafficTool v1.0.2",
+    "files":  [
+                  {
+                      "path":  "TrafficTool.exe",
+                      "sha256":  "0b72575e4af9c3ce3de4687e74cb05251236eed60d20cb8295384fa3d885658f",
+                      "url":  "https://github.com/nguyenhung2203/ToolCatVideo/releases/download/v1.0.2/TrafficTool.exe",
+                      "size":  26909184
+                  },
+                  {
+                      "path":  "bin/ffmpeg.exe",
+                      "sha256":  "69c90bb2f9c348174cfbaa4a104be5b98e2779b42e3798113ef084b4f8ab90fe",
+                      "url":  "https://github.com/nguyenhung2203/ToolCatVideo/releases/download/v1.0.2/bin__ffmpeg.exe",
+                      "size":  144500736
+                  },
+                  {
+                      "path":  "bin/ffprobe.exe",
+                      "sha256":  "3d176d430d7e7e30643e0e488b8dea25911db24f8a60fe61ad350b56bd2d2c6c",
+                      "url":  "https://github.com/nguyenhung2203/ToolCatVideo/releases/download/v1.0.2/bin__ffprobe.exe",
+                      "size":  144290304
+                  },
+                  {
+                      "path":  "bin/worker.exe",
+                      "sha256":  "2341da7a935d7aaa52906ce51beffd9ed6c72ebe0bd9d6c1c1f60d60bf017c41",
+                      "url":  "https://github.com/nguyenhung2203/ToolCatVideo/releases/download/v1.0.2/bin__worker.exe",
+                      "size":  189911452
+                  },
+                  {
+                      "path":  "bin/yt-dlp.exe",
+                      "sha256":  "52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8",
+                      "url":  "https://github.com/nguyenhung2203/ToolCatVideo/releases/download/v1.0.2/bin__yt-dlp.exe",
+                      "size":  18226085
+                  }
+              ]
+}

@@ -7,6 +7,8 @@ export function Cancel(arg1:string):Promise<void>;
 
 export function CancelQueue():Promise<void>;
 
+export function CancelQueueSource(arg1:string):Promise<void>;
+
 export function CheckLogin(arg1:string):Promise<browserai.LoginStatus>;
 
 export function ClearBrowserProfile():Promise<void>;
