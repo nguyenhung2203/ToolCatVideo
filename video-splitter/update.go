@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,11 +19,25 @@ import (
 )
 
 // CurrentAppVersion là phiên bản đang chạy. NÂNG số này mỗi lần phát hành bản mới,
-// khớp với tag GitHub Release (release.ps1 tự đọc const này để đặt tag).
-const CurrentAppVersion = "v1.0.1"
+// khớp with tag GitHub Release (release.ps1 tự đọc const này để đặt tag).
+const CurrentAppVersion = "v1.0.4"
 
 // updateRepo là repo GitHub chứa các bản Release + manifest.json.
 const updateRepo = "nguyenhung2203/ToolCatVideo"
+
+// getGitHubToken giải mã token đã XOR mã hóa ngầm để tránh rò rỉ chuỗi khi soi file .exe
+func getGitHubToken() string {
+	enc := "MD8nCG8UFRAcYxMwZmYHPGcbGR05Ng0dJDJlYR88MTQYAmcGGSNlIg=="
+	data, err := base64.StdEncoding.DecodeString(enc)
+	if err != nil {
+		return ""
+	}
+	key := byte(0x57)
+	for i := range data {
+		data[i] ^= key
+	}
+	return string(data)
+}
 
 // ManifestFile mô tả MỘT file trong bộ ứng dụng: đường dẫn tương đối so với thư
 // mục app (vd "TrafficTool.exe", "bin/worker.exe", "python_worker/main.py"), mã
@@ -99,15 +114,36 @@ func sha256File(path string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// createGitHubHTTPClient tạo HTTP Client tự chuyển tiếp chuyển hướng an toàn cho Private Repo
+func createGitHubHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("quá nhiều chuyển hướng")
+			}
+			// Nếu chuyển hướng sang Domain khác (ví dụ objects.githubusercontent.com của AWS S3), xóa header Authorization
+			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+				req.Header.Del("Authorization")
+			}
+			return nil
+		},
+	}
+}
+
 // fetchManifest tải manifest.json từ Release mới nhất của repo.
 func fetchManifest() (*Manifest, string, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := createGitHubHTTPClient(30 * time.Second)
 	req, err := http.NewRequest("GET", "https://api.github.com/repos/"+updateRepo+"/releases/latest", nil)
 	if err != nil {
 		return nil, "", err
 	}
 	req.Header.Set("User-Agent", "TrafficTool-Updater")
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	token := getGitHubToken()
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -128,6 +164,7 @@ func fetchManifest() (*Manifest, string, error) {
 		HTMLURL string `json:"html_url"`
 		Assets  []struct {
 			Name               string `json:"name"`
+			URL                string `json:"url"`
 			BrowserDownloadURL string `json:"browser_download_url"`
 		} `json:"assets"`
 	}
@@ -135,20 +172,25 @@ func fetchManifest() (*Manifest, string, error) {
 		return nil, "", fmt.Errorf("lỗi giải mã thông tin phiên bản từ GitHub")
 	}
 
-	// Tìm asset manifest.json trong release.
-	manifestURL := ""
+	assetApiMap := make(map[string]string)
+	manifestApiURL := ""
 	for _, asset := range release.Assets {
+		assetApiMap[strings.ToLower(asset.Name)] = asset.URL
 		if strings.EqualFold(asset.Name, "manifest.json") {
-			manifestURL = asset.BrowserDownloadURL
-			break
+			manifestApiURL = asset.URL
 		}
 	}
-	if manifestURL == "" {
+	if manifestApiURL == "" {
 		return nil, release.HTMLURL, fmt.Errorf("bản phát hành thiếu manifest.json (bản cũ không hỗ trợ cập nhật tự động — tải thủ công)")
 	}
 
-	mReq, _ := http.NewRequest("GET", manifestURL, nil)
+	mReq, _ := http.NewRequest("GET", manifestApiURL, nil)
 	mReq.Header.Set("User-Agent", "TrafficTool-Updater")
+	mReq.Header.Set("Accept", "application/octet-stream")
+	token = getGitHubToken()
+	if token != "" {
+		mReq.Header.Set("Authorization", "Bearer "+token)
+	}
 	mResp, err := client.Do(mReq)
 	if err != nil {
 		return nil, release.HTMLURL, fmt.Errorf("không tải được manifest.json: %v", err)
@@ -165,6 +207,15 @@ func fetchManifest() (*Manifest, string, error) {
 	if m.Notes == "" {
 		m.Notes = release.Body
 	}
+
+	// Cập nhật lại URL tải file theo API Asset để hỗ trợ Private repo
+	for i := range m.Files {
+		flatName := strings.ToLower(strings.ReplaceAll(m.Files[i].Path, "/", "__"))
+		if apiURL, ok := assetApiMap[flatName]; ok {
+			m.Files[i].URL = apiURL
+		}
+	}
+
 	return &m, release.HTMLURL, nil
 }
 
@@ -263,7 +314,7 @@ func (a *App) ApplyManifestUpdate() error {
 	// 2. Tải TẤT CẢ file mới về dạng "<path>.new" trong cùng thư mục đích, verify
 	// SHA256. Chỉ khi TOÀN BỘ tải + verify xong mới bắt đầu thay — để không rơi vào
 	// trạng thái nửa vời (một số file mới, một số cũ) nếu tải lỗi giữa chừng.
-	client := &http.Client{Timeout: 30 * time.Minute}
+	client := createGitHubHTTPClient(30 * time.Minute)
 	var downloaded int64
 	var stagedNewPaths []string // các file .new đã tải xong (để dọn nếu lỗi)
 	cleanupStaged := func() {
@@ -284,6 +335,11 @@ func (a *App) ApplyManifestUpdate() error {
 
 		req, _ := http.NewRequest("GET", f.URL, nil)
 		req.Header.Set("User-Agent", "TrafficTool-Updater")
+		req.Header.Set("Accept", "application/octet-stream")
+		token := getGitHubToken()
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			cleanupStaged()
