@@ -21,7 +21,7 @@ import (
 
 // CurrentAppVersion là phiên bản đang chạy. NÂNG số này mỗi lần phát hành bản mới,
 // khớp with tag GitHub Release (release.ps1 tự đọc const này để đặt tag).
-const CurrentAppVersion = "v1.0.7"
+const CurrentAppVersion = "v1.1.0"
 
 // updateRepo là repo GitHub chứa các bản Release + manifest.json.
 const updateRepo = "nguyenhung2203/ToolCatVideo"
