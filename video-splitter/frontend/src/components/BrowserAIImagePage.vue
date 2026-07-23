@@ -198,7 +198,7 @@
               <button v-else @click="newJobKeepInput" class="img-source-pill active" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px;" title="Tạo lại với cùng prompt & ảnh (không phải nhập lại)">
                 <RefreshCw :size="12" style="margin-right: 3px;" /> Tạo lại
               </button>
-              <button @click="resetForm" class="img-source-pill" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px;" title="Xóa hết prompt & ảnh, làm mới hoàn toàn">
+              <button v-if="!queueStatus.isRunning" @click="resetForm" class="img-source-pill" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px;" title="Xóa hết prompt & ảnh, làm mới hoàn toàn">
                 <Trash2 :size="12" style="margin-right: 3px;" /> Xóa hết
               </button>
             </div>

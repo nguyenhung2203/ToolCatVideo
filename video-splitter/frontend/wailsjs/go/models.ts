@@ -104,6 +104,7 @@ export namespace browserai {
 	    resultPath: string;
 	    resultPaths: string[];
 	    source: string;
+	    mediaType: string;
 	    prependToVideo: boolean;
 	    introDuration: number;
 	    finalVideoPath: string;
@@ -138,6 +139,7 @@ export namespace browserai {
 	        this.resultPath = source["resultPath"];
 	        this.resultPaths = source["resultPaths"];
 	        this.source = source["source"];
+	        this.mediaType = source["mediaType"];
 	        this.prependToVideo = source["prependToVideo"];
 	        this.introDuration = source["introDuration"];
 	        this.finalVideoPath = source["finalVideoPath"];

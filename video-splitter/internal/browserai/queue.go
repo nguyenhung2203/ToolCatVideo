@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"video-splitter/internal/exporter"
 
@@ -46,10 +47,15 @@ type ThumbnailTask struct {
 	ErrorMessage   string         `json:"errorMessage"`
 	ResultPath     string         `json:"resultPath"`
 	ResultPaths    []string       `json:"resultPaths"`
-	// Source: nguồn tạo task, dùng để lập lịch luân phiên công bằng giữa 2 nguồn.
+	// Source: nguồn tạo task, dùng để lập lịch luân phiên công bằng giữa các nguồn.
 	// "video-cut" = thumbnail tự sinh từ luồng cắt video; "ai-image" = tạo ảnh AI
-	// độc lập ở trang Tạo Ảnh. Rỗng → coi như "ai-image" (tương thích task cũ).
+	// độc lập ở trang Tạo Ảnh; "ai-video" = tạo video AI ở trang Tạo Video. Rỗng →
+	// coi như "ai-image" (tương thích task cũ).
 	Source string `json:"source"`
+
+	// MediaType: loại nội dung worker sẽ tạo trên Google Flow ("image"/"video").
+	// Rỗng → coi như "image" để tương thích task cũ (thumbnail từ cắt video + tạo ảnh).
+	MediaType MediaType `json:"mediaType"`
 
 	// === Luồng "tạo thumbnail trước → ghép vào đầu clip" (chỉ dùng cho video-cut) ===
 	// PrependToVideo=true: sau khi thumbnail tạo xong (hoặc thất bại → dùng frame
@@ -75,6 +81,7 @@ type ThumbnailTask struct {
 const (
 	SourceVideoCut = "video-cut"
 	SourceAIImage  = "ai-image"
+	SourceAIVideo  = "ai-video"
 )
 
 type QueueStatus struct {
@@ -440,9 +447,19 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 		if provider == "" {
 			provider = ProviderFlow
 		}
+		// Loại nội dung: rỗng → coi như ảnh (tương thích task cũ từ cắt video/tạo ảnh).
+		mt := task.MediaType
+		if mt == "" {
+			mt = MediaTypeImage
+		}
 		model := task.Model
 		if model == "" {
-			model = "Nano Banana 2"
+			// Model mặc định theo loại: video dùng Veo, ảnh dùng Nano Banana.
+			if mt == MediaTypeVideo {
+				model = "Veo 3.1 - Fast"
+			} else {
+				model = "Nano Banana 2"
+			}
 		}
 		resolution := task.Resolution
 		if resolution == "" {
@@ -451,6 +468,13 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 		batchSize := task.BatchSize
 		if batchSize == "" {
 			batchSize = "1x"
+		}
+		// Timeout mỗi task theo loại: video render lâu hơn ảnh nhiều.
+		taskTimeout := ImageGenerateTimeout
+		taskTimeoutSec := 180
+		if mt == MediaTypeVideo {
+			taskTimeout = VideoGenerateTimeout
+			taskTimeoutSec = int(VideoGenerateTimeout / time.Second)
 		}
 
 		cfg := LoadGlobalSettingsConfig()
@@ -481,7 +505,7 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 
 		genReq := GenerateRequest{
 			Provider:            provider,
-			MediaType:           MediaTypeImage,
+			MediaType:           mt,
 			Prompt:              task.Prompt,
 			Model:               model,
 			AspectRatio:         task.AspectRatio,
@@ -492,7 +516,7 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			InputImagePath:      firstInputPath,
 			InputImagePaths:     inputImgPaths,
 			Resolution:          resolution,
-			TimeoutSecond:       180,
+			TimeoutSecond:       taskTimeoutSec,
 			ShowChrome:          cfg.BrowserAIShowChrome,
 			LogPrefix:           fmt.Sprintf("[W%d %s] ", workerID+1, task.ClipName),
 		}
@@ -517,7 +541,7 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 		emitLog("info", "Bắt đầu")
 
 		// Mỗi task chạy trong timeout riêng để một task treo không chặn worker mãi.
-		taskCtx, cancel := context.WithTimeout(ctx, ImageGenerateTimeout)
+		taskCtx, cancel := context.WithTimeout(ctx, taskTimeout)
 		// Đăng ký cancel theo task ID để CancelSource dừng đúng task đang chạy của
 		// một nguồn (video-cut / ai-image) mà không đụng nguồn kia.
 		qm.mu.Lock()

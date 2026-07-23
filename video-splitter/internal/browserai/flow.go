@@ -808,6 +808,7 @@ func GenerateFlowVideo(
 			logDebug("Batch size yêu cầu: %s → chờ đủ %d ảnh mới sinh.", req.BatchSize, expectedImages)
 
 			var previewBase64s []string
+			var directUrls []string
 			tickerImg := time.NewTicker(2 * time.Second)
 
 			deadlineImg := time.Now().Add(ImageGenerateTimeout)
@@ -1062,7 +1063,7 @@ func GenerateFlowVideo(
 							}
 
 							// Bắt đầu xử lý preview: Đảm bảo có tiền tố https://labs.google
-							var directUrls []string
+							directUrls = nil
 							for _, src := range newGroupUrls {
 								tryUrl := src
 								if strings.HasPrefix(src, "/") {
@@ -1148,7 +1149,71 @@ func GenerateFlowVideo(
 			tm.EmitStatus(TaskStateDownloading, "Đang tải các ảnh đã chọn...", 85)
 
 			var downloadedPaths []string
+
+			// Helper fallback: Tải trực tiếp qua Fetch URL / Base64 nếu giao diện bị ẩn/lỗi
+			downloadDirectImageFallback := func(selIdx int, customFileName string) (string, error) {
+				_ = os.MkdirAll(req.OutputDir, 0755)
+				filePath := filepath.Join(req.OutputDir, customFileName+".jpg")
+				
+				// 1. Thử tải trực tiếp qua Fetch API từ page context
+				if selIdx < len(directUrls) && directUrls[selIdx] != "" {
+					urlStr := directUrls[selIdx]
+					logDebug("Đang tải trực tiếp qua Fetch API từ URL %s...", urlStr)
+					b64Obj, errFetch := page.Eval(`async (url) => {
+						try {
+							const resp = await fetch(url);
+							const blob = await resp.blob();
+							return new Promise((resolve) => {
+								const reader = new FileReader();
+								reader.onloadend = () => resolve(reader.result);
+								reader.readAsDataURL(blob);
+							});
+						} catch (e) {
+							return "";
+						}
+					}`, urlStr)
+					if errFetch == nil && b64Obj != nil {
+						b64Str := b64Obj.Value.Str()
+						if strings.HasPrefix(b64Str, "data:image") {
+							idx := strings.Index(b64Str, ",")
+							if idx != -1 {
+								data, errDec := base64.StdEncoding.DecodeString(b64Str[idx+1:])
+								if errDec == nil && len(data) > 0 {
+									if errWrite := os.WriteFile(filePath, data, 0644); errWrite == nil {
+										logDebug("Tải trực tiếp ảnh qua Fetch API thành công: %s", filePath)
+										return filePath, nil
+									}
+								}
+							}
+						}
+					}
+				}
+
+				// 2. Thử lưu từ Base64 preview nếu có
+				if selIdx < len(previewBase64s) && previewBase64s[selIdx] != "" {
+					b64Str := previewBase64s[selIdx]
+					if strings.HasPrefix(b64Str, "data:image") {
+						idx := strings.Index(b64Str, ",")
+						if idx != -1 {
+							data, errDec := base64.StdEncoding.DecodeString(b64Str[idx+1:])
+							if errDec == nil && len(data) > 0 {
+								if errWrite := os.WriteFile(filePath, data, 0644); errWrite == nil {
+									logDebug("Lưu ảnh từ Base64 preview thành công: %s", filePath)
+									return filePath, nil
+								}
+							}
+						}
+					}
+				}
+				return "", fmt.Errorf("không tải được ảnh bằng luồng trực tiếp")
+			}
+
 			for idx, selIdx := range selectedIndexes {
+				customFileName := req.FileName
+				if len(selectedIndexes) > 1 {
+					customFileName = fmt.Sprintf("%s_%d", req.FileName, idx+1)
+				}
+
 				logDebug("Đang tải hình ảnh được chọn thứ %d/%d (chỉ mục trong nhóm: %d)...", idx+1, len(selectedIndexes), selIdx)
 				mile(fmt.Sprintf("Đang mở chi tiết ảnh %d/%d...", idx+1, len(selectedIndexes)))
 
@@ -1161,7 +1226,7 @@ func GenerateFlowVideo(
 					if (selIdx < imgs.length) {
 						const img = imgs[selIdx];
 						const card = img.closest('a, button, [data-tile-id], [role="button"]') || img;
-						card.scrollIntoView({ block: 'center' });
+						try { card.scrollIntoView({ block: 'center' }); } catch(e){}
 						card.click();
 						return true;
 					}
@@ -1169,7 +1234,12 @@ func GenerateFlowVideo(
 				}`, selIdx)
 
 				if errClick != nil || clickedObj == nil || !clickedObj.Value.Bool() {
-					logDebug("Không thể click vào ảnh thứ %d ở chỉ mục %d, bỏ qua", idx+1, selIdx)
+					logDebug("Không thể click vào ảnh thứ %d ở chỉ mục %d, chuyển sang tải trực tiếp...", idx+1, selIdx)
+					if fp, errFb := downloadDirectImageFallback(selIdx, customFileName); errFb == nil {
+						mile(fmt.Sprintf("✓ Đã tải xong ảnh %d/%d (Tải trực tiếp)", idx+1, len(selectedIndexes)))
+						downloadedPaths = append(downloadedPaths, fp)
+						continue
+					}
 					mile(fmt.Sprintf("⚠ Không mở được chi tiết ảnh %d/%d, bỏ qua", idx+1, len(selectedIndexes)))
 					continue
 				}
@@ -1177,36 +1247,52 @@ func GenerateFlowVideo(
 				sleep(1500 * time.Millisecond) // wait for overlay to open fully
 				mile(fmt.Sprintf("Đã mở chi tiết ảnh %d/%d, tìm nút tải...", idx+1, len(selectedIndexes)))
 
-				// 3. Find the download dropdown button in the detail overlay.
-				// Timeout 15s: overlay ở chế độ ẩn trình duyệt render chậm nhưng KHÔNG
-				// được chờ mãi — quá hạn thì bỏ qua ảnh này thay vì treo cả tiến trình.
-				dlBtn, errDlBtn := findElemTimeout(15*time.Second, `() => {
-					const buttons = Array.from(document.querySelectorAll('button'));
-					return buttons.find(el => {
-						const icon = el.querySelector('i');
-						const isVisible = el.getBoundingClientRect().width > 0;
-						return isVisible && icon && icon.textContent.trim() === 'download';
+				// 3. Find the download dropdown button in the detail overlay (chấp nhận mọi thẻ nút/icon/aria).
+				// Timeout 5s: nếu quá 5s không tìm thấy nút (do trình duyệt bị ẩn/thu nhỏ), tự tua sang tải trực tiếp!
+				dlBtn, errDlBtn := findElemTimeout(5*time.Second, `() => {
+					const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+					return candidates.find(el => {
+						const icon = el.querySelector('i, span, [class*="icon"], .google-symbols, .material-icons');
+						const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
+						const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+						const title = (el.getAttribute('title') || '').toLowerCase();
+						const txt = el.textContent.trim().toLowerCase();
+						return (
+							iconText === 'download' || iconText === 'file_download' || iconText === 'tải xuống' ||
+							aria.includes('download') || aria.includes('tải xuống') || aria.includes('tải về') ||
+							title.includes('download') || title.includes('tải xuống') || title.includes('tải về') ||
+							txt.includes('tải xuống') || txt.includes('download')
+						);
 					});
 				}`)
 				if errDlBtn != nil || dlBtn == nil {
-					logDebug("Không tìm thấy nút tải xuống cho ảnh thứ %d, bỏ qua", idx+1)
+					logDebug("Giao diện chi tiết không hiển thị nút tải (ẩn trình duyệt), chuyển sang tải trực tiếp...")
+					if fp, errFb := downloadDirectImageFallback(selIdx, customFileName); errFb == nil {
+						mile(fmt.Sprintf("✓ Đã tải xong ảnh %d/%d (Tải trực tiếp)", idx+1, len(selectedIndexes)))
+						downloadedPaths = append(downloadedPaths, fp)
+						// Close overlay
+						_, _ = page.Eval(`() => {
+							const closeBtn = Array.from(document.querySelectorAll('button')).find(el => {
+								const txt = el.textContent.toLowerCase().trim();
+								return txt === 'xong' || txt === 'đóng' || txt === 'close' || txt === 'done';
+							});
+							if (closeBtn) closeBtn.click();
+						}`)
+						sleep(1000 * time.Millisecond)
+						continue
+					}
 					mile(fmt.Sprintf("⚠ Không thấy nút tải cho ảnh %d/%d, bỏ qua", idx+1, len(selectedIndexes)))
-					// Try to close overlay using exact text search
-					_, _ = page.Eval(`() => {
-						const closeBtn = Array.from(document.querySelectorAll('button')).find(el => {
-							const txt = el.textContent.toLowerCase().trim();
-							const isVisible = el.getBoundingClientRect().width > 0;
-							return isVisible && (txt === 'xong' || txt === 'đóng' || txt === 'close' || txt === 'done');
-						});
-						if (closeBtn) closeBtn.click();
-					}`)
-					sleep(1200 * time.Millisecond)
 					continue
 				}
 				
 				err = dlBtn.Click(proto.InputMouseButtonLeft, 1)
 				if err != nil {
-					logDebug("Lỗi click nút tải xuống: %v", err)
+					logDebug("Lỗi click nút tải xuống: %v, chuyển sang tải trực tiếp...", err)
+					if fp, errFb := downloadDirectImageFallback(selIdx, customFileName); errFb == nil {
+						mile(fmt.Sprintf("✓ Đã tải xong ảnh %d/%d (Tải trực tiếp)", idx+1, len(selectedIndexes)))
+						downloadedPaths = append(downloadedPaths, fp)
+						continue
+					}
 					continue
 				}
 				
@@ -1221,44 +1307,40 @@ func GenerateFlowVideo(
 				logDebug("Đang chọn độ phân giải %s cho ảnh thứ %d/%d...", strings.ToUpper(targetRes), idx+1, len(selectedIndexes))
 				mile(fmt.Sprintf("Chọn độ phân giải %s cho ảnh %d/%d...", strings.ToUpper(targetRes), idx+1, len(selectedIndexes)))
 
-				// Click resolution button (1K, 2K, 4K) in dropdown. Timeout 8s: dropdown
-				// vừa mở nên nếu không thấy trong 8s coi như không có → bỏ qua, không treo.
-				optionBtn, errOpt := findElemTimeout(8*time.Second, `(target) => {
-					const items = Array.from(document.querySelectorAll('button, div[role="menuitem"], div[role="button"]'));
+				// Click resolution button (1K, 2K, 4K) in dropdown. Timeout 4s.
+				optionBtn, errOpt := findElemTimeout(4*time.Second, `(target) => {
+					const items = Array.from(document.querySelectorAll('button, div[role="menuitem"], div[role="button"], li, span'));
 					return items.find(el => {
 						const txt = el.textContent.toLowerCase();
-						const isVisible = el.getBoundingClientRect().width > 0;
-						return isVisible && txt.includes(target);
+						return txt.includes(target);
 					});
 				}`, targetRes)
 
 				if errOpt != nil || optionBtn == nil {
 					logDebug("Không tìm thấy tùy chọn độ phân giải %s cho ảnh thứ %d, thử tìm tùy chọn 1K mặc định...", targetRes, idx+1)
-					optionBtn, _ = findElemTimeout(8*time.Second, `() => {
-						const items = Array.from(document.querySelectorAll('button, div[role="menuitem"]'));
-						return items.find(el => el.getBoundingClientRect().width > 0 && el.textContent.toLowerCase().includes('1k'));
+					optionBtn, _ = findElemTimeout(3*time.Second, `() => {
+						const items = Array.from(document.querySelectorAll('button, div[role="menuitem"], div[role="button"], li, span'));
+						return items.find(el => el.textContent.toLowerCase().includes('1k'));
 					}`)
 				}
 				
 				if optionBtn == nil {
-					logDebug("Không thể chọn độ phân giải cho ảnh thứ %d, bỏ qua", idx+1)
+					logDebug("Không thể chọn độ phân giải cho ảnh thứ %d, chuyển sang tải trực tiếp...", idx+1)
+					if fp, errFb := downloadDirectImageFallback(selIdx, customFileName); errFb == nil {
+						mile(fmt.Sprintf("✓ Đã tải xong ảnh %d/%d (Tải trực tiếp)", idx+1, len(selectedIndexes)))
+						downloadedPaths = append(downloadedPaths, fp)
+						_, _ = page.Eval(`() => {
+							const closeBtn = Array.from(document.querySelectorAll('button')).find(el => {
+								const txt = el.textContent.toLowerCase().trim();
+								return txt === 'xong' || txt === 'đóng' || txt === 'close' || txt === 'done';
+							});
+							if (closeBtn) closeBtn.click();
+						}`)
+						sleep(1000 * time.Millisecond)
+						continue
+					}
 					mile(fmt.Sprintf("⚠ Không chọn được độ phân giải cho ảnh %d, bỏ qua", idx+1))
-					_, _ = page.Eval(`() => {
-						const closeBtn = Array.from(document.querySelectorAll('button')).find(el => {
-							const txt = el.textContent.toLowerCase().trim();
-							const isVisible = el.getBoundingClientRect().width > 0;
-							return isVisible && (txt === 'xong' || txt === 'đóng' || txt === 'close' || txt === 'done');
-						});
-						if (closeBtn) closeBtn.click();
-					}`)
-					sleep(1200 * time.Millisecond)
 					continue
-				}
-
-				// Generate unique filename for each image in batch
-				customFileName := req.FileName
-				if len(selectedIndexes) > 1 {
-					customFileName = fmt.Sprintf("%s_%d", req.FileName, idx+1)
 				}
 
 				// Tuần tự hóa đoạn tải: WaitDownload ở cấp browser nên nhiều tab tải
