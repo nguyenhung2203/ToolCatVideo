@@ -457,12 +457,12 @@
               v-for="line in queueLogs"
               :key="line.id"
               :style="{ color: line.level === 'error' ? '#fca5a5' : (line.level === 'success' ? '#86efac' : 'var(--l-text-muted)'), whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }"
-              :title="`[${line.source === 'video-cut' ? 'Cắt video' : 'Tạo ảnh'} · W${line.worker} ${line.name}] ${line.step}`"
+              :title="`[${line.source === 'video-cut' ? 'Xuất video' : 'Tạo ảnh'} · W${line.worker} ${line.name}] ${line.step}`"
             >
               <span style="opacity: 0.6;">{{ line.time }}</span>
               <span
                 :style="{ fontWeight: 700, marginLeft: '4px', padding: '0 5px', borderRadius: '4px', fontSize: '10px', color: line.source === 'video-cut' ? '#fcd34d' : '#93c5fd', background: line.source === 'video-cut' ? 'rgba(252,211,77,0.12)' : 'rgba(147,197,253,0.12)' }"
-              >{{ line.source === 'video-cut' ? 'CẮT VIDEO' : 'TẠO ẢNH' }}</span>
+              >{{ line.source === 'video-cut' ? 'XUẤT VIDEO' : 'TẠO ẢNH' }}</span>
               <span style="opacity: 0.85; font-weight: 600;"> W{{ line.worker }}</span>
               <span> · {{ line.step }}</span>
             </div>

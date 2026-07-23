@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -552,8 +553,9 @@ func GenerateFlowVideo(
 		logDebug("Số lượng hình ảnh đang có trong dự án trước khi tạo: %d ảnh", totalCardsCountObj.Value.Int())
 	}
 
-	// Count initial download buttons if it is Video type
+	// Count initial download buttons and video tile cards if it is Video type
 	initialVideoButtonsCount := 0
+	initialVideoTilesCount := 0
 	if req.MediaType == MediaTypeVideo {
 		hasDlCount, errDlCount := page.Eval(`() => {
 			const candidates = Array.from(document.querySelectorAll('button, a'));
@@ -574,7 +576,18 @@ func GenerateFlowVideo(
 		if errDlCount == nil && hasDlCount != nil {
 			initialVideoButtonsCount = hasDlCount.Value.Int()
 		}
-		logDebug("Số lượng nút tải video cũ đã có: %d", initialVideoButtonsCount)
+
+		hasTileCount, errTileCount := page.Eval(`() => {
+			const tiles = Array.from(document.querySelectorAll('[data-tile-id], div[role="button"][aria-roledescription="draggable"], div[class*="tile"], video')).filter(el => {
+				const rect = el.getBoundingClientRect();
+				return rect.width > 80 && rect.height > 80;
+			});
+			return tiles.length;
+		}`)
+		if errTileCount == nil && hasTileCount != nil {
+			initialVideoTilesCount = hasTileCount.Value.Int()
+		}
+		logDebug("Số lượng nút tải video cũ: %d, Số lượng card video cũ: %d", initialVideoButtonsCount, initialVideoTilesCount)
 	}
 
 	maxAttempts := MaxGenerateAttempts
@@ -593,7 +606,7 @@ func GenerateFlowVideo(
 				continue
 			}
 
-			// Cập nhật lại số lượng nút tải video cũ trước khi retry lần tiếp theo
+			// Cập nhật lại số lượng nút tải & card video cũ trước khi retry lần tiếp theo
 			if req.MediaType == MediaTypeVideo {
 				hasDlCount, errDlCount := page.Eval(`() => {
 					const candidates = Array.from(document.querySelectorAll('button, a'));
@@ -614,7 +627,17 @@ func GenerateFlowVideo(
 				if errDlCount == nil && hasDlCount != nil {
 					initialVideoButtonsCount = hasDlCount.Value.Int()
 				}
-				logDebug("Cập nhật lại số lượng nút tải video cũ trước khi retry: %d", initialVideoButtonsCount)
+				hasTileCount, errTileCount := page.Eval(`() => {
+					const tiles = Array.from(document.querySelectorAll('[data-tile-id], div[role="button"][aria-roledescription="draggable"], div[class*="tile"], video')).filter(el => {
+						const rect = el.getBoundingClientRect();
+						return rect.width > 80 && rect.height > 80;
+					});
+					return tiles.length;
+				}`)
+				if errTileCount == nil && hasTileCount != nil {
+					initialVideoTilesCount = hasTileCount.Value.Int()
+				}
+				logDebug("Cập nhật lại số lượng nút tải cũ (%d) và card video cũ (%d) trước khi retry", initialVideoButtonsCount, initialVideoTilesCount)
 			}
 		}
 
@@ -812,9 +835,13 @@ func GenerateFlowVideo(
 		}
 
 		// Đã bấm gửi xong: nhả khóa nhập liệu để worker khác bắt đầu dán ảnh/điền
-		// prompt của nó. Phần còn lại (chờ tạo ảnh 30-90s) chạy song song thoải mái.
+		// prompt của nó. Phần còn lại (chờ tạo 30-90s) chạy song song thoải mái.
 		unlockInput()
-		mile("Đã gửi prompt, đang chờ AI tạo ảnh...")
+		if req.MediaType == MediaTypeVideo {
+			mile("Đã gửi prompt, đang chờ AI tạo video...")
+		} else {
+			mile("Đã gửi prompt, đang chờ AI tạo ảnh...")
+		}
 
 		generationFailed := false
 
@@ -1409,7 +1436,74 @@ func GenerateFlowVideo(
 			}
 			finalErr = fmt.Errorf("không có hình ảnh nào được tải về thành công")
 		} else {
-			// Video generation and download flow
+			// Helper fallback: Tải trực tiếp video qua Fetch API / Media URL nếu nút tải bị ẩn/lỗi
+			downloadDirectVideoFallback := func(customFileName string) (string, error) {
+				_ = os.MkdirAll(req.OutputDir, 0755)
+				filePath := filepath.Join(req.OutputDir, customFileName+".mp4")
+				logDebug("Đang thử tải trực tiếp video qua Fetch API / Media URL...")
+				mile("Đang thử tải trực tiếp video qua link media...")
+
+				vObj, errFetch := page.Eval(`async () => {
+					try {
+						const videos = Array.from(document.querySelectorAll('video'));
+						if (videos.length === 0) return null;
+						const v = videos[videos.length - 1];
+						let src = v.src || v.currentSrc || v.querySelector('source')?.src || '';
+						if (!src) return null;
+						if (src.startsWith('/')) {
+							src = window.location.origin + src;
+						}
+						if (src.startsWith('http://') || src.startsWith('https://')) {
+							return { type: 'http', src: src };
+						}
+						// Với blob: URL, fetch và convert sang Base64
+						const resp = await fetch(src);
+						const blob = await resp.blob();
+						return new Promise((resolve) => {
+							const reader = new FileReader();
+							reader.onloadend = () => resolve({ type: 'base64', src: reader.result });
+							reader.readAsDataURL(blob);
+						});
+					} catch(e) {
+						return null;
+					}
+				}`)
+
+				if errFetch == nil && vObj != nil {
+					vType := vObj.Value.Get("type").Str()
+					vSrc := vObj.Value.Get("src").Str()
+
+					if vType == "http" && vSrc != "" {
+						logDebug("Tải trực tiếp video từ HTTP URL: %s", vSrc)
+						resp, errGet := http.Get(vSrc)
+						if errGet == nil && resp.StatusCode == 200 {
+							defer resp.Body.Close()
+							out, errCreate := os.Create(filePath)
+							if errCreate == nil {
+								_, errCopy := io.Copy(out, resp.Body)
+								_ = out.Close()
+								if errCopy == nil {
+									logDebug("Tải trực tiếp video từ HTTP URL thành công: %s", filePath)
+									return filePath, nil
+								}
+							}
+						}
+					} else if vType == "base64" && strings.HasPrefix(vSrc, "data:") {
+						idx := strings.Index(vSrc, ",")
+						if idx != -1 {
+							data, errDec := base64.StdEncoding.DecodeString(vSrc[idx+1:])
+							if errDec == nil && len(data) > 0 {
+								if errWrite := os.WriteFile(filePath, data, 0644); errWrite == nil {
+									logDebug("Tải trực tiếp video từ Base64 thành công: %s", filePath)
+									return filePath, nil
+								}
+							}
+						}
+					}
+				}
+				return "", fmt.Errorf("không tải được video bằng link trực tiếp")
+			}
+
 			var downloadBtn *rod.Element
 			ticker := time.NewTicker(3 * time.Second)
 
@@ -1419,12 +1513,23 @@ func GenerateFlowVideo(
 			autoRetryCount := 0                  // Số lần đã bấm nút Thử lại trong Google Flow
 			consecutiveErrPolls := 0             // Số poll liên tiếp thấy lỗi mà không có progress
 			everWasGenerating := false           // Đã từng thấy spinner/progress?
-
+			stableFinishedPolls := 0            // Số poll liên tiếp không còn spinner/phần trăm
+			pollCount := 0
 			for {
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
 				case <-ticker.C:
+					pollCount++
+				}
+
+				if pollCount % 3 == 1 {
+					logDebug("Đang chờ Google AI tạo xong video... (Đã chờ %d giây)", pollCount*3)
+				}
+
+				// Nhịp báo ra log card mỗi ~15s (5 vòng * 3s) để người dùng biết luồng vẫn đang chạy
+				if pollCount > 0 && pollCount % 5 == 0 {
+					mile(fmt.Sprintf("Vẫn đang chờ AI tạo video... (%ds)", pollCount*3))
 				}
 
 				if time.Now().After(deadline) {
@@ -1433,99 +1538,139 @@ func GenerateFlowVideo(
 					break
 				}
 
-				// Check for quota warning on page
-				quotaObj, _ := page.Eval(`() => {
-					const limitWords = [
-						'đạt đến hạn mức',
-						'hạn mức sử dụng',
-						'quay lại vào ngày mai',
-						'tool agent usage limit',
-						'reached your limit',
-						'quota exceeded'
-					];
+				// Quét trạng thái tổng hợp chỉ bằng 1 CDP call duy nhất (Quota, Spinner, Card lỗi, Tile count, Download buttons)
+				pollStateObj, _ := page.Eval(`() => {
+					// 1. Quota limit check
+					const limitWords = ['đạt đến hạn mức', 'hạn mức sử dụng', 'quay lại vào ngày mai', 'reached your limit', 'quota exceeded'];
 					const elements = Array.from(document.querySelectorAll('div, span, p'));
-					let matchedEl = null;
+					let quotaMsg = "";
 					for (const el of elements) {
 						const txt = el.textContent.trim().toLowerCase();
-						const isVisible = el.getBoundingClientRect().width > 0;
-						if (isVisible && limitWords.some(word => txt.includes(word))) {
-							// Check if this is the deepest leaf element containing the warning text
-							const hasChildMatch = Array.from(el.children).some(child => {
-								const childVisible = child.getBoundingClientRect().width > 0;
-								const childTxt = child.textContent.toLowerCase();
-								return childVisible && limitWords.some(word => childTxt.includes(word));
-							});
-							if (!hasChildMatch) {
-								matchedEl = el;
-								break;
-							}
+						if (el.getBoundingClientRect().width > 0 && limitWords.some(w => txt.includes(w))) {
+							quotaMsg = el.textContent.trim();
+							break;
 						}
 					}
-					if (matchedEl) {
-						return matchedEl.textContent.trim();
+
+					// 2. Chỉ bắt spinner/progress/phần trăm % (12%, 45%, 99%) thực sự đang quay
+					const isGenerating = Array.from(document.querySelectorAll('md-circular-progress, [role="progressbar"], div, span, p')).some(el => {
+						const rect = el.getBoundingClientRect();
+						if (rect.width <= 0 || rect.height <= 0) return false;
+						const txt = (el.textContent || '').trim().toLowerCase();
+						if (/\b\d{1,3}%\b/.test(txt)) return true;
+						const tag = el.tagName.toLowerCase();
+						if (tag === 'md-circular-progress' || el.getAttribute('role') === 'progressbar') return true;
+						return txt.includes('đang tạo') || txt.includes('generating') || txt.includes('processing');
+					});
+
+					// 3. Quét trực tiếp các thẻ card tile (div[data-tile-id]) trên trang để phát hiện card báo lỗi
+					const tiles = Array.from(document.querySelectorAll('div[data-tile-id], div[role="button"][aria-roledescription="draggable"], div[class*="tile"], video')).filter(el => {
+						const rect = el.getBoundingClientRect();
+						return rect.width > 80 && rect.height > 80;
+					});
+
+					let foundErrorTile = false;
+					let retryBtnFound = false;
+
+					for (const tile of tiles) {
+						const txt = (tile.textContent || '').toLowerCase();
+						const hasWarningIcon = Array.from(tile.querySelectorAll('i, span')).some(icon => {
+							const iconText = (icon.textContent || '').trim().toLowerCase();
+							return iconText === 'warning' || iconText === 'error' || iconText === 'report_problem';
+						});
+
+						const hasErrorText = txt.includes('không thành công') || 
+						                     txt.includes('lượng truy cập cao') || 
+						                     txt.includes('hoạt động bất thường') || 
+						                     txt.includes('thử lại sau') || 
+						                     txt.includes('something went wrong') || 
+						                     txt.includes('vi phạm');
+
+						const btn = Array.from(tile.querySelectorAll('button, div[role="button"]')).find(b => {
+							const bTxt = (b.textContent || '').trim().toLowerCase();
+							const iTxt = (b.querySelector('i, span')?.textContent || '').trim().toLowerCase();
+							const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+							const titleAttr = (b.getAttribute('title') || '').toLowerCase();
+							const isVisible = b.getBoundingClientRect().width > 0 || b.offsetWidth > 0;
+							const isRetryIcon = iTxt === 'refresh' || iTxt === 'restart_alt' || iTxt === 'autorenew' || iTxt === 'replay' || iTxt === 'rotate_right' || iTxt === 'sync' || iTxt === 'loop' || iTxt === 'update';
+							return isVisible && (bTxt.includes('thử lại') || bTxt.includes('retry') || aria.includes('thử lại') || titleAttr.includes('thử lại') || isRetryIcon);
+						});
+
+						if ((hasWarningIcon || hasErrorText) && btn) {
+							foundErrorTile = true;
+							retryBtnFound = true;
+							break;
+						}
 					}
-					return "";
+
+					// Dự phòng: Tìm nút Thử lại trên toàn trang nếu tile quét thiếu
+					if (!retryBtnFound) {
+						const globalBtn = Array.from(document.querySelectorAll('button, div[role="button"]')).find(b => {
+							const bTxt = (b.textContent || '').trim().toLowerCase();
+							const iTxt = (b.querySelector('i, span')?.textContent || '').trim().toLowerCase();
+							const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+							const titleAttr = (b.getAttribute('title') || '').toLowerCase();
+							const isVisible = b.getBoundingClientRect().width > 0 || b.offsetWidth > 0;
+							const isRetryIcon = iTxt === 'refresh' || iTxt === 'restart_alt' || iTxt === 'autorenew';
+							return isVisible && (bTxt.includes('thử lại') || bTxt.includes('retry') || aria.includes('thử lại') || titleAttr.includes('thử lại') || isRetryIcon);
+						});
+						if (globalBtn) retryBtnFound = true;
+					}
+
+					// 4. Tìm số nút tải xuống
+					const dlBtns = Array.from(document.querySelectorAll('button, a, div[role="button"]')).filter(el => {
+						const icon = el.querySelector('i, span.google-symbols, .material-icons, [class*="icon"]');
+						const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
+						const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+						const title = (el.getAttribute('title') || '').toLowerCase();
+						const txt = el.textContent.trim().toLowerCase();
+						return iconText === 'download' || iconText === 'file_download' || 
+						       aria.includes('download') || aria.includes('tải xuống') || aria.includes('tải về') ||
+						       title.includes('download') || title.includes('tải xuống') || title.includes('tải về') ||
+						       txt.includes('tải xuống') || txt.includes('download');
+					});
+
+					return { 
+						quotaMsg,
+						isGenerating, 
+						isError: foundErrorTile || (!isGenerating && retryBtnFound), 
+						hasRetryBtn: retryBtnFound,
+						tileCount: tiles.length,
+						dlCount: dlBtns.length
+					};
 				}`)
-				if quotaObj != nil && quotaObj.Value.Str() != "" && quotaObj.Value.Str() != "<nil>" {
-					quotaMsg := quotaObj.Value.Str()
-					logDebug("Phát hiện cảnh báo giới hạn hạn mức từ Google Flow: %s", quotaMsg)
-					return nil, NewError(ErrQuotaExceeded, quotaMsg)
-				}
 
-				// Check for quota or refusal errors
-				errEl, errCheckErr := FindFirstVisible(ctx, page, FlowSelectors.ErrorMarkers, 500*time.Millisecond)
-				if errCheckErr == nil && errEl != nil {
-					txt, _ := errEl.Text()
-					if strings.Contains(strings.ToLower(txt), "quota") || strings.Contains(strings.ToLower(txt), "limit") {
-						return nil, NewError(ErrQuotaExceeded, "Tài khoản đạt giới hạn tạo video của Google FX: "+txt)
+				var isGen bool
+				var isErr bool
+				var hasRetry bool
+				currentTileCount := 0
+				currentDlCount := 0
+
+				if pollStateObj != nil {
+					quotaMsg := pollStateObj.Value.Get("quotaMsg").Str()
+					if quotaMsg != "" && quotaMsg != "<nil>" {
+						logDebug("Phát hiện cảnh báo giới hạn hạn mức từ Google Flow: %s", quotaMsg)
+						return nil, NewError(ErrQuotaExceeded, quotaMsg)
 					}
-					if strings.Contains(strings.ToLower(txt), "cannot") || strings.Contains(strings.ToLower(txt), "policy") {
-						return nil, NewError(ErrGenerationRejected, "Yêu cầu bị từ chối do chính sách nội dung: "+txt)
-					}
+
+					isGen = pollStateObj.Value.Get("isGenerating").Bool()
+					isErr = pollStateObj.Value.Get("isError").Bool()
+					hasRetry = pollStateObj.Value.Get("hasRetryBtn").Bool()
+					currentTileCount = pollStateObj.Value.Get("tileCount").Int()
+					currentDlCount = pollStateObj.Value.Get("dlCount").Int()
 				}
-
-				// Kiểm tra trạng thái tổng hợp: isGenerating + isError + hasRetryBtn
-				cardState, _ := page.Eval(`() => {
-					const isGenerating = Array.from(document.querySelectorAll('div, span, p, md-circular-progress, [role="progressbar"]')).some(el => {
-						const isVisible = (el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0) || el.offsetWidth > 0;
-						if (!isVisible) return false;
-						const txt = (el.children.length <= 2 ? el.textContent || '' : '').trim().toLowerCase();
-						if (/^\d{1,3}%$/.test(txt) || txt.includes('đang tạo') || txt.includes('generating') || txt.includes('processing')) return true;
-						const cn = String(el.className || '').toLowerCase();
-						const tag = String(el.tagName || '').toLowerCase();
-						return tag === 'md-circular-progress' || cn.includes('spinner') || cn.includes('progress') || cn.includes('loading');
-					});
-					// Mở rộng detect lỗi: bắt "Không thành công" + "hoạt động bất thường" (chỉ check leaf/small node)
-					const isError = !isGenerating && Array.from(document.querySelectorAll('div, span')).some(el => {
-						const txt = el.textContent.toLowerCase();
-						const isVisible = el.getBoundingClientRect().width > 0;
-						const isLeafOrSmall = el.children.length <= 5 && txt.length < 300;
-						return isVisible && isLeafOrSmall && (
-							txt.includes('không thành công') ||
-							txt.includes('hoạt động bất thường') ||
-							txt.includes('something went wrong') ||
-							txt.includes('rất tiếc, đã xảy ra lỗi') ||
-							(txt.includes('failed') && txt.includes('create'))
-						);
-					});
-					const retryBtn = Array.from(document.querySelectorAll('button, div[role="button"]')).find(b => {
-						const txt = (b.textContent || '').trim().toLowerCase();
-						const iTxt = (b.querySelector('i')?.textContent || '').trim().toLowerCase();
-						const isVisible = b.getBoundingClientRect().width > 0 || b.offsetWidth > 0;
-						return isVisible && (txt.includes('thử lại') || txt.includes('retry') || iTxt === 'refresh');
-					});
-					return { isGenerating, isError, hasRetryBtn: !!retryBtn };
-				}`)
-
-				if cardState != nil {
-					isGen := cardState.Value.Get("isGenerating").Bool()
-					isErr := cardState.Value.Get("isError").Bool()
-					hasRetry := cardState.Value.Get("hasRetryBtn").Bool()
 
 					if isGen {
 						everWasGenerating = true
+						stableFinishedPolls = 0
 						consecutiveErrPolls = 0
 						logDebug("Đang tạo video... (everWasGenerating=true)")
+					} else {
+						elapsedSec := time.Since(submittedAt).Seconds()
+						if everWasGenerating || currentDlCount > initialVideoButtonsCount || (elapsedSec > 20 && currentTileCount > initialVideoTilesCount) {
+							stableFinishedPolls++
+							logDebug("Kiểm tra độ ổn định video hoàn thành (%d/2 poll)...", stableFinishedPolls)
+						}
 					}
 
 					if !isGen && isErr && hasRetry {
@@ -1556,11 +1701,19 @@ func GenerateFlowVideo(
 							_, _ = page.Eval(`() => {
 								const btn = Array.from(document.querySelectorAll('button, div[role="button"]')).find(b => {
 									const txt = (b.textContent || '').trim().toLowerCase();
-									const iTxt = (b.querySelector('i')?.textContent || '').trim().toLowerCase();
-									const isVisible = b.getBoundingClientRect().width > 0 || b.offsetWidth > 0;
-									return isVisible && (txt.includes('thử lại') || txt.includes('retry') || iTxt === 'refresh');
+									const iTxt = (b.querySelector('i, span')?.textContent || '').trim().toLowerCase();
+									const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+									const title = (b.getAttribute('title') || '').toLowerCase();
+									const isVisible = (b.getBoundingClientRect().width > 0 && b.getBoundingClientRect().height > 0) || b.offsetWidth > 0;
+									const isRetryIcon = iTxt === 'refresh' || iTxt === 'restart_alt' || iTxt === 'autorenew' || iTxt === 'replay' || iTxt === 'rotate_right' || iTxt === 'sync' || iTxt === 'loop' || iTxt === 'update';
+									return isVisible && (txt.includes('thử lại') || txt.includes('retry') || aria.includes('thử lại') || title.includes('thử lại') || isRetryIcon);
 								});
-								if (btn) { btn.click(); return true; }
+								if (btn) {
+									btn.click();
+									try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e){}
+									try { btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); } catch(e){}
+									return true;
+								}
 								return false;
 							}`)
 							submittedAt = time.Now() // Reset grace period cho lần tạo mới
@@ -1575,68 +1728,100 @@ func GenerateFlowVideo(
 					} else if !isGen && !isErr {
 						consecutiveErrPolls = 0
 					}
-				}
 
-				// Try to hover on media element to reveal download button
-				hoverEl, errHover := page.ElementByJS(rod.Eval(`() => {
-					return Array.from(document.querySelectorAll('img, video')).find(el => {
-						const rect = el.getBoundingClientRect();
-						return rect.width > 100 && rect.height > 100;
-					});
-				}`))
-				if errHover == nil && hoverEl != nil {
-					_ = hoverEl.Hover()
-				}
+				hasNewTile := currentTileCount > initialVideoTilesCount
+				hasNewDlBtn := currentDlCount > initialVideoButtonsCount
+				elapsedSec := time.Since(submittedAt).Seconds()
 
-				// Check if new download button appears
-				currentDlCount := 0
-				hasDlCount, errDlCount := page.Eval(`() => {
-					const candidates = Array.from(document.querySelectorAll('button, a'));
-					let count = 0;
-					for (const el of candidates) {
-						const icon = el.querySelector('i, span.google-symbols, .material-icons, [class*="icon"]');
-						const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
-						const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-						const title = (el.getAttribute('title') || '').toLowerCase();
-						if (iconText === 'download' || iconText === 'file_download' || 
-						    aria.includes('download') || aria.includes('tải xuống') || aria.includes('tải về') ||
-						    title.includes('download') || title.includes('tải xuống') || title.includes('tải về')) {
-							count++;
-						}
-					}
-					return count;
-				}`)
-				if errDlCount == nil && hasDlCount != nil {
-					currentDlCount = hasDlCount.Value.Int()
-				}
+				// Phát hiện video đã hoàn thành: KHÔNG còn spinner/phần trăm (!isGen) VÀ ổn định 2 poll liên tiếp (6s)
+				isFinishedGenerating := !isGen && (stableFinishedPolls >= 2 || hasNewDlBtn)
 
-				if currentDlCount > initialVideoButtonsCount {
-					btn, errCheckDl := page.ElementByJS(rod.Eval(`() => {
-						const candidates = Array.from(document.querySelectorAll('button, a'));
-						const found = [];
-						for (const el of candidates) {
-							const icon = el.querySelector('i, span.google-symbols, .material-icons, [class*="icon"]');
-							const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
-							const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-							const title = (el.getAttribute('title') || '').toLowerCase();
-							if (iconText === 'download' || iconText === 'file_download' || 
-							    aria.includes('download') || aria.includes('tải xuống') || aria.includes('tải về') ||
-							    title.includes('download') || title.includes('tải xuống') || title.includes('tải về')) {
-								found.push(el);
-							}
-						}
-						return found.length > 0 ? found[found.length - 1] : null;
+				if isFinishedGenerating {
+					logDebug("Phát hiện video mới đã tạo xong sau %.0fs (hasNewTile=%v, hasNewDlBtn=%v, everWasGenerating=%v, tileCount=%d)! Bắt đầu mở chi tiết video...", elapsedSec, hasNewTile, hasNewDlBtn, everWasGenerating, currentTileCount)
+					mile("✓ Đã sinh video, bắt đầu tải về...")
+					mile("Đang mở chi tiết video...")
+
+					// 1. Click vào thẻ video card mới nhất bằng Rod CDP Native Click (giúp kích hoạt chính xác event của Chrome)
+					tileEl, errFindTile := page.ElementByJS(rod.Eval(`() => {
+						const tiles = Array.from(document.querySelectorAll('[data-tile-id], a[href*="/edit/"], button:has(video), video')).filter(el => {
+							const rect = el.getBoundingClientRect();
+							return rect.width > 80 && rect.height > 80;
+						});
+						if (tiles.length === 0) return null;
+						const last = tiles[tiles.length - 1];
+						return last.closest('a, button, [data-tile-id]') || last;
 					}`))
-					if errCheckDl == nil && btn != nil {
-						downloadBtn = btn
-						logDebug("Tìm thấy nút tải video mới xuất hiện!")
-						break
+					if errFindTile == nil && tileEl != nil {
+						_ = tileEl.ScrollIntoView()
+						_ = tileEl.Click(proto.InputMouseButtonLeft, 1)
+					} else {
+						_, _ = page.Eval(`() => {
+							const tiles = Array.from(document.querySelectorAll('[data-tile-id], div[role="button"][aria-roledescription="draggable"], div[class*="tile"], video, img')).filter(el => {
+								const rect = el.getBoundingClientRect();
+								return rect.width > 80 && rect.height > 80;
+							});
+							if (tiles.length > 0) {
+								const lastTile = tiles[tiles.length - 1];
+								const clickTarget = lastTile.closest('a, button, [data-tile-id], [role="button"]') || lastTile;
+								clickTarget.click();
+								try { clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e){}
+							}
+						}`)
 					}
+
+					sleep(1500 * time.Millisecond) // Chờ popup chi tiết mở ra
+
+					// 2. Chờ nút Tải xuống trong popup chi tiết sẵn sàng (hết trạng thái disabled / mờ)
+					for waitBtn := 0; waitBtn < 10; waitBtn++ {
+						btn, errCheckDl := page.ElementByJS(rod.Eval(`() => {
+							const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+							const found = [];
+							for (const el of candidates) {
+								const icon = el.querySelector('i, span.google-symbols, .material-icons, [class*="icon"]');
+								const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
+								const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+								const title = (el.getAttribute('title') || '').toLowerCase();
+								const txt = el.textContent.trim().toLowerCase();
+								const isVisible = el.getBoundingClientRect().width > 0 || el.offsetWidth > 0;
+								const isDisabled = el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true' || el.classList.contains('disabled');
+								if (isVisible && !isDisabled && (
+									iconText === 'download' || iconText === 'file_download' || iconText === 'tải xuống' ||
+									aria.includes('download') || aria.includes('tải xuống') || aria.includes('tải về') ||
+									title.includes('download') || title.includes('tải xuống') || title.includes('tải về') ||
+									txt.includes('tải xuống') || txt.includes('download')
+								)) {
+									found.push(el);
+								}
+							}
+							return found.length > 0 ? found[found.length - 1] : null;
+						}`))
+						if errCheckDl == nil && btn != nil {
+							downloadBtn = btn
+							logDebug("Đã tìm thấy nút tải video sẵn sàng trong popup chi tiết!")
+							break
+						}
+						sleep(1000 * time.Millisecond)
+					}
+
+					if downloadBtn == nil {
+						logDebug("Không thấy nút tải khả dụng trong popup chi tiết, chuyển sang tải trực tiếp...")
+					}
+					break // Luôn thoát vòng lặp poll để tải ngay!
 				}
 			}
 			ticker.Stop()
 
 			if generationFailed {
+				continue
+			}
+
+			if downloadBtn == nil {
+				logDebug("Không tìm thấy nút tải video trên giao diện. Chuyển sang tải trực tiếp qua Fetch API / Media URL...")
+				if fp, errFb := downloadDirectVideoFallback(req.FileName); errFb == nil {
+					mile("✓ Đã tải xong video (Tải trực tiếp)")
+					return []string{fp}, nil
+				}
+				finalErr = fmt.Errorf("không tìm thấy nút tải xuống video và tải trực tiếp thất bại")
 				continue
 			}
 
@@ -1648,9 +1833,31 @@ func GenerateFlowVideo(
 
 			filePath, errMove := WaitAndMoveDownload(ctx, waitDownload, session.downloadDir, req.OutputDir, req.FileName, MediaTypeVideo)
 			session.UnlockDownload()
+
+			// Đóng popup chi tiết video sau khi tải
+			_, _ = page.Eval(`() => {
+				const closeBtn = Array.from(document.querySelectorAll('button')).find(el => {
+					const txt = el.textContent.toLowerCase().trim();
+					return txt === 'xong' || txt === 'đóng' || txt === 'close' || txt === 'done';
+				});
+				if (closeBtn) closeBtn.click();
+				else {
+					const event = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true });
+					document.dispatchEvent(event);
+				}
+			}`)
+			sleep(1000 * time.Millisecond)
+
 			if errMove == nil {
 				logDebug("Tải video thành công: %s", filePath)
+				mile("✓ Đã tải xong video")
 				return []string{filePath}, nil
+			}
+
+			logDebug("Lỗi di chuyển file video sau khi bấm tải: %v. Thử tải trực tiếp qua Fetch API / Media URL...", errMove)
+			if fp, errFb := downloadDirectVideoFallback(req.FileName); errFb == nil {
+				mile("✓ Đã tải xong video (Tải trực tiếp)")
+				return []string{fp}, nil
 			}
 			finalErr = fmt.Errorf("lỗi di chuyển file video tải về: %w", errMove)
 		}
