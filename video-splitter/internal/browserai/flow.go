@@ -1552,19 +1552,19 @@ func GenerateFlowVideo(
 						}
 					}
 
-					// 2. Bắt spinner/progress/phần trăm % ('18' + '%') và class overlay tiến trình (sc-40f16b33) từ Google Flow DOM
-					const isGenerating = Array.from(document.querySelectorAll('*')).some(el => {
-						const txt = (el.textContent || '').trim().toLowerCase();
-						if (/\d{1,3}\s*%/.test(txt) && txt.length < 40) return true;
-
-						const cn = String(el.className || '').toLowerCase();
-						if (cn.includes('40f16b33') || cn.includes('progress-overlay')) return true;
-
+					// 2. Bắt spinner/progress/phần trăm % ('18%', '24%', '99%') thực sự đang quay trên leaf text node
+					const isGenerating = Array.from(document.querySelectorAll('div, span, p, md-circular-progress, [role="progressbar"]')).some(el => {
 						const tag = el.tagName.toLowerCase();
 						if (tag === 'md-circular-progress' || el.getAttribute('role') === 'progressbar') return true;
 
-						if (el.children.length <= 2 && (txt.includes('đang tạo') || txt.includes('generating') || txt.includes('processing'))) return true;
+						// Chỉ kiểm tra các text node lá nhỏ chứa % (tránh kẹt bởi class static)
+						if (el.children.length === 0 || (el.children.length <= 2 && el.querySelectorAll('div, p').length === 0)) {
+							const txt = (el.textContent || '').trim();
+							if (/^\d{1,2}\s*%$/.test(txt) || /^\d{1,2}%/.test(txt)) return true;
 
+							const lower = txt.toLowerCase();
+							if (lower.includes('đang tạo') || lower.includes('generating') || lower.includes('processing')) return true;
+						}
 						return false;
 					});
 
@@ -1738,8 +1738,8 @@ func GenerateFlowVideo(
 				hasNewDlBtn := currentDlCount > initialVideoButtonsCount
 				elapsedSec := time.Since(submittedAt).Seconds()
 
-				// Phát hiện video đã hoàn thành: KHÔNG còn spinner/phần trăm (!isGen) VÀ ổn định 2 poll liên tiếp (6s)
-				isFinishedGenerating := !isGen && (stableFinishedPolls >= 2 || hasNewDlBtn)
+				// Phát hiện video đã hoàn thành: KHÔNG còn spinner/phần trăm (!isGen) VÀ % đã mất hoàn toàn
+				isFinishedGenerating := !isGen && (stableFinishedPolls >= 1 || hasNewDlBtn || (elapsedSec > 20 && hasNewTile))
 
 				if isFinishedGenerating {
 					logDebug("Phát hiện video mới đã tạo xong sau %.0fs (hasNewTile=%v, hasNewDlBtn=%v, everWasGenerating=%v, tileCount=%d)! Bắt đầu mở chi tiết video...", elapsedSec, hasNewTile, hasNewDlBtn, everWasGenerating, currentTileCount)
