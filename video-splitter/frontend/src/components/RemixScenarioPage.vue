@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, reactive, computed, watch } from 'vue'
-import { Plus, Trash2, Save, Copy, Music, Image as ImageIcon, FileText, Layers, SlidersHorizontal, Film, Check, Wand2, Palette, Volume2, Type, Sparkles, Play, Pause, RotateCcw, Video, Folder } from 'lucide-vue-next'
+import { Plus, Trash2, Save, Copy, Music, Image as ImageIcon, FileText, Layers, SlidersHorizontal, Film, Check, Wand2, Palette, Volume2, Type, Sparkles, Play, Pause, RotateCcw, Video, Folder, X } from 'lucide-vue-next'
 import { SelectImageFile, SelectAudioFile, SelectFolder, GetStreamURL } from '../../wailsjs/go/main/App'
 
 const props = defineProps<{
@@ -35,6 +35,7 @@ interface DraftText {
   startTime: number
   endTime: number
   bgBox: boolean
+  selected?: boolean
 }
 
 type DragTarget = 'watermark' | 'subtitle' | `text:${string}` | null
@@ -135,6 +136,7 @@ const draft = reactive({
   subSourceLang: 'auto',
   subTargetLang: '',
   texts: [] as DraftText[],
+  randomText: false,
 })
 
 const selectedTextId = ref('')
@@ -173,13 +175,26 @@ const parseNormalizedExpr = (value: unknown, axis: 'x' | 'y', kind: 'watermark' 
 
 const selectedText = computed(() => draft.texts.find(t => t.id === selectedTextId.value) || null)
 const visibleTexts = computed(() => draft.texts.filter(t => {
+  if (t.selected === false) return false
   const end = t.endTime > 0 ? t.endTime : Number.POSITIVE_INFINITY
   return t.content.trim() && currentSec.value >= Math.max(0, t.startTime) && currentSec.value <= end
 }))
 
+const selectedTextsList = computed(() => draft.texts.filter(t => t.selected !== false))
+const selectedTextsCount = computed(() => selectedTextsList.value.length)
+
+const toggleTextSelected = (text: DraftText) => {
+  if (selectedTextId.value !== text.id) {
+    selectedTextId.value = text.id
+    text.selected = true
+  } else {
+    text.selected = !(text.selected !== false)
+  }
+}
+
 const addText = () => {
   const id = `text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-  draft.texts.push({ id, content: 'Nội dung chữ', fontSize: 48, color: '#ffffff', x: 0.5, y: 0.82, startTime: 0, endTime: 0, bgBox: true })
+  draft.texts.push({ id, content: 'Nội dung chữ', fontSize: 48, color: '#ffffff', x: 0.5, y: 0.82, startTime: 0, endTime: 0, bgBox: true, selected: true })
   selectedTextId.value = id
 }
 
@@ -190,7 +205,7 @@ const removeText = (id: string) => {
 }
 
 const duplicateText = (text: DraftText) => {
-  const copy = { ...text, id: `text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, x: clamp01(text.x + 0.04), y: clamp01(text.y + 0.04) }
+  const copy = { ...text, id: `text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, x: clamp01(text.x + 0.04), y: clamp01(text.y + 0.04), selected: true }
   draft.texts.push(copy)
   selectedTextId.value = copy.id
 }
@@ -287,6 +302,19 @@ const textBlockStyle = (text: DraftText) => {
   }
 }
 
+const videoBlockStyle = computed(() => {
+  const total = Math.max(0.001, durationSec.value)
+  const start = Math.min(total, Math.max(0, draft.trimStart || 0))
+  const end = draft.trimEnd > 0 ? Math.max(start, total - draft.trimEnd) : total
+  return {
+    position: 'absolute' as const,
+    left: `${(start / total) * 100}%`,
+    width: `${Math.max(0.5, ((end - start) / total) * 100)}%`,
+    top: '0',
+    bottom: '0',
+  }
+})
+
 const onTimeUpdate = () => {
   if (videoRef.value) {
     currentSec.value = videoRef.value.currentTime
@@ -308,6 +336,46 @@ const onMetadataLoaded = () => {
 const TRACK_HEAD_W = 84
 
 const tracksRef = ref<HTMLElement | null>(null)
+let isVideoSeeking = false
+let pendingSeekTime: number | null = null
+
+const performVideoSeek = (t: number) => {
+  if (!videoRef.value) return
+  if (isVideoSeeking) {
+    pendingSeekTime = t
+    return
+  }
+  isVideoSeeking = true
+  pendingSeekTime = null
+
+  const v = videoRef.value
+  const bg = bgVideoRef.value
+
+  const onSeeked = () => {
+    v.removeEventListener('seeked', onSeeked)
+    isVideoSeeking = false
+    if (pendingSeekTime !== null) {
+      const nextTime = pendingSeekTime
+      pendingSeekTime = null
+      performVideoSeek(nextTime)
+    }
+  }
+
+  v.addEventListener('seeked', onSeeked, { once: true })
+  
+  if ('fastSeek' in v && typeof (v as any).fastSeek === 'function') {
+    try {
+      (v as any).fastSeek(t)
+    } catch (e) {
+      v.currentTime = t
+    }
+  } else {
+    v.currentTime = t
+  }
+  if (bg) {
+    try { bg.currentTime = t } catch (e) {}
+  }
+}
 
 const applyTimelineSeek = (clientX: number) => {
   if (!videoRef.value || durationSec.value <= 0 || !tracksRef.value) return
@@ -316,55 +384,58 @@ const applyTimelineSeek = (clientX: number) => {
   if (usable <= 0) return
   const ratio = clamp01((clientX - rect.left - TRACK_HEAD_W) / usable)
   const t = ratio * durationSec.value
-  videoRef.value.currentTime = t
-  if (bgVideoRef.value) bgVideoRef.value.currentTime = t
+
   currentSec.value = t
   currentTimeStr.value = formatSeconds(t)
+
+  performVideoSeek(t)
 }
 
 const seekFromClick = (e: MouseEvent) => {
   applyTimelineSeek(e.clientX)
 }
 
-const flushTimelineSeek = () => {
-  timelineRAF = 0
-  if (pendingTimelineClientX === null) return
-  applyTimelineSeek(pendingTimelineClientX)
-  pendingTimelineClientX = null
-}
-
-const queueTimelineSeek = (clientX: number) => {
-  pendingTimelineClientX = clientX
-  if (!timelineRAF) timelineRAF = requestAnimationFrame(flushTimelineSeek)
-}
-
 const onTimelinePointerDown = (e: PointerEvent) => {
   if (durationSec.value <= 0) return
   isTimelineDragging.value = true
+  
+  // Tạm dừng video trong lúc kéo đểseek mượt mà, kéo đến đâu khung hình hiển thị đến đó lập tức
+  if (videoRef.value && !videoRef.value.paused) {
+    videoRef.value.pause()
+  }
+  if (bgVideoRef.value && !bgVideoRef.value.paused) {
+    bgVideoRef.value.pause()
+  }
+  isPlaying.value = false
+
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
   applyTimelineSeek(e.clientX)
-  if (videoRef.value?.paused) {
-    void videoRef.value.play().then(() => { isPlaying.value = true }).catch(() => {})
-  }
 }
 
 const onTimelinePointerMove = (e: PointerEvent) => {
   if (!isTimelineDragging.value) return
-  queueTimelineSeek(e.clientX)
+  // Seek trực tiếp realtime ngay theo tọa độ con trỏ chuột
+  applyTimelineSeek(e.clientX)
 }
 
 const finishTimelineDrag = (e: PointerEvent) => {
   if (!isTimelineDragging.value) return
   applyTimelineSeek(e.clientX)
-  pendingTimelineClientX = null
   isTimelineDragging.value = false
   const el = e.currentTarget as HTMLElement
   if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
+
+  // Tự động phát tiếp ngay khi thả chuột
+  if (videoRef.value) {
+    void videoRef.value.play().then(() => {
+      if (bgVideoRef.value) void bgVideoRef.value.play().catch(() => {})
+      isPlaying.value = true
+    }).catch(() => {})
+  }
 }
 
 const cancelTimelineDrag = () => {
   isTimelineDragging.value = false
-  pendingTimelineClientX = null
 }
 
 let dragPointerId = -1
@@ -434,7 +505,75 @@ const cancelOverlayDrag = () => {
   dragPointerId = -1
 }
 
+// Giữ Ctrl + Cuộn chuột để phóng to / thu nhỏ phần tử overlay (Watermark, Subtitle, Text)
+const onOverlayWheel = (e: WheelEvent, targetType: string) => {
+  if (!e.ctrlKey && !e.metaKey) return
+  e.preventDefault()
+  e.stopPropagation()
+
+  const isZoomIn = e.deltaY < 0
+
+  if (targetType === 'watermark') {
+    const step = 0.02
+    const nextScale = draft.wmScale + (isZoomIn ? step : -step)
+    draft.wmScale = Math.min(0.8, Math.max(0.03, Number(nextScale.toFixed(2))))
+  } else if (targetType === 'subtitle') {
+    const step = 2
+    const nextSize = draft.subFontSize + (isZoomIn ? step : -step)
+    draft.subFontSize = Math.min(160, Math.max(10, nextSize))
+  } else if (targetType.startsWith('text:')) {
+    const textId = targetType.replace('text:', '')
+    const targetText = draft.texts.find((t: DraftText) => t.id === textId)
+    if (targetText) {
+      selectedTextId.value = targetText.id
+      const step = 2
+      const nextSize = targetText.fontSize + (isZoomIn ? step : -step)
+      targetText.fontSize = Math.min(160, Math.max(8, nextSize))
+    }
+  }
+}
+
+const onFrameWheel = (e: WheelEvent) => {
+  if (!e.ctrlKey && !e.metaKey) return
+  e.preventDefault()
+
+  if (selectedTextId.value) {
+    onOverlayWheel(e, `text:${selectedTextId.value}`)
+    return
+  }
+  if (dragTarget.value) {
+    onOverlayWheel(e, dragTarget.value)
+    return
+  }
+  if (draft.wmEnabled) {
+    onOverlayWheel(e, 'watermark')
+    return
+  }
+  if (draft.subEnabled || draft.subAutoGen) {
+    onOverlayWheel(e, 'subtitle')
+    return
+  }
+}
+
+const onGlobalKeyDown = (e: KeyboardEvent) => {
+  if (e.key === 'Escape') {
+    selectedTextId.value = ''
+  }
+}
+
+const onFrameClick = (e: MouseEvent) => {
+  const target = e.target as HTMLElement | null
+  if (target && !target.closest('.draggable-overlay')) {
+    selectedTextId.value = ''
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onGlobalKeyDown)
+})
+
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKeyDown)
   if (timelineRAF) cancelAnimationFrame(timelineRAF)
 })
 
@@ -590,6 +729,7 @@ const resetDraft = () => {
     subEnabled: false, subPath: '', subFontSize: 24, subFontColor: '#ffffff', subOutlineColor: '#000000', subMarginV: 40,
     subX: 0.5, subY: 0.9, subHasCustomPosition: false,
     subAutoGen: false, subSourceLang: 'auto', subTargetLang: '', texts: [],
+    randomText: false,
   })
   selectedTextId.value = ''
 }
@@ -607,6 +747,7 @@ const draftToEdit = (): any => ({
   trimEnd: draft.trimEnd,
   pitch: draft.pitch,
   stripMeta: draft.stripMeta,
+  randomText: draft.randomText,
   texts: draft.texts.map(t => ({
     content: t.content,
     fontSize: Math.round(Math.min(300, Math.max(8, t.fontSize))),
@@ -616,6 +757,7 @@ const draftToEdit = (): any => ({
     startTime: Math.max(0, t.startTime || 0),
     endTime: t.endTime > 0 ? Math.max(t.startTime || 0, t.endTime) : 0,
     bgBox: !!t.bgBox,
+    selected: t.selected !== false,
   })),
   watermark: {
     enabled: draft.wmEnabled,
@@ -680,6 +822,7 @@ const editToDraft = (e: any) => {
     draft.subSourceLang = e.subtitle.sourceLang || 'auto'
     draft.subTargetLang = e.subtitle.targetLang || ''
   }
+  draft.randomText = !!e.randomText
   draft.texts = Array.isArray(e.texts) ? e.texts.map((t: any, index: number) => ({
     id: `text-${Date.now()}-${index}`,
     content: t.content || '',
@@ -690,6 +833,7 @@ const editToDraft = (e: any) => {
     startTime: Math.max(0, t.startTime || 0),
     endTime: Math.max(0, t.endTime || 0),
     bgBox: !!t.bgBox,
+    selected: t.selected !== false,
   })) : []
   selectedTextId.value = draft.texts[0]?.id || ''
 }
@@ -1098,11 +1242,11 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
                 <label>Màu <input v-model="draft.subFontColor" type="color" class="color-input" /></label>
                 <label>Viền <input v-model="draft.subOutlineColor" type="color" class="color-input" /></label>
               </div>
-              <div class="wm-pos-selector">
-                <button class="pos-mini-btn" @click="setSubtitlePosition(0.5, 0.12)">Trên</button>
-                <button class="pos-mini-btn" @click="setSubtitlePosition(0.5, 0.5)">Giữa</button>
-                <button class="pos-mini-btn" @click="setSubtitlePosition(0.5, 0.88)">Dưới</button>
-                <button class="pos-mini-btn" @click="draft.subHasCustomPosition = false; draft.subX = 0.5; draft.subY = 0.9">Đặt lại</button>
+              <div class="pos-grid-4">
+                <button type="button" class="pos-mini-btn" @click="setSubtitlePosition(0.5, 0.12)">Trên</button>
+                <button type="button" class="pos-mini-btn" @click="setSubtitlePosition(0.5, 0.5)">Giữa</button>
+                <button type="button" class="pos-mini-btn" @click="setSubtitlePosition(0.5, 0.88)">Dưới</button>
+                <button type="button" class="pos-mini-btn" @click="draft.subHasCustomPosition = false; draft.subX = 0.5; draft.subY = 0.9">Đặt lại</button>
               </div>
               <p class="drag-help">Kéo dòng phụ đề mẫu trực tiếp trên video; vị trí này được giữ khi xuất.</p>
             </div>
@@ -1124,21 +1268,33 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
 
             <div class="text-editor-section">
               <div class="text-section-head">
-                <strong>Chèn text lên video ({{ draft.texts.length }})</strong>
-                <button class="btn-picker" @click="addText"><Plus :size="12" /> Thêm chữ</button>
+                <span class="text-section-title">Chèn text ({{ draft.texts.length }})</span>
+                <div class="text-head-actions">
+                  <button v-if="selectedTextId" class="btn-text-action deselect" @click="selectedTextId = ''" title="Bỏ chọn text (Hoặc bấm ESC)"><X :size="11" /> Bỏ chọn</button>
+                  <button class="btn-text-action add" @click="addText"><Plus :size="11" /> Thêm chữ</button>
+                </div>
               </div>
+
               <div v-if="draft.texts.length === 0" class="text-empty">Chưa có text. Bấm “Thêm chữ” để tạo tiêu đề/caption.</div>
               <div v-else class="text-chip-list">
                 <button
                   v-for="(text, index) in draft.texts"
                   :key="text.id"
                   class="text-select-chip"
-                  :class="{ active: selectedTextId === text.id }"
-                  @click="selectedTextId = text.id"
+                  :class="{
+                    checked: text.selected !== false,
+                    active: selectedTextId === text.id
+                  }"
+                  @click="toggleTextSelected(text)"
+                  :title="`Bấm để ${text.selected !== false ? 'bỏ chọn' : 'tích chọn'} câu chữ này`"
                 >{{ index + 1 }}. {{ text.content || 'Text trống' }}</button>
               </div>
 
               <div v-if="selectedText" class="text-detail-card">
+                <div class="text-detail-header">
+                  <span class="text-detail-title">Chỉnh sửa chi tiết Text #{{ draft.texts.findIndex(t => t.id === selectedText?.id) + 1 }}</span>
+                  <button class="btn-done-text" @click="selectedTextId = ''" title="Bấm để ẩn bảng chỉnh sửa"><Check :size="12" /> Ẩn bảng</button>
+                </div>
                 <textarea v-model="selectedText.content" rows="2" class="scenario-textarea" placeholder="Nhập nội dung chữ..."></textarea>
                 <div class="inline-field-row editor-compact-row">
                   <label>Cỡ <input v-model.number="selectedText.fontSize" type="number" min="8" max="300" class="scenario-input-num" /></label>
@@ -1149,14 +1305,20 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
                   <label>Bắt đầu <input v-model.number="selectedText.startTime" type="number" min="0" step="0.1" class="scenario-input-num" /></label>
                   <label>Kết thúc <input v-model.number="selectedText.endTime" type="number" min="0" step="0.1" class="scenario-input-num" /></label>
                 </div>
-                <div class="wm-pos-selector">
-                  <button class="pos-mini-btn" @click="setTextPosition(selectedText, 0.5, 0.08)">Trên</button>
-                  <button class="pos-mini-btn" @click="setTextPosition(selectedText, 0.5, 0.5)">Giữa</button>
-                  <button class="pos-mini-btn" @click="setTextPosition(selectedText, 0.5, 0.9)">Dưới</button>
-                  <button class="pos-mini-btn" @click="duplicateText(selectedText)"><Copy :size="11" /> Nhân bản</button>
-                  <button class="pos-mini-btn danger" @click="removeText(selectedText.id)"><Trash2 :size="11" /> Xóa</button>
+                <div class="pos-action-group">
+                  <div class="pos-grid-3">
+                    <button type="button" class="pos-mini-btn" @click="setTextPosition(selectedText, 0.5, 0.08)">Trên</button>
+                    <button type="button" class="pos-mini-btn" @click="setTextPosition(selectedText, 0.5, 0.5)">Giữa</button>
+                    <button type="button" class="pos-mini-btn" @click="setTextPosition(selectedText, 0.5, 0.9)">Dưới</button>
+                  </div>
+                  <div class="pos-grid-2">
+                    <button type="button" class="pos-mini-btn" @click="duplicateText(selectedText)"><Copy :size="12" /> Nhân bản</button>
+                    <button type="button" class="pos-mini-btn danger" @click="removeText(selectedText.id)"><Trash2 :size="12" /> Xóa</button>
+                  </div>
                 </div>
-                <p class="drag-help">Kéo text đang chọn trực tiếp trên video. End = 0 nghĩa là hiện tới hết video.</p>
+                <div class="text-detail-footer">
+                  <span class="drag-help-inline">Kéo text trực tiếp trên video. End=0 là hiện tới hết.</span>
+                </div>
               </div>
             </div>
           </div>
@@ -1167,7 +1329,6 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
       <div class="capcut-center-panel">
         <div class="player-monitor-header">
           <span class="monitor-title">Màn Hình Live Preview</span>
-          <span class="monitor-ratio-badge" v-if="draft.aspectEnabled">{{ draft.aspectRatio }}</span>
         </div>
 
         <div class="player-monitor-screen-wrap">
@@ -1178,6 +1339,7 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
             :style="{
               aspectRatio: draft.aspectEnabled ? draft.aspectRatio.replace(':', '/') : '16/9'
             }"
+            @wheel.prevent="onFrameWheel"
           >
             <!-- Nền blur (mode 'blur'): video phủ full khung, làm mờ mạnh, nằm dưới video chính.
                  Khớp cách ffmpeg: split → gblur nền + overlay video chính co giữa. -->
@@ -1210,7 +1372,7 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
               <span class="sub-hint">(Thêm video ở tab "Cắt &amp; Xuất Video" để phát và xem hiệu ứng lật/màu sắc trực tiếp tại đây!)</span>
             </div>
 
-            <!-- Logo watermark thật — kéo trực tiếp, vị trí lưu bằng biểu thức FFmpeg. -->
+            <!-- Logo watermark thật — kéo trực tiếp & Ctrl + Cuộn chuột để phóng to/thu nhỏ. -->
             <img
               v-if="draft.wmEnabled && wmStreamUrl"
               :src="wmStreamUrl"
@@ -1222,9 +1384,10 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
               @pointerup="finishOverlayDrag"
               @pointercancel="cancelOverlayDrag"
               @lostpointercapture="cancelOverlayDrag"
+              @wheel.prevent="onOverlayWheel($event, 'watermark')"
             />
 
-            <!-- Phụ đề mẫu — kéo tâm chữ tới vị trí muốn burn trong file xuất. -->
+            <!-- Phụ đề mẫu — kéo & Ctrl + Cuộn chuột để đổi cỡ chữ. -->
             <div
               v-if="draft.subEnabled || draft.subAutoGen"
               :style="subStyle"
@@ -1234,9 +1397,10 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
               @pointerup="finishOverlayDrag"
               @pointercancel="cancelOverlayDrag"
               @lostpointercapture="cancelOverlayDrag"
+              @wheel.prevent="onOverlayWheel($event, 'subtitle')"
             >Phụ đề mẫu xem trước</div>
 
-            <!-- Text overlay thật: chỉ hiện trong khoảng thời gian cấu hình. -->
+            <!-- Text overlay thật — kéo & Ctrl + Cuộn chuột để tăng/giảm cỡ chữ. -->
             <div
               v-for="text in visibleTexts"
               :key="text.id"
@@ -1247,17 +1411,10 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
               @pointerup="finishOverlayDrag"
               @pointercancel="cancelOverlayDrag"
               @lostpointercapture="cancelOverlayDrag"
+              @wheel.prevent="onOverlayWheel($event, `text:${text.id}`)"
             >{{ text.content }}</div>
 
-            <!-- Overlay Badges Strip -->
-            <div class="overlay-badge-strip">
-              <span class="badge" v-if="draft.hflip">Mirror Lật</span>
-              <span class="badge" v-if="draft.speed !== 1.0">Tốc độ {{ draft.speed }}x</span>
-              <span class="badge" v-if="draft.aspectEnabled">Khung {{ draft.aspectRatio }}</span>
-              <span class="badge" v-if="draft.colorEnabled">Màu: {{ draft.colorPreset || 'Chỉnh màu' }}</span>
-              <span class="badge" v-if="draft.wmEnabled">Logo Watermark</span>
-              <span class="badge" v-if="draft.musicPath">Nhạc nền</span>
-            </div>
+
           </div>
         </div>
 
@@ -1271,7 +1428,6 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
               <Play v-else :size="16" />
             </button>
           </div>
-          <div class="monitor-info">Xem Trước Hiệu Ứng Thuật Toán</div>
         </div>
       </div>
 
@@ -1297,11 +1453,19 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
           <ul class="summary-checklist">
             <li :class="{ active: draft.hflip }">Lật ngang video (Mirror)</li>
             <li :class="{ active: draft.speed !== 1.0 }">Tốc độ phát: {{ draft.speed }}x</li>
-            <li :class="{ active: draft.aspectEnabled }">Khung hình {{ draft.aspectRatio }} ({{ draft.aspectMode }})</li>
-            <li :class="{ active: draft.colorEnabled }">Màu sắc: {{ draft.colorPreset || 'Chỉnh màu' }}</li>
-            <li :class="{ active: draft.wmEnabled }">Logo Watermark</li>
-            <li :class="{ active: draft.musicPath }">Nhạc nền MP3</li>
-            <li :class="{ active: draft.subEnabled || draft.subAutoGen }">Phụ đề video</li>
+            <li :class="{ active: draft.zoomEnabled }">Zoom Ken Burns: {{ draft.zoomFactor }}x</li>
+            <li :class="{ active: draft.cropEnabled }">Cắt rìa Crop: {{ Math.round(draft.cropPercent * 100) }}%</li>
+            <li :class="{ active: draft.rotateEnabled }">Xoay nghiêng: {{ draft.rotateDegrees }}°</li>
+            <li :class="{ active: draft.trimStart > 0 || draft.trimEnd > 0 }">Cắt đầu {{ draft.trimStart }}s / đuôi {{ draft.trimEnd }}s</li>
+            <li :class="{ active: draft.aspectEnabled }">Khung {{ draft.aspectRatio }} ({{ draft.aspectMode }})</li>
+            <li :class="{ active: draft.colorEnabled }">Màu sắc: {{ draft.colorPreset ? draft.colorPreset.toUpperCase() : 'Chỉnh màu' }}</li>
+            <li :class="{ active: draft.noiseEnabled }">Hạt nhiễu Noise (Mức {{ draft.noiseStrength }})</li>
+            <li :class="{ active: draft.wmEnabled && !!draft.wmPath }">Logo Watermark (Cỡ {{ Math.round(draft.wmScale * 100) }}%)</li>
+            <li :class="{ active: !!draft.musicPath }">Nhạc nền MP3</li>
+            <li :class="{ active: draft.muteOriginal }">Tắt tiếng video gốc</li>
+            <li :class="{ active: draft.subEnabled && !!draft.subPath }">Ghép phụ đề file (.SRT / .ASS)</li>
+            <li :class="{ active: draft.subAutoGen }">Whisper AI tự tạo phụ đề</li>
+            <li :class="{ active: selectedTextsCount > 0 }">Chèn chữ tùy chọn (Đã tích {{ selectedTextsCount }}/{{ draft.texts.length }} câu{{ selectedTextsCount > 1 ? ' · Random 1 chữ/clip' : '' }})</li>
             <li :class="{ active: draft.stripMeta }">Xóa Metadata chống quét</li>
           </ul>
         </div>
@@ -1309,13 +1473,23 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
     </div>
 
     <!-- ── 3. VISUAL CAPCUT TIMELINE TRACK ────────────────────────── -->
-    <div class="capcut-timeline-bar">
+    <div
+      class="capcut-timeline-bar"
+      @pointerdown="onTimelinePointerDown"
+      @pointermove="onTimelinePointerMove"
+      @pointerup="finishTimelineDrag"
+      @pointercancel="cancelTimelineDrag"
+      @lostpointercapture="cancelTimelineDrag"
+    >
       <div class="timeline-ruler">
         <span
           v-for="mark in timelineMarks"
           :key="mark.ratio"
           class="ruler-mark"
-          :style="{ left: `calc(84px + (100% - 84px) * ${mark.ratio})` }"
+          :style="{
+            left: `calc(84px + (100% - 84px) * ${mark.ratio})`,
+            transform: mark.ratio === 1 ? 'translateX(-100%)' : (mark.ratio === 0 ? 'translateX(0)' : 'translateX(-50%)')
+          }"
         >{{ mark.label }}</span>
       </div>
 
@@ -1323,11 +1497,6 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
         ref="tracksRef"
         class="timeline-tracks"
         :class="{ dragging: isTimelineDragging }"
-        @pointerdown="onTimelinePointerDown"
-        @pointermove="onTimelinePointerMove"
-        @pointerup="finishTimelineDrag"
-        @pointercancel="cancelTimelineDrag"
-        @lostpointercapture="cancelTimelineDrag"
       >
         <!-- Playhead bám sát con trỏ khi kéo và tiếp tục chạy cùng video sau khi thả. -->
         <div
@@ -1341,7 +1510,7 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
         <div class="timeline-track video-track">
           <div class="track-head">Video V1</div>
           <div class="track-content">
-            <div class="track-block video-block">
+            <div class="track-block video-block" :style="videoBlockStyle">
               <span>Clip Video · Tốc độ {{ draft.speed }}x {{ draft.hflip ? '· Lật ngang Mirror' : '' }} {{ draft.aspectEnabled ? '· ' + draft.aspectRatio : '' }}</span>
             </div>
           </div>
@@ -1368,11 +1537,11 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
         </div>
 
         <!-- Track 4: Text overlays -->
-        <div class="timeline-track text-track" v-if="draft.texts.length">
+        <div class="timeline-track text-track" v-if="selectedTextsList.length">
           <div class="track-head">Text T1</div>
           <div class="track-content text-track-content">
             <button
-              v-for="text in draft.texts"
+              v-for="text in selectedTextsList"
               :key="text.id"
               type="button"
               class="track-block text-block"
@@ -1906,16 +2075,55 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
   margin-top: 4px;
 }
 
+.pos-action-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.pos-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+
+.pos-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 5px;
+}
+
+.pos-grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-top: 4px;
+}
+
 .pos-mini-btn {
-  padding: 4px;
-  font-size: 10px;
-  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 27px;
+  padding: 0 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  box-sizing: border-box;
   background: var(--wx-surface-sunken, #0e1626);
-  border: 1px solid var(--wx-border-default, rgba(255, 255, 255, 0.1));
+  border: 1px solid var(--wx-border-default, rgba(255, 255, 255, 0.12));
   border-radius: var(--wx-radius-sm, 4px);
-  color: var(--wx-text-secondary, #94a3b8);
+  color: var(--wx-text-secondary, #cbd5e1);
   cursor: pointer;
+  white-space: nowrap;
   transition: all 0.15s ease;
+}
+
+.pos-mini-btn:hover {
+  border-color: var(--wx-brand-accent, #06b6d4);
+  color: #ffffff;
+  background: rgba(6, 182, 212, 0.12);
 }
 
 .pos-mini-btn.active {
@@ -2262,15 +2470,55 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   color: var(--wx-text-primary, #f8fafc);
-  font-size: 11px;
+  margin-bottom: 8px;
 }
 
-.text-section-head .btn-picker {
-  display: inline-flex;
+.text-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--wx-text-primary, #f8fafc);
+}
+
+.text-head-actions {
+  display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.btn-text-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.btn-text-action.add {
+  color: #ffffff;
+  background: var(--wx-brand-primary, #2563eb);
+  border: none;
+}
+
+.btn-text-action.add:hover {
+  background: #1d4ed8;
+}
+
+.btn-text-action.deselect {
+  color: var(--wx-text-muted, #94a3b8);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--wx-border-default, rgba(255, 255, 255, 0.12));
+}
+
+.btn-text-action.deselect:hover {
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .text-empty {
@@ -2285,30 +2533,48 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
 
 .text-chip-list {
   display: flex;
-  gap: 5px;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-top: 7px;
-  padding-bottom: 2px;
-  overflow-x: auto;
 }
 
 .text-select-chip {
-  max-width: 145px;
-  padding: 4px 7px;
-  overflow: hidden;
-  border: 1px solid var(--wx-border-default, rgba(255, 255, 255, 0.12));
-  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 11px;
+  font-size: 10.5px;
+  font-weight: 600;
+  border-radius: 16px;
   background: var(--wx-surface-sunken, #0e1626);
-  color: var(--wx-text-secondary, #cbd5e1);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  border: 1.5px solid var(--wx-border-default, rgba(255, 255, 255, 0.12));
+  color: var(--wx-text-muted, #94a3b8);
   cursor: pointer;
+  transition: all 0.18s ease;
+  user-select: none;
+}
+
+.text-select-chip:hover {
+  border-color: rgba(6, 182, 212, 0.4);
+  color: #f8fafc;
+}
+
+.text-select-chip.checked {
+  border-color: var(--wx-brand-accent, #06b6d4);
+  color: #ffffff;
+  background: rgba(6, 182, 212, 0.12);
+  box-shadow: 0 0 8px rgba(6, 182, 212, 0.2);
 }
 
 .text-select-chip.active {
-  border-color: var(--wx-brand-accent, #06b6d4);
-  color: #ffffff;
-  background: rgba(6, 182, 212, 0.16);
+  border-color: var(--wx-brand-primary, #2563eb);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+
+.chip-check-indicator {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--wx-brand-accent, #06b6d4);
 }
 
 .text-detail-card {
@@ -2320,6 +2586,53 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
   border: 1px solid rgba(6, 182, 212, 0.24);
   border-radius: 7px;
   background: rgba(6, 182, 212, 0.06);
+}
+
+.text-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(6, 182, 212, 0.18);
+}
+
+.text-detail-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--wx-brand-accent, #06b6d4);
+}
+
+.btn-done-text, .btn-hide-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-done-text:hover, .btn-hide-card:hover {
+  background: rgba(16, 185, 129, 0.3);
+  color: #ffffff;
+}
+
+.text-detail-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+  gap: 6px;
+}
+
+.drag-help-inline {
+  font-size: 10px;
+  color: var(--wx-text-muted, #64748b);
 }
 
 .scenario-textarea {

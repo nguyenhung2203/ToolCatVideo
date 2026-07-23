@@ -313,7 +313,7 @@ func (qm *AIQueueManager) GetStatus() QueueStatus {
 		} else if t.State == QueueStateFailed {
 			failed++
 		} else if t.State == QueueStateProcessing {
-			current = total
+			current++ // Đếm TẤT CẢ task đang xử lý (nhiều worker song song)
 		}
 	}
 
@@ -409,6 +409,15 @@ func (qm *AIQueueManager) retireWorker(ctx context.Context, workerID int) {
 		qm.isRunning = false
 		qm.runCtx = nil
 		qm.cancel = nil
+		// Dọn Hidden tasks đã tích lũy: loại bỏ khỏi slice để tránh claimNextTask
+		// duyệt qua list ngày càng dài. Chỉ dọn khi mọi worker đã thoát an toàn.
+		clean := make([]ThumbnailTask, 0, len(qm.tasks))
+		for _, t := range qm.tasks {
+			if !t.Hidden {
+				clean = append(clean, t)
+			}
+		}
+		qm.tasks = clean
 	}
 	qm.mu.Unlock()
 	qm.emitProgress()

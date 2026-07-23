@@ -592,6 +592,30 @@ func GenerateFlowVideo(
 				finalErr = fmt.Errorf("không tìm thấy ô nhập liệu khi gửi lại: %w", err)
 				continue
 			}
+
+			// Cập nhật lại số lượng nút tải video cũ trước khi retry lần tiếp theo
+			if req.MediaType == MediaTypeVideo {
+				hasDlCount, errDlCount := page.Eval(`() => {
+					const candidates = Array.from(document.querySelectorAll('button, a'));
+					let count = 0;
+					for (const el of candidates) {
+						const icon = el.querySelector('i, span.google-symbols, .material-icons, [class*="icon"]');
+						const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
+						const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+						const title = (el.getAttribute('title') || '').toLowerCase();
+						if (iconText === 'download' || iconText === 'file_download' || 
+						    aria.includes('download') || aria.includes('tải xuống') || aria.includes('tải về') ||
+						    title.includes('download') || title.includes('tải xuống') || title.includes('tải về')) {
+							count++;
+						}
+					}
+					return count;
+				}`)
+				if errDlCount == nil && hasDlCount != nil {
+					initialVideoButtonsCount = hasDlCount.Value.Int()
+				}
+				logDebug("Cập nhật lại số lượng nút tải video cũ trước khi retry: %d", initialVideoButtonsCount)
+			}
 		}
 
 		// KHÓA NHẬP LIỆU (dán ảnh → điền prompt → bấm gửi) cho toàn bộ giai đoạn này.
@@ -609,6 +633,7 @@ func GenerateFlowVideo(
 				session.UnlockPaste()
 			}
 		}
+		defer unlockInput()
 		// Đưa cửa sổ này lên foreground để Ctrl+V thật ăn đúng vào nó (chỉ khi hiện trình duyệt).
 		if req.ShowChrome {
 			_, _ = page.Activate()
@@ -1470,11 +1495,12 @@ func GenerateFlowVideo(
 						const tag = String(el.tagName || '').toLowerCase();
 						return tag === 'md-circular-progress' || cn.includes('spinner') || cn.includes('progress') || cn.includes('loading');
 					});
-					// Mở rộng detect lỗi: bắt "Không thành công" + "hoạt động bất thường" (không cần chữ "lỗi")
+					// Mở rộng detect lỗi: bắt "Không thành công" + "hoạt động bất thường" (chỉ check leaf/small node)
 					const isError = !isGenerating && Array.from(document.querySelectorAll('div, span')).some(el => {
 						const txt = el.textContent.toLowerCase();
 						const isVisible = el.getBoundingClientRect().width > 0;
-						return isVisible && (
+						const isLeafOrSmall = el.children.length <= 5 && txt.length < 300;
+						return isVisible && isLeafOrSmall && (
 							txt.includes('không thành công') ||
 							txt.includes('hoạt động bất thường') ||
 							txt.includes('something went wrong') ||
@@ -1670,7 +1696,7 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		return el.Context(ctx), nil
 	}
 
-	checkConfigMatches := func(btnText string) (isModelMatch, isRatioMatch, isBatchMatch bool) {
+	checkConfigMatches := func(btnText string) (isModelMatch, isRatioMatch, isBatchMatch, isMediaTypeMatch bool) {
 		btnTextLower := strings.ToLower(btnText)
 
 		// 1. Kiểm tra Model
@@ -1743,7 +1769,19 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 			}
 		}
 
-		return isModelMatch, isRatioMatch, isBatchMatch
+		checkIsMediaTypeMatch := true
+		if req.MediaType == MediaTypeVideo {
+			// Đang cần tạo video: nút phải chứa "video" hoặc "veo"
+			checkIsMediaTypeMatch = strings.Contains(btnTextLower, "video") || strings.Contains(btnTextLower, "veo")
+		} else {
+			// Đang cần tạo ảnh: nút không được chứa "video" (trừ khi đồng thời có "banana"/"imagen"/"omni")
+			hasImageKeyword := strings.Contains(btnTextLower, "banana") || strings.Contains(btnTextLower, "imagen") || strings.Contains(btnTextLower, "omni")
+			if strings.Contains(btnTextLower, "video") && !hasImageKeyword {
+				checkIsMediaTypeMatch = false
+			}
+		}
+
+		return isModelMatch, isRatioMatch, isBatchMatch, checkIsMediaTypeMatch
 	}
 
 	// A. Đảm bảo nút "Tác nhân" (Agent) được tắt trước tiên (chuyển aria-pressed="true" thành "false")
@@ -1865,63 +1903,63 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 	tm.EmitStatus(TaskStateSubmitting, "Đang cấu hình cài đặt tác nhân Google Flow...", 28)
 	logDebug("Bắt đầu cấu hình cài đặt tác nhân (Model: %s, Aspect: %s, Batch: %s)...", req.Model, req.AspectRatio, req.BatchSize)
 
-	// 2. Tìm nút mở hộp thoại cấu hình (radix-:rn: / nút hiển thị model hiện tại)
+	// 2. Tìm nút mở hộp thoại cấu hình (radix-:rn: / nút hiển thị model/video/tỷ lệ hiện tại ở thanh prompt)
 	configTriggerBtn, err := getElement(5*time.Second, `() => {
 		const buttons = Array.from(document.querySelectorAll('button'));
+		const windowHeight = window.innerHeight || 800;
 
-		// 1. Tìm nút hiển thị Model hiện tại có aria-haspopup="menu" (chứa Banana, Veo, Imagen, Omni, hoặc biểu tượng 🍌)
-		let btn = buttons.find(b => {
-			const id = b.getAttribute('id') || '';
-			const hasPopup = b.getAttribute('aria-haspopup') === 'menu';
-			const txt = b.textContent.toLowerCase();
-			const hasModelText = txt.includes('banana') || txt.includes('veo') || txt.includes('imagen') || txt.includes('omni') || txt.includes('🍌');
-			const isVisible = b.getBoundingClientRect().width > 0;
-			return isVisible && id.startsWith('radix-') && hasPopup && hasModelText;
-		});
-		if (btn) return btn;
-
-		// 2. Dự phòng: Tìm nút cấu hình gần nhất với ô nhập prompt
+		// 1. Ưu tiên tìm nút menu cài đặt nằm ngay trong/cùng container với ô nhập prompt (Slate editor)
 		try {
-			const editor = document.querySelector('[data-slate-editor="true"], div[role="textbox"], textarea');
+			const editor = document.querySelector('[data-slate-editor="true"], div[role="textbox"], textarea, [class*="prompt"]');
 			if (editor) {
 				let parent = editor.parentElement;
-				while (parent && parent.tagName !== 'BODY') {
+				for (let depth = 0; depth < 8 && parent && parent !== document.body; depth++) {
 					const btns = Array.from(parent.querySelectorAll('button[aria-haspopup="menu"]'));
 					const target = btns.find(b => {
-						const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-						const title = (b.getAttribute('title') || '').toLowerCase();
-						const html = b.innerHTML.toLowerCase();
-						return aria.includes('cài đặt') || aria.includes('settings') || aria.includes('tune') ||
-						       title.includes('cài đặt') || title.includes('settings') ||
-						       html.includes('tune') || html.includes('settings') || html.includes('slider') ||
-						       b.querySelector('span.google-symbols')?.textContent.trim().toLowerCase() === 'tune' ||
-						       b.querySelector('i')?.textContent.trim().toLowerCase() === 'tune';
+						const txt = (b.textContent || '').trim().toLowerCase();
+						const isAgent = txt.includes('tác nhân') || txt.includes('agent');
+						const isVisible = b.getBoundingClientRect().width > 0;
+						return isVisible && !isAgent;
 					});
-					if (target && target.getBoundingClientRect().width > 0) {
-						return target;
-					}
+					if (target) return target;
 					parent = parent.parentElement;
 				}
 			}
 		} catch(e) {}
 
-		// 3. Dự phòng 2: Tìm theo class + role + text/icon đặc trưng trên toàn trang
+		// 2. Tìm nút ở NỬA DƯỚI màn hình có id^="radix-" và aria-haspopup="menu" (loại trừ nút Tác nhân & loại trừ header gear ở top)
+		let btn = buttons.find(b => {
+			const id = b.getAttribute('id') || '';
+			const hasPopup = b.getAttribute('aria-haspopup') === 'menu';
+			const txt = (b.textContent || '').trim().toLowerCase();
+			const rect = b.getBoundingClientRect();
+			const isVisible = rect.width > 0 && rect.height > 0;
+			const isBottomArea = rect.top > (windowHeight * 0.3); // Loại bỏ top header settings gear ở góc trên màn hình
+			const isAgent = txt.includes('tác nhân') || txt.includes('agent');
+
+			const hasPromptConfigKeywords = txt.includes('video') || txt.includes('banana') || txt.includes('veo') || 
+			                                txt.includes('imagen') || txt.includes('omni') || txt.includes('1x') || 
+			                                txt.includes('2x') || txt.includes('3x') || txt.includes('4x') || 
+			                                txt.includes('8s') || txt.includes('5s') || txt.includes('9:16') || 
+			                                txt.includes('16:9') || txt.includes('1:1') || txt.includes('hình ảnh') || 
+			                                txt.includes('image') || txt.includes('🍌');
+
+			return isVisible && id.startsWith('radix-') && hasPopup && isBottomArea && !isAgent && hasPromptConfigKeywords;
+		});
+		if (btn) return btn;
+
+		// 3. Dự phòng 2: Bất kỳ nút radix- menu nào ở nửa dưới màn hình (không phải Tác nhân)
 		btn = buttons.find(b => {
 			const id = b.getAttribute('id') || '';
-			const ariaHasPopup = b.getAttribute('aria-haspopup');
-			const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-			const title = (b.getAttribute('title') || '').toLowerCase();
-			const html = b.innerHTML.toLowerCase();
-			
-			const isRadixMenu = id.startsWith('radix-') && ariaHasPopup === 'menu';
-			const isSettings = aria.includes('cài đặt') || aria.includes('settings') || aria.includes('tune') ||
-			                   title.includes('cài đặt') || title.includes('settings') ||
-			                   html.includes('tune') || html.includes('settings') || html.includes('slider') ||
-			                   b.querySelector('span.google-symbols')?.textContent.trim().toLowerCase() === 'tune' ||
-			                   b.querySelector('i')?.textContent.trim().toLowerCase() === 'tune';
-
-			return isRadixMenu && isSettings && b.getBoundingClientRect().width > 0;
+			const hasPopup = b.getAttribute('aria-haspopup') === 'menu';
+			const txt = (b.textContent || '').trim().toLowerCase();
+			const rect = b.getBoundingClientRect();
+			const isVisible = rect.width > 0;
+			const isBottomArea = rect.top > (windowHeight * 0.3);
+			const isAgent = txt.includes('tác nhân') || txt.includes('agent');
+			return isVisible && id.startsWith('radix-') && hasPopup && isBottomArea && !isAgent;
 		});
+
 		return btn || null;
 	}`)
 
@@ -1940,19 +1978,19 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		currentConfigText, _ = configTriggerBtn.Text()
 	}
 
-	// 2.5. Kiểm tra chi tiết từng cài đặt trên nút
-	isModelMatch, isRatioMatch, isBatchMatch := checkConfigMatches(currentConfigText)
-	isAllMatch := isModelMatch && isRatioMatch && isBatchMatch
+	// 2.5. Kiểm tra chi tiết từng cài đặt trên nút (bao gồm media type ảnh/video)
+	isModelMatch, isRatioMatch, isBatchMatch, isMediaTypeMatch := checkConfigMatches(currentConfigText)
+	isAllMatch := isModelMatch && isRatioMatch && isBatchMatch && isMediaTypeMatch
 	logDebug("NÚT CẤU HÌNH ĐƯỢC TÌM THẤY: ID=%s, Text=[%s]", idStr, strings.ReplaceAll(currentConfigText, "\n", " "))
-	logDebug("ĐỐI CHIẾU CẤU HÌNH: Model=%v, AspectRatio=%v, BatchSize=%v -> Tất cả trùng khớp: %v", isModelMatch, isRatioMatch, isBatchMatch, isAllMatch)
+	logDebug("ĐỐI CHIẾU CẤU HÌNH: Model=%v, AspectRatio=%v, BatchSize=%v, MediaType=%v -> Tất cả trùng khớp: %v", isModelMatch, isRatioMatch, isBatchMatch, isMediaTypeMatch, isAllMatch)
 
 	if isAllMatch {
 		logDebug("Cấu hình hiện tại ĐÃ TRÙNG KHỚP hoàn toàn với yêu cầu. BỎ QUA toàn bộ các bước mở cấu hình.")
-		mile("Cấu hình đã đúng sẵn (model/tỷ lệ/số lượng)")
+		mile("Cấu hình đã đúng sẵn (model/tỷ lệ/số lượng/loại)")
 		return nil
 	}
 
-	logDebug("Cấu hình chưa trùng khớp (Model: %v, Ratio: %v, Batch: %v). Tiến hành mở popover để điều chỉnh duy nhất các phần chưa đúng...", isModelMatch, isRatioMatch, isBatchMatch)
+	logDebug("Cấu hình chưa trùng khớp (Model: %v, Ratio: %v, Batch: %v, MediaType: %v). Tiến hành mở popover để điều chỉnh duy nhất các phần chưa đúng...", isModelMatch, isRatioMatch, isBatchMatch, isMediaTypeMatch)
 	mile("Đang mở cấu hình để chỉnh model/tỷ lệ/số lượng...")
 
 	// 3. Kiểm tra xem popover đang mở hay đóng

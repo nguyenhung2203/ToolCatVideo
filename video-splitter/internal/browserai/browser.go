@@ -277,9 +277,12 @@ func (b *BrowserSession) NewPage(startURL string) (*rod.Page, error) {
 }
 
 // AcquirePageForWorker cấp trang cho worker trong Hàng Đợi AI song song.
-// Với workerID == 0, nếu tab gốc (b.page) đang rảnh (rootInUse == false) và còn sống,
-// ta tái sử dụng tab gốc đó (isRoot = true) để KHÔNG thừa 1 tab rảnh ngồi chơi.
-// Với các workerID khác (hoặc khi tab gốc bận), mở cửa sổ mới (isRoot = false).
+// Worker đầu tiên đến (rootInUse == false) tái sử dụng tab gốc (b.page) để
+// không thừa 1 tab rảnh ngồi chơi và giữ tổng số tab = số luồng cấu hình.
+// Các worker sau (hoặc khi tab gốc bận) mở cửa sổ mới (isRoot = false).
+// NOTE: không dùng workerID == 0 vì nextWorkerID không reset giữa các lần
+// chạy → lần 2 workerID bắt đầu từ 3,4,5... không ai là 0, mọi worker đều
+// mở tab mới → tổng tab = 1 (keep-alive) + n (worker) thay vì đúng n tab.
 func (b *BrowserSession) AcquirePageForWorker(workerID int, startURL string) (page *rod.Page, isRoot bool, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -288,8 +291,8 @@ func (b *BrowserSession) AcquirePageForWorker(workerID int, startURL string) (pa
 		return nil, false, fmt.Errorf("trình duyệt chưa được khởi chạy")
 	}
 
-	// Thử tận dụng tab gốc cho Worker 0
-	if workerID == 0 && b.page != nil && !b.rootInUse {
+	// Worker đầu tiên đến → tận dụng tab gốc (bất kể workerID là bao nhiêu)
+	if b.page != nil && !b.rootInUse {
 		_, errCheck := b.page.Info()
 		if errCheck == nil {
 			b.rootInUse = true
@@ -299,7 +302,7 @@ func (b *BrowserSession) AcquirePageForWorker(workerID int, startURL string) (pa
 		}
 	}
 
-	// Mở cửa sổ/tab mới cho các worker khác (hoặc khi tab gốc không sẵn sàng)
+	// Mở cửa sổ/tab mới cho các worker sau (hoặc khi tab gốc không sẵn sàng)
 	newPage, err := b.browser.Page(proto.TargetCreateTarget{URL: startURL, NewWindow: true})
 	if err != nil {
 		return nil, false, fmt.Errorf("mở cửa sổ mới: %w", err)
