@@ -1504,6 +1504,14 @@ func GenerateFlowVideo(
 				return "", fmt.Errorf("không tải được video bằng link trực tiếp")
 			}
 
+			expectedVideos := 1
+			if req.BatchSize != "" {
+				cleanDigit := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(req.BatchSize, "x", "")))
+				if n, errConv := strconv.Atoi(cleanDigit); errConv == nil && n > 1 {
+					expectedVideos = n
+				}
+			}
+
 			var downloadBtn *rod.Element
 			ticker := time.NewTicker(3 * time.Second)
 
@@ -1820,51 +1828,214 @@ func GenerateFlowVideo(
 				continue
 			}
 
-			if downloadBtn == nil {
-				logDebug("Không tìm thấy nút tải video trên giao diện. Chuyển sang tải trực tiếp qua Fetch API / Media URL...")
-				if fp, errFb := downloadDirectVideoFallback(req.FileName); errFb == nil {
-					mile("✓ Đã tải xong video (Tải trực tiếp)")
-					return []string{fp}, nil
+			if expectedVideos > 1 {
+				mile(fmt.Sprintf("✓ Đã sinh %d video, bắt đầu tải về...", expectedVideos))
+			} else {
+				mile("✓ Đã sinh video, bắt đầu tải về...")
+			}
+
+			var downloadedPaths []string
+
+			for idx := 0; idx < expectedVideos; idx++ {
+				customFileName := req.FileName
+				if expectedVideos > 1 {
+					customFileName = fmt.Sprintf("%s_%d", req.FileName, idx+1)
+					mile(fmt.Sprintf("Đang mở chi tiết video %d/%d...", idx+1, expectedVideos))
+				} else {
+					mile("Đang mở chi tiết video...")
 				}
-				finalErr = fmt.Errorf("không tìm thấy nút tải xuống video và tải trực tiếp thất bại")
-				continue
-			}
 
-			// Download video — tuần tự hóa giữa các tab (WaitDownload ở cấp browser).
-			tm.EmitStatus(TaskStateDownloading, "Đang tải video xuống...", 85)
-			session.LockDownload()
-			waitDownload := session.browser.WaitDownload(session.downloadDir)
-			_ = downloadBtn.Click(proto.InputMouseButtonLeft, 1)
+				// 1. Nếu đang ở trang chi tiết (/edit/), quay về trang lưới dự án trước khi chọn card mới
+				_, _ = page.Eval(`() => {
+					if (window.location.href.includes('/edit/')) {
+						const backBtn = Array.from(document.querySelectorAll('button, a')).find(b => {
+							const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+							const title = (b.getAttribute('title') || '').toLowerCase();
+							const iTxt = (b.querySelector('i, span')?.textContent || '').trim().toLowerCase();
+							const txt = (b.textContent || '').trim().toLowerCase();
+							const isVisible = (b.getBoundingClientRect().width > 0 || b.offsetWidth > 0);
+							return isVisible && (iTxt === 'arrow_back' || aria.includes('back') || aria.includes('quay lại') || title.includes('back') || txt === 'quay lại');
+						});
+						if (backBtn) {
+							backBtn.click();
+						} else {
+							window.history.back();
+						}
+					}
+				}`)
+				sleep(1200 * time.Millisecond)
 
-			filePath, errMove := WaitAndMoveDownload(ctx, waitDownload, session.downloadDir, req.OutputDir, req.FileName, MediaTypeVideo)
-			session.UnlockDownload()
+				// 2. Click vào thẻ video card thứ idx chính xác trong nhóm mới sinh (LỰA CHỌN CHÍNH XÁC PHẦN TỬ CON, KHÔNG BẤM NÚT CHA HÀNG HÀNG)
+				tileEl, errFindTile := page.ElementByJS(rod.Eval(`(targetIdx, totalExp) => {
+					// 1. Quét các thẻ card video trên lưới chính theo cấu trúc DOM thực tế (DevTools)
+					const cards = Array.from(document.querySelectorAll('div[class*="38169"] > div, div[style*="width: 166"], div[style*="height: 296"]')).filter(el => {
+						if (el.closest('[role="dialog"], [class*="modal"], [class*="overlay"]')) return false;
+						const rect = el.getBoundingClientRect();
+						return rect.width > 60 && rect.height > 60;
+					});
 
-			// Đóng popup chi tiết video sau khi tải
-			_, _ = page.Eval(`() => {
-				const closeBtn = Array.from(document.querySelectorAll('button')).find(el => {
-					const txt = el.textContent.toLowerCase().trim();
-					return txt === 'xong' || txt === 'đóng' || txt === 'close' || txt === 'done';
-				});
-				if (closeBtn) closeBtn.click();
-				else {
-					const event = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true });
-					document.dispatchEvent(event);
+					let tiles = cards;
+					if (tiles.length < totalExp) {
+						// Fallback: Quét tất cả thẻ chứa video/canvas hoặc icon play
+						const media = Array.from(document.querySelectorAll('a[href*="/edit/"], video, canvas, i.google-symbols, span.google-symbols')).filter(el => {
+							if (el.closest('[role="dialog"], [class*="modal"], [class*="overlay"]')) return false;
+							const rect = el.getBoundingClientRect();
+							return rect.width > 60 && rect.height > 60;
+						});
+
+						const unique = [];
+						const seen = new Set();
+						for (const m of media) {
+							const r = m.getBoundingClientRect();
+							const key = Math.round(r.left) + '_' + Math.round(r.top);
+							if (!seen.has(key)) {
+								seen.add(key);
+								unique.push(m);
+							}
+						}
+						if (unique.length > 0) tiles = unique;
+					}
+
+					if (tiles.length === 0) return null;
+
+					// Lấy nhóm totalExp thẻ mới nhất ở cuối danh sách
+					const batchTiles = tiles.slice(Math.max(0, tiles.length - totalExp));
+					// Sắp xếp các thẻ trong batch từ trái sang phải (theo vị trí left) để đảm bảo index 0, 1, 2, 3 khớp đúng tuần tự visual
+					batchTiles.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+
+					const targetTile = batchTiles[targetIdx] || batchTiles[Math.min(targetIdx, batchTiles.length - 1)];
+					if (!targetTile) return null;
+
+					// BẤM TRỰC TIẾP VÀO PHẦN TỬ CON (CANVAS / VIDEO / ICON / IMG), KHÔNG NHẢY LÊN THẺ CHA CONTAINER HÀNG HÀNG
+					const clickTarget = targetTile.querySelector('video, canvas, i, span, img') || targetTile;
+					try { clickTarget.scrollIntoView({ block: 'center' }); } catch(e){}
+					clickTarget.click();
+					try { clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e){}
+					return clickTarget;
+				}`, idx, expectedVideos))
+
+				if errFindTile == nil && tileEl != nil {
+					_ = tileEl.Click(proto.InputMouseButtonLeft, 1)
+				} else {
+					_, _ = page.Eval(`(targetIdx, totalExp) => {
+						const media = Array.from(document.querySelectorAll('video, canvas')).filter(el => {
+							if (el.closest('[role="dialog"], [class*="modal"], [class*="overlay"]')) return false;
+							const rect = el.getBoundingClientRect();
+							return rect.width > 60 && rect.height > 60;
+						});
+						if (media.length > 0) {
+							const batchMedia = media.slice(Math.max(0, media.length - totalExp));
+							batchMedia.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+							const target = batchMedia[targetIdx] || batchMedia[batchMedia.length - 1];
+							const clickTarget = target.querySelector('video, canvas, i, span, img') || target;
+							clickTarget.click();
+							try { clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e){}
+						}
+					}`, idx, expectedVideos)
 				}
-			}`)
-			sleep(1000 * time.Millisecond)
 
-			if errMove == nil {
-				logDebug("Tải video thành công: %s", filePath)
-				mile("✓ Đã tải xong video")
-				return []string{filePath}, nil
+				sleep(1500 * time.Millisecond)
+
+				// 2. Chờ nút Tải xuống trong popup chi tiết sẵn sàng
+				var btnDl *rod.Element
+				for waitBtn := 0; waitBtn < 10; waitBtn++ {
+					btn, errCheckDl := page.ElementByJS(rod.Eval(`() => {
+						const candidates = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+						const found = [];
+						for (const el of candidates) {
+							const icon = el.querySelector('i, span.google-symbols, .material-icons, [class*="icon"]');
+							const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
+							const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+							const title = (el.getAttribute('title') || '').toLowerCase();
+							const txt = el.textContent.trim().toLowerCase();
+							const isVisible = el.getBoundingClientRect().width > 0 || el.offsetWidth > 0;
+							const isDisabled = el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true' || el.classList.contains('disabled');
+							if (isVisible && !isDisabled && (
+								iconText === 'download' || iconText === 'file_download' || iconText === 'tải xuống' ||
+								aria.includes('download') || aria.includes('tải xuống') || aria.includes('tải về') ||
+								title.includes('download') || title.includes('tải xuống') || title.includes('tải về') ||
+								txt.includes('tải xuống') || txt.includes('download')
+							)) {
+								found.push(el);
+							}
+						}
+						return found.length > 0 ? found[found.length - 1] : null;
+					}`))
+					if errCheckDl == nil && btn != nil {
+						btnDl = btn
+						break
+					}
+					sleep(1000 * time.Millisecond)
+				}
+
+				dlSuccess := false
+				if btnDl != nil {
+					if expectedVideos > 1 {
+						tm.EmitStatus(TaskStateDownloading, fmt.Sprintf("Đang tải video %d/%d...", idx+1, expectedVideos), 85)
+					} else {
+						tm.EmitStatus(TaskStateDownloading, "Đang tải video xuống...", 85)
+					}
+					session.LockDownload()
+					waitDownload := session.browser.WaitDownload(session.downloadDir)
+					_ = btnDl.Click(proto.InputMouseButtonLeft, 1)
+
+					filePath, errMove := WaitAndMoveDownload(ctx, waitDownload, session.downloadDir, req.OutputDir, customFileName, MediaTypeVideo)
+					session.UnlockDownload()
+
+					if errMove == nil {
+						logDebug("Tải video %d/%d thành công: %s", idx+1, expectedVideos, filePath)
+						if expectedVideos > 1 {
+							mile(fmt.Sprintf("✓ Đã tải xong video %d/%d", idx+1, expectedVideos))
+						} else {
+							mile("✓ Đã tải xong video")
+						}
+						downloadedPaths = append(downloadedPaths, filePath)
+						dlSuccess = true
+					}
+				}
+
+				if !dlSuccess {
+					logDebug("Thử tải trực tiếp video %d/%d qua Fetch API...", idx+1, expectedVideos)
+					if fp, errFb := downloadDirectVideoFallback(customFileName); errFb == nil {
+						if expectedVideos > 1 {
+							mile(fmt.Sprintf("✓ Đã tải xong video %d/%d (Tải trực tiếp)", idx+1, expectedVideos))
+						} else {
+							mile("✓ Đã tải xong video (Tải trực tiếp)")
+						}
+						downloadedPaths = append(downloadedPaths, fp)
+					} else if expectedVideos > 1 {
+						mile(fmt.Sprintf("⚠ Lỗi tải video %d/%d", idx+1, expectedVideos))
+					}
+				}
+
+				// Quay lại trang lưới dự án (Back Arrow ← / history.back) sau khi tải xong từng video
+				_, _ = page.Eval(`() => {
+					// 1. Click nút Back Arrow (←) ở góc trên bên trái trang Google Flow edit
+					const backBtn = Array.from(document.querySelectorAll('button, a')).find(b => {
+						const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+						const title = (b.getAttribute('title') || '').toLowerCase();
+						const iTxt = (b.querySelector('i, span')?.textContent || '').trim().toLowerCase();
+						const txt = (b.textContent || '').trim().toLowerCase();
+						const isVisible = (b.getBoundingClientRect().width > 0 || b.offsetWidth > 0);
+						return isVisible && (iTxt === 'arrow_back' || aria.includes('back') || aria.includes('quay lại') || title.includes('back') || txt === 'quay lại');
+					});
+					if (backBtn) {
+						backBtn.click();
+						try { backBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e){}
+						return;
+					}
+					// 2. Dự phòng: history.back()
+					if (window.location.href.includes('/edit/')) {
+						window.history.back();
+					}
+				}`)
+				sleep(1500 * time.Millisecond)
 			}
 
-			logDebug("Lỗi di chuyển file video sau khi bấm tải: %v. Thử tải trực tiếp qua Fetch API / Media URL...", errMove)
-			if fp, errFb := downloadDirectVideoFallback(req.FileName); errFb == nil {
-				mile("✓ Đã tải xong video (Tải trực tiếp)")
-				return []string{fp}, nil
+			if len(downloadedPaths) > 0 {
+				return downloadedPaths, nil
 			}
-			finalErr = fmt.Errorf("lỗi di chuyển file video tải về: %w", errMove)
+			finalErr = fmt.Errorf("không có video nào được tải về thành công")
 		}
 	}
 
@@ -1908,7 +2079,7 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		return el.Context(ctx), nil
 	}
 
-	checkConfigMatches := func(btnText string) (isModelMatch, isRatioMatch, isBatchMatch, isMediaTypeMatch bool) {
+	checkConfigMatches := func(btnText string) (isModelMatch, isRatioMatch, isBatchMatch, isDurationMatch, isMediaTypeMatch bool) {
 		btnTextLower := strings.ToLower(btnText)
 
 		// 1. Kiểm tra Model
@@ -1981,6 +2152,14 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 			}
 		}
 
+		// 4. Kiểm tra Duration (4s, 6s, 8s) cho Video mode (khớp chính xác dạng '4s', tránh nhầm với 'x4')
+		isDurationMatch = true
+		if req.MediaType == MediaTypeVideo && req.Duration != "" {
+			durDigit := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(req.Duration, "s", "")))
+			targetDurStr := durDigit + "s"
+			isDurationMatch = strings.Contains(btnTextLower, targetDurStr)
+		}
+
 		checkIsMediaTypeMatch := true
 		if req.MediaType == MediaTypeVideo {
 			// Đang cần tạo video: nút phải chứa "video" hoặc "veo"
@@ -1993,7 +2172,7 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 			}
 		}
 
-		return isModelMatch, isRatioMatch, isBatchMatch, checkIsMediaTypeMatch
+		return isModelMatch, isRatioMatch, isBatchMatch, isDurationMatch, checkIsMediaTypeMatch
 	}
 
 	// A. Đảm bảo nút "Tác nhân" (Agent) được tắt trước tiên (chuyển aria-pressed="true" thành "false")
@@ -2190,11 +2369,11 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		currentConfigText, _ = configTriggerBtn.Text()
 	}
 
-	// 2.5. Kiểm tra chi tiết từng cài đặt trên nút (bao gồm media type ảnh/video)
-	isModelMatch, isRatioMatch, isBatchMatch, isMediaTypeMatch := checkConfigMatches(currentConfigText)
-	isAllMatch := isModelMatch && isRatioMatch && isBatchMatch && isMediaTypeMatch
+	// 2.5. Kiểm tra chi tiết từng cài đặt trên nút (bao gồm media type ảnh/video, duration, batch)
+	isModelMatch, isRatioMatch, isBatchMatch, isDurationMatch, isMediaTypeMatch := checkConfigMatches(currentConfigText)
+	isAllMatch := isModelMatch && isRatioMatch && isBatchMatch && isDurationMatch && isMediaTypeMatch
 	logDebug("NÚT CẤU HÌNH ĐƯỢC TÌM THẤY: ID=%s, Text=[%s]", idStr, strings.ReplaceAll(currentConfigText, "\n", " "))
-	logDebug("ĐỐI CHIẾU CẤU HÌNH: Model=%v, AspectRatio=%v, BatchSize=%v, MediaType=%v -> Tất cả trùng khớp: %v", isModelMatch, isRatioMatch, isBatchMatch, isMediaTypeMatch, isAllMatch)
+	logDebug("ĐỐI CHIẾU CẤU HÌNH: Model=%v, AspectRatio=%v, BatchSize=%v, Duration=%v, MediaType=%v -> Tất cả trùng khớp: %v", isModelMatch, isRatioMatch, isBatchMatch, isDurationMatch, isMediaTypeMatch, isAllMatch)
 
 	if isAllMatch {
 		logDebug("Cấu hình hiện tại ĐÃ TRÙNG KHỚP hoàn toàn với yêu cầu. BỎ QUA toàn bộ các bước mở cấu hình.")
@@ -2352,6 +2531,46 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		}
 	} else if isBatchMatch {
 		logDebug("Số lượng Batch Size (%s) đã đúng sẵn, bỏ qua không chỉnh lại.", req.BatchSize)
+	}
+
+	// 5.5. Cấu hình Thời lượng Video (4s, 6s, 8s) cho Video mode
+	if isVideoType && req.Duration != "" {
+		targetDuration := strings.ToLower(strings.TrimSpace(req.Duration))
+		if !strings.HasSuffix(targetDuration, "s") && targetDuration != "" {
+			targetDuration += "s"
+		}
+		logDebug("Cấu hình thời lượng video: %s", targetDuration)
+		clickDurationBtn, errDur := getElement(3*time.Second, `(dur) => {
+			const cleanDigit = dur.toLowerCase().replace('s', '').trim();
+			// 1. Tìm nút theo ID trigger (ví dụ button[id$="-trigger-6s"] hoặc button[id$="-trigger-6"])
+			const btn1 = document.querySelector('button[id$="-trigger-' + cleanDigit + 's"]');
+			if (btn1) return btn1;
+			const btn2 = document.querySelector('button[id$="-trigger-' + cleanDigit + '"]');
+			if (btn2) return btn2;
+
+			// 2. Tìm trong popover đang mở
+			const popover = document.querySelector('[data-state="open"][role="menu"], [data-state="open"]');
+			if (popover) {
+				const buttons = Array.from(popover.querySelectorAll('button'));
+				return buttons.find(b => {
+					const txt = b.textContent.toLowerCase().trim();
+					return txt === dur || txt === cleanDigit + 's' || txt === cleanDigit;
+				}) || null;
+			}
+			return null;
+		}`, targetDuration)
+
+		if errDur == nil && clickDurationBtn != nil {
+			errClick := HumanClick(page, clickDurationBtn)
+			if errClick != nil {
+				logDebug("Lỗi click duration bằng chuột: %v. Thử bằng JS...", errClick)
+				_, _ = clickDurationBtn.Eval("function() { this.click(); }")
+			}
+			sleep(500 * time.Millisecond)
+			mile(fmt.Sprintf("Đã chỉnh thời lượng video → %s", targetDuration))
+		} else {
+			logDebug("Không cấu hình được thời lượng video %s: %v", targetDuration, errDur)
+		}
 	}
 
 	// 6. Cấu hình Model (Chỉ chỉnh nếu chưa đúng)
