@@ -1389,6 +1389,11 @@ func GenerateFlowVideo(
 			ticker := time.NewTicker(3 * time.Second)
 
 			deadline := time.Now().Add(VideoGenerateTimeout)
+			submittedAt := time.Now()           // Thời điểm submit prompt
+			const gracePeriod = 25 * time.Second // Không detect lỗi trong 25s đầu (chờ spinner)
+			autoRetryCount := 0                  // Số lần đã bấm nút Thử lại trong Google Flow
+			consecutiveErrPolls := 0             // Số poll liên tiếp thấy lỗi mà không có progress
+			everWasGenerating := false           // Đã từng thấy spinner/progress?
 
 			for {
 				select {
@@ -1454,24 +1459,96 @@ func GenerateFlowVideo(
 					}
 				}
 
-				// Check for general error card
-				isError, _ := page.Eval(`() => {
-					return Array.from(document.querySelectorAll('div, span, button')).some(el => {
+				// Kiểm tra trạng thái tổng hợp: isGenerating + isError + hasRetryBtn
+				cardState, _ := page.Eval(`() => {
+					const isGenerating = Array.from(document.querySelectorAll('div, span, p, md-circular-progress, [role="progressbar"]')).some(el => {
+						const isVisible = (el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0) || el.offsetWidth > 0;
+						if (!isVisible) return false;
+						const txt = (el.children.length <= 2 ? el.textContent || '' : '').trim().toLowerCase();
+						if (/^\d{1,3}%$/.test(txt) || txt.includes('đang tạo') || txt.includes('generating') || txt.includes('processing')) return true;
+						const cn = String(el.className || '').toLowerCase();
+						const tag = String(el.tagName || '').toLowerCase();
+						return tag === 'md-circular-progress' || cn.includes('spinner') || cn.includes('progress') || cn.includes('loading');
+					});
+					// Mở rộng detect lỗi: bắt "Không thành công" + "hoạt động bất thường" (không cần chữ "lỗi")
+					const isError = !isGenerating && Array.from(document.querySelectorAll('div, span')).some(el => {
 						const txt = el.textContent.toLowerCase();
 						const isVisible = el.getBoundingClientRect().width > 0;
 						return isVisible && (
-							(txt.includes('không thành công') && txt.includes('lỗi')) ||
+							txt.includes('không thành công') ||
+							txt.includes('hoạt động bất thường') ||
 							txt.includes('something went wrong') ||
 							txt.includes('rất tiếc, đã xảy ra lỗi') ||
 							(txt.includes('failed') && txt.includes('create'))
 						);
 					});
+					const retryBtn = Array.from(document.querySelectorAll('button, div[role="button"]')).find(b => {
+						const txt = (b.textContent || '').trim().toLowerCase();
+						const iTxt = (b.querySelector('i')?.textContent || '').trim().toLowerCase();
+						const isVisible = b.getBoundingClientRect().width > 0 || b.offsetWidth > 0;
+						return isVisible && (txt.includes('thử lại') || txt.includes('retry') || iTxt === 'refresh');
+					});
+					return { isGenerating, isError, hasRetryBtn: !!retryBtn };
 				}`)
-				if isError != nil && isError.Value.Bool() {
-					logDebug("Phát hiện thẻ lỗi trên Google Flow (Không thành công / Rất tiếc, đã xảy ra lỗi) khi tạo video.")
-					finalErr = NewError(ErrGenerationFailed, "Google Flow báo lỗi tạo video.")
-					generationFailed = true
-					break
+
+				if cardState != nil {
+					isGen := cardState.Value.Get("isGenerating").Bool()
+					isErr := cardState.Value.Get("isError").Bool()
+					hasRetry := cardState.Value.Get("hasRetryBtn").Bool()
+
+					if isGen {
+						everWasGenerating = true
+						consecutiveErrPolls = 0
+						logDebug("Đang tạo video... (everWasGenerating=true)")
+					}
+
+					if !isGen && isErr && hasRetry {
+						elapsedSec := time.Since(submittedAt).Seconds()
+						consecutiveErrPolls++
+
+						// Nếu đã từng thấy generating → lỗi thật → retry nhanh (2 poll)
+						// Chưa từng thấy generating → có thể là card cũ → grace 25s + 3 poll
+						needConsecutive := 3
+						var needGrace float64 = gracePeriod.Seconds()
+						if everWasGenerating {
+							needConsecutive = 2
+							needGrace = 0
+						}
+
+						logDebug("Lỗi+retry: everWasGenerating=%v, consecutive=%d/%d, elapsed=%.0fs/%.0fs",
+							everWasGenerating, consecutiveErrPolls, needConsecutive, elapsedSec, needGrace)
+
+						if elapsedSec < needGrace {
+							logDebug("Trong grace period (%.0fs/%.0fs). Bỏ qua.", elapsedSec, needGrace)
+						} else if consecutiveErrPolls < needConsecutive {
+							logDebug("Chưa đủ %d poll liên tiếp (%d). Chờ...", needConsecutive, consecutiveErrPolls)
+						} else if autoRetryCount < 3 {
+							autoRetryCount++
+							consecutiveErrPolls = 0
+							logDebug("Bấm Thử lại (%d/3) trong Google Flow. everWasGenerating=%v", autoRetryCount, everWasGenerating)
+							mile(fmt.Sprintf("⚠ Gặp lỗi, bấm Thử lại (%d/3)...", autoRetryCount))
+							_, _ = page.Eval(`() => {
+								const btn = Array.from(document.querySelectorAll('button, div[role="button"]')).find(b => {
+									const txt = (b.textContent || '').trim().toLowerCase();
+									const iTxt = (b.querySelector('i')?.textContent || '').trim().toLowerCase();
+									const isVisible = b.getBoundingClientRect().width > 0 || b.offsetWidth > 0;
+									return isVisible && (txt.includes('thử lại') || txt.includes('retry') || iTxt === 'refresh');
+								});
+								if (btn) { btn.click(); return true; }
+								return false;
+							}`)
+							submittedAt = time.Now() // Reset grace period cho lần tạo mới
+							everWasGenerating = false // Reset để theo dõi lần mới
+							continue
+						} else {
+							logDebug("Đã bấm Thử lại 3/3 lần vẫn lỗi. Báo lỗi để outer loop re-submit.")
+							finalErr = NewError(ErrGenerationFailed, "Google Flow báo lỗi tạo video sau 3 lần thử.")
+							generationFailed = true
+							break
+						}
+					} else if !isGen && !isErr {
+						consecutiveErrPolls = 0
+					}
 				}
 
 				// Try to hover on media element to reveal download button
