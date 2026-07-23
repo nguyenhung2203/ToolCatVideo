@@ -31,19 +31,19 @@ const (
 )
 
 type Clip struct {
-	ID         string   `json:"id"`
-	Index      int      `json:"index"`
-	StartTime  float64  `json:"startTime"`
-	EndTime    float64  `json:"endTime"`
-	Duration   float64  `json:"duration"`
-	Status     string   `json:"status"` // pending, processing, completed, error
-	Thumbnail  string   `json:"thumbnail"`
-	ThumbEnd   string   `json:"thumbEnd"`   // thumbnail ngay trước điểm cắt cuối clip
-	Confidence int      `json:"confidence"` // điểm tin cậy của ranh giới BẮT ĐẦU clip (0-100)
-	Tier       string   `json:"tier"`       // auto / review / reject
-	Reason     string   `json:"reason"`     // lý do xác định ranh giới
-	Signals      []string `json:"signals"`    // các tín hiệu đã phát hiện
-	Edit         EditOps  `json:"edit"`       // các thao tác chỉnh sửa áp cho clip khi xuất
+	ID           string   `json:"id"`
+	Index        int      `json:"index"`
+	StartTime    float64  `json:"startTime"`
+	EndTime      float64  `json:"endTime"`
+	Duration     float64  `json:"duration"`
+	Status       string   `json:"status"` // pending, processing, completed, error
+	Thumbnail    string   `json:"thumbnail"`
+	ThumbEnd     string   `json:"thumbEnd"`     // thumbnail ngay trước điểm cắt cuối clip
+	Confidence   int      `json:"confidence"`   // điểm tin cậy của ranh giới BẮT ĐẦU clip (0-100)
+	Tier         string   `json:"tier"`         // auto / review / reject
+	Reason       string   `json:"reason"`       // lý do xác định ranh giới
+	Signals      []string `json:"signals"`      // các tín hiệu đã phát hiện
+	Edit         EditOps  `json:"edit"`         // các thao tác chỉnh sửa áp cho clip khi xuất
 	ExportedPath string   `json:"exportedPath"` // đường dẫn video đã xuất để phát ngay
 }
 
@@ -52,33 +52,33 @@ type Clip struct {
 // có thể tắt (giá trị zero = không áp) để export builder chỉ dựng filter khi cần.
 // Đây là điểm bản lề cho các giai đoạn edit (tỷ lệ, màu, tốc độ, text, audio, transition).
 type EditOps struct {
-	Aspect      AspectOp     `json:"aspect"`      // chuyển tỷ lệ khung (9:16 / 1:1 / 16:9)
-	Color       ColorOp      `json:"color"`       // chỉnh màu + preset filter
-	Speed       float64      `json:"speed"`       // hệ số tốc độ (1.0 = giữ nguyên; >1 nhanh, <1 chậm)
-	HFlip       bool         `json:"hflip"`       // lật ngang video (tránh bản quyền)
-	Texts       []TextOp     `json:"texts"`       // overlay chữ / phụ đề
-	Watermark   WatermarkOp  `json:"watermark"`   // overlay logo / watermark ảnh
-	Audio       AudioOp      `json:"audio"`       // âm lượng, nhạc nền, fade
-	Transition  TransitionOp `json:"transition"`  // hiệu ứng chuyển vào đầu clip (khi ghép)
+	Aspect     AspectOp     `json:"aspect"`     // chuyển tỷ lệ khung (9:16 / 1:1 / 16:9)
+	Color      ColorOp      `json:"color"`      // chỉnh màu + preset filter
+	Speed      float64      `json:"speed"`      // hệ số tốc độ (1.0 = giữ nguyên; >1 nhanh, <1 chậm)
+	HFlip      bool         `json:"hflip"`      // lật ngang video (tránh bản quyền)
+	Texts      []TextOp     `json:"texts"`      // overlay chữ / phụ đề
+	Watermark  WatermarkOp  `json:"watermark"`  // overlay logo / watermark ảnh
+	Audio      AudioOp      `json:"audio"`      // âm lượng, nhạc nền, fade
+	Transition TransitionOp `json:"transition"` // hiệu ứng chuyển vào đầu clip (khi ghép)
 
 	// === Nhóm "xào nấu" chống trùng lặp (né fingerprint FB/TikTok/YouTube) ===
-	ZoomPan    ZoomPanOp    `json:"zoomPan"`    // Ken Burns: phóng to + dịch chậm suốt clip
-	Crop       CropOp       `json:"crop"`       // cắt rìa % rồi scale lại (lệch bố cục pixel)
-	Rotate     RotateOp     `json:"rotate"`     // xoay nhẹ vài độ + zoom bù lấp góc đen
-	Noise      NoiseOp      `json:"noise"`      // thêm hạt grain (đổi đặc trưng nén)
-	TrimStart  float64      `json:"trimStart"`  // cắt bỏ N giây ĐẦU clip (0 = không)
-	TrimEnd    float64      `json:"trimEnd"`    // cắt bỏ N giây CUỐI clip (0 = không)
-	Pitch      float64      `json:"pitch"`      // đổi cao độ giọng theo semitone (0 = giữ nguyên, ±1..±3)
-	Subtitle   SubtitleOp   `json:"subtitle"`   // burn phụ đề SRT vào video
-	StripMeta  bool         `json:"stripMeta"`  // xóa toàn bộ metadata (title/encoder/creation_time)
+	ZoomPan   ZoomPanOp  `json:"zoomPan"`   // Ken Burns: phóng to + dịch chậm suốt clip
+	Crop      CropOp     `json:"crop"`      // cắt rìa % rồi scale lại (lệch bố cục pixel)
+	Rotate    RotateOp   `json:"rotate"`    // xoay nhẹ vài độ + zoom bù lấp góc đen
+	Noise     NoiseOp    `json:"noise"`     // thêm hạt grain (đổi đặc trưng nén)
+	TrimStart float64    `json:"trimStart"` // cắt bỏ N giây ĐẦU clip (0 = không)
+	TrimEnd   float64    `json:"trimEnd"`   // cắt bỏ N giây CUỐI clip (0 = không)
+	Pitch     float64    `json:"pitch"`     // đổi cao độ giọng theo semitone (0 = giữ nguyên, ±1..±3)
+	Subtitle  SubtitleOp `json:"subtitle"`  // burn phụ đề SRT vào video
+	StripMeta bool       `json:"stripMeta"` // xóa toàn bộ metadata (title/encoder/creation_time)
 }
 
 // ZoomPanOp mô tả hiệu ứng Ken Burns (phóng to + dịch chuyển chậm) để đổi từng khung
 // hình, né fingerprint mạnh hơn lật ngang.
 type ZoomPanOp struct {
 	Enabled bool    `json:"enabled"`
-	Zoom    float64 `json:"zoom"`      // hệ số zoom cuối clip (VD 1.08 = phóng to 8%)
-	Dir     string  `json:"dir"`       // hướng dịch: "in" / "out" / "left" / "right" / "up" / "down"
+	Zoom    float64 `json:"zoom"` // hệ số zoom cuối clip (VD 1.08 = phóng to 8%)
+	Dir     string  `json:"dir"`  // hướng dịch: "in" / "out" / "left" / "right" / "up" / "down"
 }
 
 // CropOp cắt bỏ một tỷ lệ mép quanh khung rồi scale lại full, làm lệch bố cục pixel.
@@ -107,6 +107,12 @@ type SubtitleOp struct {
 	FontColor  string `json:"fontColor"`  // màu chữ dạng "&HBBGGRR" hoặc tên; rỗng = trắng
 	OutlineCol string `json:"outlineCol"` // màu viền; rỗng = đen
 	MarginV    int    `json:"marginV"`    // lề dưới (px) — đẩy phụ đề lên/xuống
+
+	// Vị trí neo tâm tự do theo tỷ lệ khung đầu ra (0..1). HasCustomPosition=false
+	// giữ nguyên cách burn phụ đề cũ bằng MarginV để tương thích preset/project đã lưu.
+	PositionX         float64 `json:"positionX"`
+	PositionY         float64 `json:"positionY"`
+	HasCustomPosition bool    `json:"hasCustomPosition"`
 
 	// Tự nghe tạo phụ đề (dùng cho KỊCH BẢN áp cho video tương lai): khi AutoGen=true
 	// và Path rỗng, lúc xuất frontend sẽ nghe từng clip (Whisper) ra .srt rồi điền Path.
@@ -146,24 +152,24 @@ type TextOp struct {
 
 // WatermarkOp overlay một ảnh logo / watermark.
 type WatermarkOp struct {
-	Enabled  bool    `json:"enabled"`
-	ImgPath  string  `json:"imgPath"`
-	X        string  `json:"x"`
-	Y        string  `json:"y"`
-	Opacity  float64 `json:"opacity"` // 0..1
-	Scale    float64 `json:"scale"`   // hệ số scale so với gốc (1 = giữ nguyên)
+	Enabled bool    `json:"enabled"`
+	ImgPath string  `json:"imgPath"`
+	X       string  `json:"x"`
+	Y       string  `json:"y"`
+	Opacity float64 `json:"opacity"` // 0..1
+	Scale   float64 `json:"scale"`   // hệ số scale so với gốc (1 = giữ nguyên)
 }
 
 // AudioOp điều chỉnh âm thanh clip.
 type AudioOp struct {
-	Volume       float64  `json:"volume"`       // hệ số âm lượng (1 = giữ nguyên)
-	Mute         bool     `json:"mute"`         // tắt tiếng gốc
-	MusicPath    string   `json:"musicPath"`    // đường dẫn nhạc nền; "" = không (file nhạc đầu tiên hoặc đơn)
-	MusicVolume  float64  `json:"musicVolume"`  // âm lượng nhạc nền (1 = giữ nguyên)
-	FadeIn       float64  `json:"fadeIn"`       // fade in (giây)
-	FadeOut      float64  `json:"fadeOut"`      // fade out (giây)
-	MusicLoop    bool     `json:"musicLoop"`    // tự động lặp nhạc nền nếu ngắn hơn video
-	MusicTracks  []string `json:"musicTracks"`  // danh sách nhiều file nhạc nền để ghép nối tiếp
+	Volume      float64  `json:"volume"`      // hệ số âm lượng (1 = giữ nguyên)
+	Mute        bool     `json:"mute"`        // tắt tiếng gốc
+	MusicPath   string   `json:"musicPath"`   // đường dẫn nhạc nền; "" = không (file nhạc đầu tiên hoặc đơn)
+	MusicVolume float64  `json:"musicVolume"` // âm lượng nhạc nền (1 = giữ nguyên)
+	FadeIn      float64  `json:"fadeIn"`      // fade in (giây)
+	FadeOut     float64  `json:"fadeOut"`     // fade out (giây)
+	MusicLoop   bool     `json:"musicLoop"`   // tự động lặp nhạc nền nếu ngắn hơn video
+	MusicTracks []string `json:"musicTracks"` // danh sách nhiều file nhạc nền để ghép nối tiếp
 }
 
 // TransitionOp hiệu ứng chuyển cảnh vào đầu clip (dùng khi ghép nhiều clip).
@@ -207,12 +213,12 @@ type Project struct {
 // SignalWeights chứa trọng số cho từng loại tín hiệu khi tính Boundary Score.
 // Có thể cấu hình để điều chỉnh theo dữ liệu thực tế.
 type SignalWeights struct {
-	VisualChange   float64 `json:"visualChange"`   // chuyển cảnh nội dung
-	BlackFrame     float64 `json:"blackFrame"`     // màn hình đen / fade
-	Silence        float64 `json:"silence"`        // khoảng im lặng
-	LayoutChange   float64 `json:"layoutChange"`   // thay đổi bố cục / tỷ lệ vùng nội dung
-	AudioChange    float64 `json:"audioChange"`    // thay đổi phổ / môi trường âm thanh
-	ContinuityPen  float64 `json:"continuityPen"`  // phạt khi có dấu hiệu liền mạch (giọng nói, nhạc nền tiếp tục)
+	VisualChange  float64 `json:"visualChange"`  // chuyển cảnh nội dung
+	BlackFrame    float64 `json:"blackFrame"`    // màn hình đen / fade
+	Silence       float64 `json:"silence"`       // khoảng im lặng
+	LayoutChange  float64 `json:"layoutChange"`  // thay đổi bố cục / tỷ lệ vùng nội dung
+	AudioChange   float64 `json:"audioChange"`   // thay đổi phổ / môi trường âm thanh
+	ContinuityPen float64 `json:"continuityPen"` // phạt khi có dấu hiệu liền mạch (giọng nói, nhạc nền tiếp tục)
 }
 
 // AnalyzerConfig chứa tham số cấu hình cho thuật toán phân tích chuyển cảnh
@@ -238,11 +244,12 @@ type AnalyzerConfig struct {
 // giảm continuity penalty để không loại nhầm quá nhiều điểm cắt hợp lệ.
 //
 // Ví dụ tính điểm với trọng số mới:
-//   Visual only (không liền mạch): 40 → review
-//   Visual + Silence:              40 + 30 = 70 → auto accept ✓
-//   Visual + Black:                40 + 35 = 75 → auto accept ✓
-//   Silence + Black:               30 + 35 = 65 → auto accept ✓
-//   Visual only (liền mạch):       40 - 15 = 25 → vẫn review (trước đây bị reject!)
+//
+//	Visual only (không liền mạch): 40 → review
+//	Visual + Silence:              40 + 30 = 70 → auto accept ✓
+//	Visual + Black:                40 + 35 = 75 → auto accept ✓
+//	Silence + Black:               30 + 35 = 65 → auto accept ✓
+//	Visual only (liền mạch):       40 - 15 = 25 → vẫn review (trước đây bị reject!)
 func DefaultWeights() SignalWeights {
 	return SignalWeights{
 		VisualChange:  45,
@@ -272,4 +279,3 @@ func DefaultConfig() AnalyzerConfig {
 		HardwareAccel:    "none",
 	}
 }
-

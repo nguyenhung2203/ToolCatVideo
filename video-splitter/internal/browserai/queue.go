@@ -42,6 +42,7 @@ type ThumbnailTask struct {
 	Model          string         `json:"model"`
 	AspectRatio    string         `json:"aspectRatio"`
 	BatchSize      string         `json:"batchSize"`
+	Duration       string         `json:"duration"`
 	Resolution     string         `json:"resolution"`
 	State          QueueTaskState `json:"state"`
 	ErrorMessage   string         `json:"errorMessage"`
@@ -413,19 +414,17 @@ func (qm *AIQueueManager) retireWorker(ctx context.Context, workerID int) {
 	qm.emitProgress()
 }
 
-// worker mở một tab riêng và xử lý các task cho tới khi hết hoặc ctx bị hủy.
+// worker cấp tab (tận dụng tab gốc nếu workerID == 0) và xử lý các task cho tới khi hết hoặc ctx bị hủy.
 func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 	flowURL := "https://labs.google/fx/vi/tools/flow"
-	page, err := qm.service.session.NewPage(flowURL)
+	page, isRoot, err := qm.service.session.AcquirePageForWorker(workerID, flowURL)
 	if err != nil {
-		flowLogf("Worker #%d: không mở được tab mới: %v", workerID, err)
+		flowLogf("Worker #%d: không mở được tab: %v", workerID, err)
 		qm.retireWorker(ctx, workerID)
 		return
 	}
 	defer func() {
-		if page != nil {
-			_ = page.Close()
-		}
+		qm.service.session.ReleaseWorkerPage(page, isRoot)
 		qm.retireWorker(ctx, workerID)
 	}()
 
@@ -456,7 +455,7 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 		if model == "" {
 			// Model mặc định theo loại: video dùng Veo, ảnh dùng Nano Banana.
 			if mt == MediaTypeVideo {
-				model = "Veo 3.1 - Fast"
+				model = "Veo 3.1 - Lite [Lower Priority]"
 			} else {
 				model = "Nano Banana 2"
 			}
@@ -510,6 +509,7 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			Model:               model,
 			AspectRatio:         task.AspectRatio,
 			BatchSize:           batchSize,
+			Duration:            task.Duration,
 			ConfirmBeforeCreate: "auto",
 			OutputDir:           task.OutputDir,
 			FileName:            task.FileName,
@@ -525,7 +525,11 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 		// level: "info" | "success" | "error" để frontend tô màu.
 		taskSource := task.Source
 		if taskSource == "" {
-			taskSource = SourceAIImage
+			if task.MediaType == MediaTypeVideo {
+				taskSource = SourceAIVideo
+			} else {
+				taskSource = SourceAIImage
+			}
 		}
 		emitLog := func(level, step string) {
 			if qm.ctx != nil {
@@ -645,7 +649,11 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 				qm.tasks[idx].ResultPath = filePaths[0]
 			}
 			completedTask := qm.tasks[idx]
-			emitLog("success", "Đã tạo xong ảnh")
+			if task.MediaType == MediaTypeVideo {
+				emitLog("success", "Đã tạo xong video")
+			} else {
+				emitLog("success", "Đã tạo xong ảnh")
+			}
 			if qm.ctx != nil {
 				runtime.EventsEmit(qm.ctx, "clip_ai_thumb_completed", completedTask)
 			}

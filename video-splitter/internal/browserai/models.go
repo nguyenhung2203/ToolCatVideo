@@ -50,6 +50,7 @@ type GenerateRequest struct {
 	ShowChrome          bool      `json:"showChrome"`
 	Model               string    `json:"model"`
 	BatchSize           string    `json:"batchSize"`
+	Duration            string    `json:"duration"`
 	ConfirmBeforeCreate string    `json:"confirmBeforeCreate"`
 	Resolution          string    `json:"resolution"`
 	DelaySecond         float64   `json:"delaySecond"`

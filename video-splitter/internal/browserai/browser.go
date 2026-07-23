@@ -32,7 +32,8 @@ type BrowserSession struct {
 	// pasteMu tuần tự hóa bước dán ảnh (Ctrl+V) giữa các cửa sổ song song:
 	// Clipboard Windows chỉ chứa 1 ảnh cho toàn máy, nên 2 worker copy ảnh cùng
 	// lúc sẽ đè clipboard của nhau → dán nhầm ảnh. Khóa quanh copy+Ctrl+V+chờ đính kèm.
-	pasteMu sync.Mutex
+	pasteMu     sync.Mutex
+	rootInUse   bool
 }
 
 func NewBrowserSession() *BrowserSession {
@@ -273,6 +274,52 @@ func (b *BrowserSession) NewPage(startURL string) (*rod.Page, error) {
 	}
 	enableFocusEmulation(page)
 	return page, nil
+}
+
+// AcquirePageForWorker cấp trang cho worker trong Hàng Đợi AI song song.
+// Với workerID == 0, nếu tab gốc (b.page) đang rảnh (rootInUse == false) và còn sống,
+// ta tái sử dụng tab gốc đó (isRoot = true) để KHÔNG thừa 1 tab rảnh ngồi chơi.
+// Với các workerID khác (hoặc khi tab gốc bận), mở cửa sổ mới (isRoot = false).
+func (b *BrowserSession) AcquirePageForWorker(workerID int, startURL string) (page *rod.Page, isRoot bool, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.browser == nil {
+		return nil, false, fmt.Errorf("trình duyệt chưa được khởi chạy")
+	}
+
+	// Thử tận dụng tab gốc cho Worker 0
+	if workerID == 0 && b.page != nil && !b.rootInUse {
+		_, errCheck := b.page.Info()
+		if errCheck == nil {
+			b.rootInUse = true
+			enableFocusEmulation(b.page)
+			_ = b.page.Navigate(startURL)
+			return b.page, true, nil
+		}
+	}
+
+	// Mở cửa sổ/tab mới cho các worker khác (hoặc khi tab gốc không sẵn sàng)
+	newPage, err := b.browser.Page(proto.TargetCreateTarget{URL: startURL, NewWindow: true})
+	if err != nil {
+		return nil, false, fmt.Errorf("mở cửa sổ mới: %w", err)
+	}
+	enableFocusEmulation(newPage)
+	return newPage, false, nil
+}
+
+// ReleaseWorkerPage giải phóng tab khi worker kết thúc.
+// Nếu là tab gốc (isRoot = true), giữ tab gốc sống làm keep-alive cho lần sau.
+// Nếu là tab phụ (isRoot = false), đóng tab đó lại.
+func (b *BrowserSession) ReleaseWorkerPage(page *rod.Page, isRoot bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if isRoot {
+		b.rootInUse = false
+	} else if page != nil {
+		_ = page.Close()
+	}
 }
 
 // LockDownload / UnlockDownload tuần tự hóa đoạn tải file giữa các tab song song.

@@ -140,16 +140,14 @@ const checkUpdate = async () => {
     updateResult.value = res
     if (res.hasUpdate) {
       showToast(`Đã có bản cập nhật mới ${res.latestVersion}!`, 'success')
-    } else {
-      if (res.error) {
-        showToast(res.error, 'warning')
-      } else {
-        showToast('Bạn đang sử dụng phiên bản mới nhất!', 'info')
-      }
-      // Tự động ẩn khung thông báo sau 5 giây nếu không có bản mới hoặc báo lỗi
+    } else if (res.error) {
+      showToast(res.error, 'warning')
       updateHideTimer = setTimeout(() => {
         updateResult.value = null
       }, 5000)
+    } else {
+      showToast('Bạn đang sử dụng phiên bản mới nhất!', 'info')
+      updateResult.value = null
     }
   } catch (err) {
     showToast('Lỗi kiểm tra cập nhật: ' + String(err), 'error')
@@ -657,6 +655,11 @@ const saveRemixScenarios = () => {
   localStorage.setItem('remix_scenario_mode', scenarioMode.value)
 }
 
+const handleExportFromScenario = () => {
+  loadRemixScenarios()
+  exportClips()
+}
+
 const selectedScenarioId = ref<string>('')
 
 const applyScenarioToActiveClips = (scenarioId: string) => {
@@ -719,6 +722,12 @@ const showSettings = ref(false)
 const globalSettingsConfig = ref<any>(null)
 
 const activeView = ref<'split' | 'download-video' | 'download-image' | 'ai-image' | 'ai-video' | 'scenarios'>('split')
+
+watch(activeView, (newVal) => {
+  if (newVal === 'split' || newVal === 'scenarios') {
+    loadRemixScenarios()
+  }
+})
 
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
@@ -810,6 +819,9 @@ const saveGlobalSettings = async () => {
     // Cấu hình phụ đề tự động (Whisper + timing).
     gSettings.whisperModel = whisperModel.value
     gSettings.subtitleTiming = subtitleTiming.value
+    // Kịch bản xào nấu (preset) — lưu bền vào settings.json thay vì chỉ localStorage.
+    gSettings.remixScenarios = JSON.parse(JSON.stringify(remixScenarios.value))
+    gSettings.remixScenarioMode = scenarioMode.value
 
     await SaveGlobalSettings(JSON.stringify(gSettings))
     globalSettingsConfig.value = JSON.parse(JSON.stringify(analyzerConfig))
@@ -819,7 +831,7 @@ const saveGlobalSettings = async () => {
 }
 
 let saveTimeout: any = null
-watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, exportWithThumbnails, thumbnailIntroDuration, geminiAPIKey, browserAIShowChrome, browserAIConcurrency, namingConfig, promptPresets, namedProjects, activeProjectId, whisperModel, subtitleTiming], () => {
+watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, exportWithThumbnails, thumbnailIntroDuration, geminiAPIKey, browserAIShowChrome, browserAIConcurrency, namingConfig, promptPresets, namedProjects, activeProjectId, whisperModel, subtitleTiming, remixScenarios, scenarioMode], () => {
   if (!isSettingsLoaded.value) return
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(() => {
@@ -1119,6 +1131,17 @@ onMounted(async () => {
       if (gSettings.whisperModel !== undefined) whisperModel.value = gSettings.whisperModel
       if (gSettings.subtitleTiming !== undefined) subtitleTiming.value = gSettings.subtitleTiming
 
+      // Kịch bản xào nấu (preset): nguồn bền ở settings.json. Mirror sang localStorage
+      // để RemixScenarioPage (đọc localStorage) + kênh sync realtime trong phiên thấy được.
+      if (Array.isArray(gSettings.remixScenarios)) {
+        remixScenarios.value = gSettings.remixScenarios
+        localStorage.setItem('remix_scenarios_list', JSON.stringify(gSettings.remixScenarios))
+      }
+      if (gSettings.remixScenarioMode === 'random' || gSettings.remixScenarioMode === 'roundrobin') {
+        scenarioMode.value = gSettings.remixScenarioMode
+        localStorage.setItem('remix_scenario_mode', gSettings.remixScenarioMode)
+      }
+
       // Đặt tên file clip
       if (gSettings.namingConfig) {
         Object.assign(namingConfig, gSettings.namingConfig)
@@ -1172,6 +1195,8 @@ onMounted(async () => {
   }
 
   loadRemixScenarios() // Nạp danh sách kịch bản xào nấu (localStorage riêng)
+  window.addEventListener('remix_scenarios_updated', loadRemixScenarios)
+  window.addEventListener('storage', loadRemixScenarios)
 
   isSettingsLoaded.value = true // Đã load xong, bắt đầu tự động theo dõi và lưu cài đặt từ đây
 
@@ -1298,11 +1323,10 @@ onMounted(async () => {
     } else if (total > 0 && completed + failed === total) {
       isMultiExportRunning.value = false
       exportStatusText.value = `✓ [Hàng Đợi AI] Đã hoàn thành toàn bộ ${completed} Thumbnail AI!`
-      showToast(`🎉 Hoàn tất 100%! Đã xuất xong video kèm ${completed} Thumbnail AI!`, 'success', 6000)
     }
   })
 
-  EventsOn('clip_ai_thumb_completed', (task: any) => {
+  EventsOn('clip_ai_thumb_completed', async (task: any) => {
     if (task && task.resultPath) {
       for (const path of Object.keys(clipsMap.value)) {
         const clips = clipsMap.value[path] || []
@@ -1323,7 +1347,8 @@ onMounted(async () => {
           (found as any).hasAIThumb = true;
           // Tạo lại thành công → xóa cờ lỗi cũ (nếu clip này từng lỗi).
           (found as any).aiThumbFailed = false;
-          (found as any).aiThumbError = ''
+          (found as any).aiThumbError = '';
+          await saveProject();
           break
         }
       }
@@ -1433,14 +1458,19 @@ const getAnalyzeETA = (path: string): string => {
     //   fast   : silence + black (ffmpeg) + trích WAV mono 8k + audio-novelty (numpy). KHÔNG tạo proxy.
     //   smart  : proxy 320×180 + quét đa tín hiệu + WAV + audio-novelty + speech + refine-on-source.
     //   precise: như smart + Librosa MFCC (nặng nhất).
+    // Hệ số hiệu chỉnh theo ĐO THỰC (video 6:08 = 368s, 1080p 30fps, complexity≈1):
+    //   fixed ≈ vài giây · fast ≈ 29s · smart ≈ 58s (proxy 33 + phân tích 25)
+    //   · precise ≈ 98s (proxy 33 + phân tích 65). smart/precise phải cộng CHI PHÍ
+    //   TẠO PROXY (~duration/11) mà công thức cũ gộp thiếu → báo hụt. Đây là cận trên
+    //   cho codec nặng (AV1); video H.264 nhẹ hơn thì linear projection sẽ tự kéo xuống.
     if (mode === 'fixed') {
       initialRemaining = 3 + duration / 120.0 // cắt đều: chỉ ffmpeg trích thumbnail
     } else if (mode === 'fast') {
-      initialRemaining = 5 + duration / 45.0 // fast: +WAV/audio-novelty so với bản chỉ silence/black
+      initialRemaining = 3 + duration / 13.0 // fast: silence + black + WAV + audio-novelty (chạy thẳng source)
     } else if (mode === 'precise') {
-      initialRemaining = 15 + duration / 8.0 // precise: proxy + WAV + Librosa + refine-source
+      initialRemaining = 14 + duration / 4.5 // precise: proxy + WAV + Librosa MFCC + refine-source
     } else {
-      initialRemaining = 10 + duration / 14.0 // smart: proxy + WAV + audio + refine-on-source
+      initialRemaining = 8 + duration / 7.5 // smart: proxy + WAV + audio-novelty + speech + refine-source
     }
     if (initialRemaining < 3) initialRemaining = 3
 
@@ -1476,6 +1506,17 @@ const getAnalyzeETA = (path: string): string => {
     const remainingPhase12 = Math.max(0, totalEstimatedPhase12 - elapsed)
     
     rawRemaining = remainingPhase12 + phase3Overhead
+
+    // Chặn phóng đại ETA: progress KHÔNG tuyến tính với thời gian — ở chế độ Nhanh
+    // (nhất là video AV1/codec nặng) progress kẹt rất lâu ở mức thấp rồi nhảy vọt.
+    // Linear projection ở trên sẽ ngoại suy "34s mới đi 6% → tổng ~560s" và báo "8 phút"
+    // cho việc thực tế chỉ mất ~30s → người dùng tưởng bị treo. Giới hạn trần theo bội số
+    // của initialRemaining (đã dựa trên mode + duration + độ phân giải) để ETA không vượt
+    // xa thực tế. Chỉ áp khi có duration thật (initialRemaining đáng tin).
+    if (duration > 0) {
+      const etaCap = initialRemaining * 3
+      if (rawRemaining > etaCap) rawRemaining = etaCap
+    }
   } else if (progress >= 92 && progress < 98) {
     // Phase 3 maps to 92% - 98% progress range. Interpolate remaining Phase 3 time.
     const phase3Percent = (progress - 92) / (98 - 92)
@@ -2236,52 +2277,60 @@ const activeSelectedCount = computed(() => {
 })
 
 const exportClips = async () => {
-  const clipsToExportMap = getSelectedClipsGroupedByVideo()
-  const totalClipsToExport = Object.values(clipsToExportMap).reduce((acc, list) => acc + list.length, 0)
+  let clipsToExportMap = getSelectedClipsGroupedByVideo()
+  let totalClipsToExport = Object.values(clipsToExportMap).reduce((acc, list) => acc + list.length, 0)
   
   if (totalClipsToExport === 0) {
-    if (!activeVideoPath.value || activeClips.value.length === 0) return
-    clipsToExportMap[activeVideoPath.value] = activeClips.value
+    if (activeVideoPath.value) {
+      const existingClips = clipsMap.value[activeVideoPath.value] || []
+      if (existingClips.length > 0) {
+        clipsToExportMap[activeVideoPath.value] = existingClips
+      } else {
+        const dur = videoInfo.value?.Duration || 0
+        const fullClip: any = {
+          id: `full_video_${Date.now()}`,
+          index: 1,
+          startTime: 0,
+          endTime: dur > 0 ? dur : 0,
+          duration: dur > 0 ? dur : 0,
+          status: 'pending',
+          edit: {}
+        }
+        clipsToExportMap[activeVideoPath.value] = [fullClip]
+      }
+    } else if (videoPaths.value.length > 0) {
+      for (const p of videoPaths.value) {
+        const list = clipsMap.value[p] || []
+        if (list.length > 0) {
+          clipsToExportMap[p] = list
+        } else {
+          const fullClip: any = {
+            id: `full_video_${Date.now()}_${p.split('\\').pop()}`,
+            index: 1,
+            startTime: 0,
+            endTime: 0,
+            duration: 0,
+            status: 'pending',
+            edit: {}
+          }
+          clipsToExportMap[p] = [fullClip]
+        }
+      }
+    }
   }
 
   const groupedKeys = Object.keys(clipsToExportMap)
   const finalTotal = Object.values(clipsToExportMap).reduce((acc, list) => acc + list.length, 0)
 
-  // Folder video đích của lần xuất này. Chỉ cảnh báo TRÙNG khi clip đã từng xuất
-  // vào ĐÚNG folder này — đổi sang folder khác thì không phải trùng (bug cũ: chỉ
-  // xét clip.status nên đổi folder vẫn báo trùng).
-  const currentExportDir = outDir.value
-  const alreadyCompleted = []
-  for (const [videoPath, list] of Object.entries(clipsToExportMap)) {
-    for (const clip of list) {
-      if (clip.status === 'completed' && (clip as any).exportedDir === currentExportDir) {
-        const vidName = videoPath.split('\\').pop() || 'Video'
-        alreadyCompleted.push(`${vidName} (Clip #${clip.index})`)
-      }
-    }
-  }
-
-  if (alreadyCompleted.length > 0) {
-    const listStr = alreadyCompleted.slice(0, 3).join(', ') + (alreadyCompleted.length > 3 ? ` và ${alreadyCompleted.length - 3} clip khác` : '')
-    const confirmReExport = await showCustomConfirm(`Phát hiện ${alreadyCompleted.length} clip đã được xuất trước đó (${listStr}). Bạn có muốn tiếp tục xuất lại để ghi đè không?`)
-    if (!confirmReExport) return
-  }
-
-  // Dọn task "video-cut" CŨ (thumbnail từ lần xuất trước) trước khi xuất mới, để
-  // không đếm lẫn lỗi/hoàn tất cũ vào lần này. CHỈ dọn nguồn video-cut — task
-  // "ai-image" của trang Tạo Ảnh AI (nếu đang chạy) giữ nguyên.
-  if (exportWithThumbnails.value) {
-    try {
-      await import('../../wailsjs/go/browserai/Service').then(async (srv) => {
-        try { await srv.CancelQueueSource('video-cut') } catch (_) {}
-      })
-    } catch (_) {}
+  if (finalTotal === 0) {
+    showToast('Vui lòng chọn hoặc nạp một video vào dự án để xuất!', 'warning')
+    return
   }
 
   isExporting.value = true
   isMultiExportRunning.value = true
   exportProgress.value = { done: 0, total: finalTotal }
-  exportStatusText.value = 'Đang bắt đầu...'
+  exportStatusText.value = 'Đang chuẩn bị xuất video...'
   videoDoneCount.value = 0
   thumbDoneCount.value = 0
   exportStartTime.value = Date.now()
@@ -2338,16 +2387,19 @@ const exportClips = async () => {
         return
       }
 
-      const okIds = new Set(results.filter(r => r.ok).map(r => r.clipId))
+      const resultMap = new Map(results.map(r => [r.clipId, r]))
       const allClipsOfThisVideo = clipsMap.value[videoPath] || []
       allClipsOfThisVideo.forEach(c => {
-        if (okIds.has(c.id)) {
+        const res = resultMap.get(c.id)
+        if (res && res.ok) {
           c.status = 'completed'
-          // Ghi nhớ folder đã xuất để check trùng folder-aware (xuất sang folder
-          // khác thì không tính là trùng nữa).
+          if (res.outPath) {
+            c.exportedPath = res.outPath
+          }
           ;(c as any).exportedDir = exportDestDir
         }
       })
+      await SaveProject(videoPath, allClipsOfThisVideo, analyzerConfig)
 
       okCount += results.filter(r => r.ok).length
       results.filter(r => !r.ok).forEach(f => {
@@ -2427,13 +2479,18 @@ const exportSelectedVideos = async () => {
         return
       }
 
-      const okIds = new Set(results.filter(r => r.ok).map(r => r.clipId))
+      const resultMap = new Map(results.map(r => [r.clipId, r]))
       clips.forEach(c => {
-        if (okIds.has(c.id)) {
+        const res = resultMap.get(c.id)
+        if (res && res.ok) {
           c.status = 'completed'
+          if (res.outPath) {
+            c.exportedPath = res.outPath
+          }
           ;(c as any).exportedDir = exportDestDir
         }
       })
+      await SaveProject(path, clips, analyzerConfig)
       okTotal += results.filter(r => r.ok).length
       clipTotal += results.length
     }
@@ -3388,32 +3445,36 @@ const playClip = async (clip: any) => {
 }
 
 const togglePlayCardClip = async (clip: any) => {
+  // 1. Khi CHƯA XUẤT CLIP: bấm vào card → tự động tua trình phát video gốc ở trên đến mốc startTime
+  if (!clip.exportedPath) {
+    if (clip._videoPath && clip._videoPath !== activeVideoPath.value) {
+      const idx = videoPaths.value.indexOf(clip._videoPath)
+      if (idx !== -1) {
+        await selectVideo(idx)
+      }
+    }
+    jumpToTime(clip.startTime)
+    return
+  }
+
+  // 2. Khi ĐÃ XUẤT CLIP: bấm vào card → phát trực tiếp file clip đã xuất ngay trên card
   if (playingCardClipId.value === clip.id) {
     playingCardClipId.value = ''
     playingCardVideoSrc.value = ''
     return
   }
 
-  let targetFile = clip.exportedPath
-  if (!targetFile) {
-    targetFile = clip._videoPath || activeVideoPath.value
-  }
-
-  if (!targetFile) return
-
   try {
-    const url = await GetStreamURL(targetFile)
+    const url = await GetStreamURL(clip.exportedPath)
     playingCardVideoSrc.value = url
     playingCardClipId.value = clip.id
-    if (clip.exportedPath) {
-      addLog(`Phát trực tiếp clip đã xuất trên card: Clip #${clip.index}`)
-    } else {
-      addLog(`Phát trực tiếp đoạn cắt trên card: Clip #${clip.index}`)
-    }
+    addLog(`Phát trực tiếp clip thành phẩm đã xuất: Clip #${clip.index}`)
   } catch (e) {
     showToast('Lỗi phát clip: ' + String(e), 'error')
   }
 }
+
+const cardRelTimeStr = ref<string>('')
 
 const onCardVideoLoaded = (e: Event, clip: any) => {
   const video = e.target as HTMLVideoElement
@@ -3424,11 +3485,19 @@ const onCardVideoLoaded = (e: Event, clip: any) => {
 
 const onCardVideoTimeUpdate = (e: Event, clip: any) => {
   const video = e.target as HTMLVideoElement
-  if (!clip.exportedPath && clip.endTime > 0) {
-    if (video.currentTime >= clip.endTime) {
-      video.pause()
-      video.currentTime = clip.startTime
+  if (!clip.exportedPath) {
+    const start = clip.startTime || 0
+    const end = clip.endTime || 0
+    if (start > 0 && video.currentTime < start) {
+      video.currentTime = start
     }
+    if (end > 0 && video.currentTime >= end) {
+      video.pause()
+      video.currentTime = start
+    }
+    const relSec = Math.max(0, video.currentTime - start)
+    const totalSec = Math.max(1, end - start)
+    cardRelTimeStr.value = `${formatTime(relSec)} / ${formatTime(totalSec)}`
   }
 }
 
@@ -3722,12 +3791,12 @@ const formatSize = (bytes: number) => {
           <!-- Phần 2: Cấu hình chỉnh sửa -->
           <div class="settings-section-header" style="margin-bottom: 6px;">
             <Film :size="14" style="color:var(--accent-color);" />
-            <h3>Cấu hình sửa</h3>
+            <h3>Cấu hình xuất</h3>
           </div>
 
           <div class="remix-options-grid-compact">
             <!-- 🎬 Kịch bản video (Remix Scenarios) -->
-            <div class="remix-card-compact" style="grid-column: 1 / -1; margin-top: 4px; border: 1px dashed var(--wx-brand-accent); background: var(--l-bg-soft); padding: 10px 12px; border-radius: 8px; display: flex; flex-direction: column; gap: 8px;">
+            <div class="remix-card-compact" style="grid-column: 1 / -1; margin-top: 4px; border: 1px solid var(--wx-brand-accent); background: rgba(6, 182, 212, 0.04); padding: 10px 12px; border-radius: 8px; display: flex; flex-direction: column; gap: 8px;">
               <div style="display: flex; align-items: center; justify-content: space-between;">
                 <span class="option-title-compact" style="color: var(--wx-brand-accent); font-weight: 700; margin-bottom: 0; font-size: 12.5px; display: inline-flex; align-items: center; gap: 5px;">
                   <Layers :size="14" style="color: var(--wx-brand-accent);" />
@@ -3749,23 +3818,6 @@ const formatSize = (bytes: number) => {
                     <span class="chip-label">{{ sc.name }}</span>
                   </span>
                 </div>
-
-                <!-- Chế độ phân bổ khi tick nhiều -->
-                <div v-if="selectedScenarioIds.size > 1" style="display: flex; align-items: center; gap: 10px; font-size: 10.5px; color: var(--accent-color);">
-                  <span>🎲 {{ selectedScenarioIds.size }} kịch bản — mỗi clip 1 kiểu:</span>
-                  <label style="display: inline-flex; align-items: center; gap: 3px; cursor: pointer;">
-                    <input type="radio" value="random" v-model="scenarioMode" @change="saveRemixScenarios" /> Ngẫu nhiên
-                  </label>
-                  <label style="display: inline-flex; align-items: center; gap: 3px; cursor: pointer;">
-                    <input type="radio" value="roundrobin" v-model="scenarioMode" @change="saveRemixScenarios" /> Xoay vòng
-                  </label>
-                </div>
-                <div v-else-if="selectedScenarioIds.size === 1" style="font-size: 10.5px; color: var(--l-text-muted);">
-                  ✓ Mọi clip dùng kịch bản này
-                </div>
-                <div v-else style="font-size: 10.5px; color: var(--l-text-muted);">
-                  Chưa tick kịch bản nào — sẽ dùng cấu hình sửa bên trên.
-                </div>
               </div>
               <div v-else style="font-size: 10.5px; color: var(--l-text-muted);">
                 Chưa có kịch bản. Bấm "Quản lý kịch bản" để tạo combo xào nấu sẵn.
@@ -3773,7 +3825,7 @@ const formatSize = (bytes: number) => {
             </div>
 
             <!-- 💡 Chủ đề Video (Prompt AI) -->
-            <div class="remix-card-compact" style="grid-column: 1 / -1; margin-top: 4px; border: 1px dashed var(--border-color); background: var(--l-bg-soft); padding: 10px 12px; border-radius: 8px; display: flex; flex-direction: column; gap: 8px;">
+            <div class="remix-card-compact" style="grid-column: 1 / -1; margin-top: 4px; border: 1px solid var(--wx-brand-accent); background: rgba(6, 182, 212, 0.04); padding: 10px 12px; border-radius: 8px; display: flex; flex-direction: column; gap: 8px;">
 
               <!-- Tiêu đề + Hành động -->
               <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -3984,6 +4036,9 @@ const formatSize = (bytes: number) => {
                     @loadedmetadata="onCardVideoLoaded($event, clip)"
                     @timeupdate="onCardVideoTimeUpdate($event, clip)"
                   ></video>
+                  <div v-if="!clip.exportedPath && cardRelTimeStr" style="position: absolute; top: 6px; left: 6px; background: rgba(15, 23, 42, 0.85); color: #38bdf8; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(56,189,248,0.4); pointer-events: none; z-index: 9; backdrop-filter: blur(4px);">
+                    ⏱️ Xem thử: {{ cardRelTimeStr }}
+                  </div>
                   <button @click.stop="playingCardClipId = ''; playingCardVideoSrc = ''" style="position: absolute; top: 6px; right: 6px; background: rgba(0,0,0,0.75); color: white; border: none; border-radius: 50%; width: 22px; height: 22px; cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 10;" title="Đóng trình phát">
                     <X :size="12" />
                   </button>
@@ -4194,7 +4249,7 @@ const formatSize = (bytes: number) => {
       <KeepAlive><BrowserAIVideoPage v-if="activeView === 'ai-video'" :default-output-dir="outDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-video="handleApplyAIVideo" @show-toast="showToast" /></KeepAlive>
 
       <!-- TRANG KỊCH BẢN XÀO NẤU: tạo/sửa/xóa combo EditOps. Reload lại danh sách khi quay về. -->
-      <KeepAlive><RemixScenarioPage v-if="activeView === 'scenarios'" :active-video-src="activeVideoSrc" :show-toast="showToast" @back="activeView = 'split'; loadRemixScenarios()" /></KeepAlive>
+      <KeepAlive><RemixScenarioPage v-if="activeView === 'scenarios'" :active-video-src="activeVideoSrc" :output-dir="outDir" :show-toast="showToast" :is-exporting="isExporting" :export-progress="exportProgress" :export-status-text="exportStatusText" :eta-text="getExportETA()" @back="activeView = 'split'; loadRemixScenarios()" @export="handleExportFromScenario" @update:outputDir="outDir = $event" /></KeepAlive>
 
     </div>
 
@@ -5076,11 +5131,11 @@ const formatSize = (bytes: number) => {
                 </button>
               </div>
 
-              <!-- Thông báo kết quả kiểm tra -->
-              <div v-if="updateResult" style="margin-top: 12px; padding: 10px 28px 10px 12px; border-radius: 8px; font-size: 12px; position: relative;"
+              <!-- Thông báo kết quả kiểm tra (chỉ hiện khi có bản mới hoặc báo lỗi) -->
+              <div v-if="updateResult && (updateResult.hasUpdate || updateResult.error)" style="margin-top: 12px; padding: 10px 28px 10px 12px; border-radius: 8px; font-size: 12px; position: relative;"
                 :style="{
-                  background: updateResult.hasUpdate ? 'rgba(34, 197, 94, 0.12)' : updateResult.error ? 'rgba(239, 68, 68, 0.12)' : 'rgba(99, 102, 241, 0.12)',
-                  border: '1px solid ' + (updateResult.hasUpdate ? 'rgba(34, 197, 94, 0.3)' : updateResult.error ? 'rgba(239, 68, 68, 0.3)' : 'rgba(99, 102, 241, 0.3)')
+                  background: updateResult.hasUpdate ? 'rgba(34, 197, 94, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                  border: '1px solid ' + (updateResult.hasUpdate ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)')
                 }"
               >
                 <!-- Nút tắt thông báo nhanh -->
@@ -5132,10 +5187,6 @@ const formatSize = (bytes: number) => {
 
                 <div v-else-if="updateResult.error" style="color: #f87171;">
                   ⚠️ {{ updateResult.error }}
-                </div>
-
-                <div v-else style="color: #4ade80; display: flex; align-items: center; gap: 6px;">
-                  ✅ Bạn đang sử dụng phiên bản mới nhất ({{ updateResult.currentVersion }})!
                 </div>
               </div>
             </div>

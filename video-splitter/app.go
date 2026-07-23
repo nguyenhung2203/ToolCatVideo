@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -10,11 +11,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
-	"bufio"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +23,7 @@ import (
 	"sync"
 	"time"
 	"video-splitter/internal/boundary"
+	"video-splitter/internal/browserai"
 	"video-splitter/internal/downloader"
 	"video-splitter/internal/exporter"
 	"video-splitter/internal/imagedownloader"
@@ -31,9 +31,8 @@ import (
 	"video-splitter/internal/project"
 	"video-splitter/internal/storage"
 	"video-splitter/internal/subtitle"
-	"video-splitter/internal/utils"
-	"video-splitter/internal/browserai"
 	"video-splitter/internal/sysmonitor"
+	"video-splitter/internal/utils"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"google.golang.org/genai"
@@ -272,6 +271,16 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 	// smart/precise: tạo proxy 320×180 4fps để phân tích nhanh hơn nhiều
 	needProxy := cfg.Mode != project.ModeFast
 
+	// smart dùng proxy theo cấu hình (mặc định 4 FPS); precise dùng tối thiểu 6 FPS
+	// để không bỏ qua các chuyển cảnh ngắn nằm giữa hai frame proxy.
+	proxyFPS := cfg.ProxyFPS
+	if proxyFPS <= 0 {
+		proxyFPS = 4
+	}
+	if cfg.Mode == project.ModePrecise && proxyFPS < 6 {
+		proxyFPS = 6
+	}
+
 	// Lấy thông tin video gốc (thời lượng + có audio hay không) cho Bước 1
 	var totalDuration float64
 	hasAudio := true
@@ -293,9 +302,9 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 			gpuLabel = strings.ToUpper(gpuLabel)
 		}
 		if needProxy && needAudio {
-			runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 1/3: Đang tối ưu hóa video bằng %s (tạo proxy 320×180 4fps & trích xuất âm thanh song song)...", gpuLabel))
+			runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 1/3: Đang tối ưu hóa video bằng %s (tạo proxy 320×180 %dfps & trích xuất âm thanh song song)...", gpuLabel, proxyFPS))
 		} else if needProxy {
-			runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 1/3: Đang tối ưu hóa video bằng %s (tạo proxy 320×180 4fps)...", gpuLabel))
+			runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 1/3: Đang tối ưu hóa video bằng %s (tạo proxy 320×180 %dfps)...", gpuLabel, proxyFPS))
 		} else {
 			runtime.EventsEmit(a.ctx, "analyze_log", "Bước 1/3: Đang trích xuất âm thanh...")
 		}
@@ -307,9 +316,9 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				proxyFPS := strconv.Itoa(cfg.ProxyFPS)
+				proxyFPSArg := strconv.Itoa(proxyFPS)
 				// Truyền callback tiến độ: map % proxy (0-100) vào khoảng (1-14) trên thanh tổng
-				errProxy = media.GenerateProxy(ctx, sourcePath, proxyPath, proxyFPS, cfg.HardwareAccel, totalDuration, func(pct int) {
+				errProxy = media.GenerateProxy(ctx, sourcePath, proxyPath, proxyFPSArg, cfg.HardwareAccel, totalDuration, func(pct int) {
 					realProg := 1 + (pct * 13 / 100) // 1% → 14%
 					runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": realProg})
 				})
@@ -337,11 +346,10 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 		runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": 15})
 	}
 
-
 	// 2. Chạy Python worker trên proxy (240p) và audio WAV (nếu có)
 	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 2/3: Đang phân tích chuyển cảnh (scene=%.1f, minClip=%.0fs, maxClip=%.0fs)...", cfg.SceneThreshold, cfg.MinClipDuration, cfg.MaxClipDuration))
 	runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": 15})
-	
+
 	passedProxyPath := ""
 	if needProxy {
 		passedProxyPath = proxyPath
@@ -1524,22 +1532,22 @@ func (a *App) analyzeFixed(sourcePath string, cfg project.AnalyzerConfig) ([]pro
 		// Gộp đoạn cuối dư thừa nếu quá ngắn (dưới 50% thời lượng đích)
 		remainder := totalDuration - startTime
 		if len(clips) > 0 && remainder < fixedLen*0.5 {
-			clips[len(clips)-1].EndTime = math.Round(totalDuration)
-			clips[len(clips)-1].Duration = clips[len(clips)-1].EndTime - clips[len(clips)-1].StartTime
+			clips[len(clips)-1].EndTime = totalDuration
+			clips[len(clips)-1].Duration = totalDuration - clips[len(clips)-1].StartTime
 			break
 		}
 
 		clipID := fmt.Sprintf("%s_%d", key, index)
 		clip := project.Clip{
-			ID:         clipID,
-			Index:      index,
-			StartTime:  math.Round(startTime),
-			EndTime:    math.Round(endTime),
-			Duration:   math.Round(endTime) - math.Round(startTime),
-			Status:     "pending",
-			Tier:       project.TierAuto,
-			Reason:     "Cắt đều theo thời lượng",
-			Edit:       project.DefaultEditOps(),
+			ID:        clipID,
+			Index:     index,
+			StartTime: startTime,
+			EndTime:   endTime,
+			Duration:  endTime - startTime,
+			Status:    "pending",
+			Tier:      project.TierAuto,
+			Reason:    "Cắt đều theo thời lượng",
+			Edit:      project.DefaultEditOps(),
 		}
 		clips = append(clips, clip)
 
@@ -1558,7 +1566,7 @@ func (a *App) analyzeFixed(sourcePath string, cfg project.AnalyzerConfig) ([]pro
 			return nil, ctx.Err()
 		}
 		runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 2/2: Đang trích xuất ảnh thumbnail %d/%d (Clip #%d)...", i+1, len(clips), clips[i].Index))
-		
+
 		thumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumb_%s_%d.jpg", clips[i].ID, i))
 		_ = media.ExtractFrame(ctx, sourcePath, clips[i].StartTime, thumbPath)
 		clips[i].Thumbnail = thumbPath
@@ -2232,5 +2240,3 @@ func (a *App) GetDefaultImageDownloadDir() string {
 func (a *App) GetSystemStats() sysmonitor.SystemStats {
 	return sysmonitor.GetStats()
 }
-
-

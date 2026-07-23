@@ -162,8 +162,12 @@ def analyze_silence_regions(source_path, ffmpeg_path="ffmpeg", silence_db=-30, s
 # ──────────────────────────────────────────────────────────
 # Unified proxy scan — MỘT lần đọc, tính đồng thời scene+layout+black
 # ──────────────────────────────────────────────────────────
-def scan_proxy_unified(proxy_path, scene_threshold=20.0):
+def scan_proxy_unified(proxy_path, scene_threshold=20.0, k_detect=3.0):
     """Quét proxy VIDEO MỘT LẦN (2 pha trong cùng 1 lần decode):
+
+    k_detect: hệ số nhân MAD khi tính ngưỡng thích nghi (robust_threshold).
+      Thấp → ngưỡng thấp → bắt NHIỀU điểm cắt hơn (chế độ Kỹ dùng k thấp để
+      không bỏ sót chuyển cảnh vừa/yếu). Cao → nghiêm ngặt hơn, ít điểm rác.
 
     PHA 1 — thu thập metric mỗi frame (KHÔNG threshold ngay):
       - histogram diff (Bhattacharyya) → scene change
@@ -264,9 +268,12 @@ def scan_proxy_unified(proxy_path, scene_threshold=20.0):
     # scene_threshold (UI, mặc định 20) map thành hệ số k: slider cao → k cao → ít
     # candidate hơn (nghiêm ngặt hơn). Giữ slider có ý nghĩa với người dùng.
     k_scale = max(0.3, scene_threshold / 20.0)
-    scene_thr  = robust_threshold(scene_arr,  3.0 * k_scale, floor=0.08)
-    layout_thr = robust_threshold(layout_arr, 3.0 * k_scale, floor=0.15)
-    mad_thr    = robust_threshold(mad_arr,    3.0 * k_scale, floor=0.12)
+    # k_eff: gộp knob độ nhạy (k_scale) với hệ số theo mode (k_detect). Mode Kỹ
+    # truyền k_detect thấp (~2.0) để hạ ngưỡng, bắt thêm chuyển cảnh vừa/yếu.
+    k_eff = k_detect * k_scale
+    scene_thr  = robust_threshold(scene_arr,  k_eff, floor=0.08)
+    layout_thr = robust_threshold(layout_arr, k_eff, floor=0.15)
+    mad_thr    = robust_threshold(mad_arr,    k_eff, floor=0.12)
     # Black: tương đối theo độ sáng tổng thể → video tối tuyệt đối vẫn phát hiện được
     # cú "sụt sáng" (dip), video sáng đều không báo nhầm.
     black_thr  = min(16.0, 0.25 * _median(bri_arr))
@@ -855,7 +862,7 @@ def add_signal(candidates_map, timestamp, conf, signal_type, signal_val, reason_
 
 
 # ──────────────────────────────────────────────────────────
-# Fast mode — heuristic: chỉ silence + black (không dùng keyframe làm cut)
+# Fast mode — heuristic nhẹ: silence + black + scene + audio (không dùng keyframe làm cut)
 # ──────────────────────────────────────────────────────────
 def _fast_extract_wav(source_path, ffmpeg_path, has_audio):
     """Trích WAV mono 8k tạm cho fast mode (nhẹ, chỉ để phân tích audio novelty).
@@ -880,27 +887,24 @@ def _fast_extract_wav(source_path, ffmpeg_path, has_audio):
 
 def analyze_fast_mode(source_path, ffmpeg_path="ffmpeg", silence_db=-30,
                       silence_duration=0.5, has_audio=True):
-    """Chế độ Nhanh nâng cấp: silence + black (ffmpeg) + audio-novelty (nhẹ).
+    """Chế độ Nhanh: silence + black/scene bằng FFmpeg + audio-novelty nhẹ.
 
-    Cải tiến so với bản cũ (chỉ silence+black → vô dụng với vlog nói liên tục):
-      - Thêm audio-novelty từ WAV mono 8k (đổi nhạc nền / môi trường / người nói)
-        — KHÔNG decode video nên vẫn nhanh, nhưng dùng được cho video nói liên tục.
-      - Cường độ silence/black được chuẩn hoá 0-100 (khớp thang điểm Go) thay vì
-        hằng số 20/30 cũ.
+    Black và scene được phát hiện trong cùng một lượt decode 160x90 để vẫn nhanh.
+    Scene giúp nhận ra video ghép clip có âm thanh liền mạch mà pipeline cũ bỏ sót.
     """
-    print("STATUS_LOG:Chế độ Nhanh: silence + black + audio-novelty...", flush=True)
+    print("STATUS_LOG:Chế độ Nhanh: silence + black/scene + audio-novelty...", flush=True)
     print("PROGRESS:5", flush=True)
     t0 = time.time()
 
     wav_path = ""
-    # Chạy song song silence + black + trích WAV (audio & video stream tách biệt).
+    # Chạy song song 3 nhánh. Black + scene dùng chung một lượt decode video nhẹ.
     with ThreadPoolExecutor(max_workers=3) as ex:
         f_sil = ex.submit(analyze_silence_regions, source_path, ffmpeg_path, silence_db, silence_duration)
-        f_blk = ex.submit(_fast_black_ffmpeg, source_path, ffmpeg_path)
+        f_vis = ex.submit(_fast_visual_ffmpeg, source_path, ffmpeg_path)
         f_wav = ex.submit(_fast_extract_wav, source_path, ffmpeg_path, has_audio)
         silence_regions = f_sil.result()
-        black_regions   = f_blk.result()
-        wav_path        = f_wav.result()
+        black_regions, scene_points = f_vis.result()
+        wav_path = f_wav.result()
 
     print("PROGRESS:70", flush=True)
     candidates_map = {}
@@ -915,6 +919,10 @@ def analyze_fast_mode(source_path, ffmpeg_path="ffmpeg", silence_db=-30,
     # Black: cường độ cố định cao (màn đen là tín hiệu ngắt rất rõ).
     for b_start in black_regions:
         add_signal(candidates_map, b_start, 50, 'black', 80, "Black frame")
+
+    # Scene FFmpeg nhẹ: cường độ vừa-cao; Go vẫn chấm/phạt continuity để hạn chế cắt nhầm.
+    for ts in scene_points:
+        add_signal(candidates_map, ts, 40, 'scene', 75, "Fast scene change")
 
     # Audio novelty (nếu có audio) — điểm KEY cho video nói liên tục.
     audio_feats = None
@@ -940,24 +948,30 @@ def analyze_fast_mode(source_path, ffmpeg_path="ffmpeg", silence_db=-30,
 
     _log_time("fast_mode_total", t0)
     print("PROGRESS:90", flush=True)
-    return _finalize_candidates(candidates_map)
+    return _finalize_candidates(candidates_map, min_confidence=30)
 
 
-def _fast_black_ffmpeg(source_path, ffmpeg_path):
-    """Black detection bằng ffmpeg — vẫn decode video nhưng chỉ scale nhỏ để đỡ tải."""
-    print("STATUS_LOG:Nhanh: Phát hiện màn hình đen...", flush=True)
+def _fast_visual_ffmpeg(source_path, ffmpeg_path):
+    """Phát hiện black + hard scene trong một lượt decode nhỏ 160x90.
+
+    Ngưỡng scene 0.35 cố ý bảo thủ cho chế độ Nhanh: bắt hard cut rõ ràng nhưng
+    không cố bắt fade/chuyển động yếu như Tự động hoặc Kỹ.
+    """
+    print("STATUS_LOG:Nhanh: Phát hiện màn hình đen và chuyển cảnh...", flush=True)
+    vf = r"scale=160:90,blackdetect=d=0.05:pic_th=0.98,select=gt(scene\,0.35),showinfo"
     cmd = [
         ffmpeg_path, '-hide_banner', '-nostdin', '-nostats',
-        '-i', source_path,
-        '-vf', 'scale=160:90,blackdetect=d=0.05:pic_th=0.98',
-        '-an', '-f', 'null', '-'
+        '-i', source_path, '-vf', vf, '-an', '-f', 'null', '-'
     ]
     try:
         r = subprocess.run(cmd, stderr=subprocess.PIPE, text=True, timeout=600)
-        return [float(m.group(1)) for m in re.finditer(r'black_start:([\d.]+)', r.stderr)]
+        black = [float(m.group(1)) for m in re.finditer(r'black_start:([\d.]+)', r.stderr)]
+        scenes = [float(m.group(1)) for m in re.finditer(r'pts_time:\s*([\d.]+)', r.stderr)]
+        print(f"STATUS_LOG:Nhanh: {len(black)} vùng đen, {len(scenes)} chuyển cảnh rõ.", flush=True)
+        return black, scenes
     except Exception as e:
-        print(f"black detect error: {e}", file=sys.stderr)
-        return []
+        print(f"fast visual detect error: {e}", file=sys.stderr)
+        return [], []
 
 
 # ──────────────────────────────────────────────────────────
@@ -1030,6 +1044,19 @@ def analyze_video(proxy_path, audio_path, source_path=None, ffmpeg_path="ffmpeg"
 
     print("PROGRESS:5", flush=True)
 
+    # ── Preset tham số phát hiện theo MODE ──
+    # Ba tham số dưới đây tách biệt Smart (cân bằng) khỏi Precise (kỹ, bắt đủ điểm):
+    #   k_detect      : hệ số ngưỡng thích nghi. Precise dùng thấp (2.0) → ngưỡng thấp
+    #                   → bắt thêm chuyển cảnh vừa/yếu, KHÔNG bỏ sót ranh giới clip.
+    #   cluster_window: cửa sổ gộp điểm gần nhau. Precise hẹp (0.30s) để KHÔNG gộp
+    #                   nhầm hai clip thật nằm sát nhau thành một điểm.
+    #   max_refine    : số cluster được tinh chỉnh về fps gốc. Precise dùng trần cao
+    #                   nhưng hữu hạn để video rất dài không tạo hàng nghìn lần seek.
+    if mode == "precise":
+        k_detect, cluster_window, max_refine = 2.0, 0.30, 600
+    else:  # smart (mặc định) — cân bằng tốc độ/độ chính xác
+        k_detect, cluster_window, max_refine = 3.0, 0.60, 200
+
     # ── Bước 1: Chạy song song silence (I/O) + proxy scan (CPU) ──
     # Silence đọc audio stream → không tranh chấp với proxy scan (video stream)
     candidates_map = {}
@@ -1038,7 +1065,7 @@ def analyze_video(proxy_path, audio_path, source_path=None, ffmpeg_path="ffmpeg"
     # Dùng ThreadPoolExecutor (không overhead spawn process) cho 2 task độc lập về I/O
     with ThreadPoolExecutor(max_workers=2) as ex:
         f_sil  = ex.submit(analyze_silence_regions, source_path, ffmpeg_path, silence_db, silence_duration)
-        f_scan = ex.submit(scan_proxy_unified, proxy_path, scene_threshold) if proxy_path else None
+        f_scan = ex.submit(scan_proxy_unified, proxy_path, scene_threshold, k_detect) if proxy_path else None
 
         silence_regions = f_sil.result()
         raw_cands       = f_scan.result() if f_scan else []
@@ -1048,7 +1075,7 @@ def analyze_video(proxy_path, audio_path, source_path=None, ffmpeg_path="ffmpeg"
 
     # ── Bước 2: Cluster TRƯỚC Pass 2 ──
     t2 = time.time()
-    clusters = cluster_raw_candidates(raw_cands, cluster_window=0.6)
+    clusters = cluster_raw_candidates(raw_cands, cluster_window=cluster_window)
     print(f"STATUS_LOG:Cluster: {len(raw_cands)} điểm thô → {len(clusters)} cluster.", flush=True)
     _log_time("step2_cluster", t2)
     print("PROGRESS:55", flush=True)
@@ -1058,7 +1085,7 @@ def analyze_video(proxy_path, audio_path, source_path=None, ffmpeg_path="ffmpeg"
     # fallback refine trên proxy (cũ) để vẫn hoạt động.
     if clusters and source_path and os.path.exists(source_path):
         t3 = time.time()
-        refined_ts = refine_clusters_on_source(source_path, clusters, ffmpeg_path)
+        refined_ts = refine_clusters_on_source(source_path, clusters, ffmpeg_path, max_refine=max_refine)
         _log_time("step3_refine", t3)
         print(f"STATUS_LOG:Pass 2: {len(refined_ts)} điểm đã tinh chỉnh (source fps gốc).", flush=True)
     elif proxy_path and clusters:
@@ -1141,7 +1168,11 @@ def analyze_video(proxy_path, audio_path, source_path=None, ffmpeg_path="ffmpeg"
 
     print("PROGRESS:93", flush=True)
 
-    result = _finalize_candidates(candidates_map)
+    # Kỹ giữ cả tín hiệu layout/audio đơn lẻ để Go chấm điểm tiếp, tránh Python
+    # loại quá sớm các ranh giới mà nhiều detector yếu cùng có thể bổ trợ nhau.
+    # Tự động giữ audio/layout từ mức 25 để đúng nghĩa lai hình ảnh + âm thanh.
+    min_confidence = 20 if mode == "precise" else 25
+    result = _finalize_candidates(candidates_map, min_confidence=min_confidence)
 
     # Detector done summary
     print(f"DETECTOR_DONE:Chuyển cảnh|{len([c for c in result if c['signals'].get('visual_change',0)>0])}", flush=True)

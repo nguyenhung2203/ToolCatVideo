@@ -86,63 +86,47 @@
           </div>
         </div>
 
-        <div class="form-row prompt-row">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-            <label class="img-label" style="margin-bottom: 0;">Mô tả (Prompt):</label>
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <label style="font-size: 11px; display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; color: var(--wx-text-muted); white-space: nowrap;" title="Bật: mỗi đoạn cách nhau bằng 1 dòng trống (Enter 2 lần) tính là 1 prompt riêng. Tắt: cả ô tính là 1 prompt duy nhất dù có xuống dòng.">
-                <input type="checkbox" v-model="splitPrompts" style="width:13px; height:13px;" />
-                Tách prompt
+        <div class="form-row prompt-row" style="flex: 1; min-height: 0; display: flex; flex-direction: column;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px 8px; width: 100%;">
+            <label class="img-label" style="margin-bottom: 0; flex: none;">Mô tả (Prompt):</label>
+            <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: auto;">
+              <label style="font-size: 11px; display: flex; align-items: center; gap: 3px; cursor: pointer; user-select: none; color: var(--wx-text-muted); white-space: nowrap;" title="Bật: mỗi đoạn cách nhau 2 lần Enter là 1 prompt riêng. Tắt: tính 1 prompt.">
+                <input type="checkbox" v-model="splitPrompts" style="width:12px; height:12px;" />
+                Tách
               </label>
-              <label style="font-size: 11px; display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; color: var(--wx-text-muted); white-space: nowrap;" title="Bật: tự động tải mọi ảnh sinh ra. Tắt: tải hết rồi cho tick chọn/xóa ảnh thừa sau.">
-                <input type="checkbox" v-model="autoDownload" style="width:13px; height:13px;" />
-                Tự động tải ảnh
+              <label style="font-size: 11px; display: flex; align-items: center; gap: 3px; cursor: pointer; user-select: none; color: var(--wx-text-muted); white-space: nowrap;" title="Bật: tự động tải ảnh sinh ra.">
+                <input type="checkbox" v-model="autoDownload" style="width:12px; height:12px;" />
+                Tự tải
               </label>
+              <button type="button" @click="chooseImageFile" class="img-source-pill" style="padding: 1px 6px; font-size: 11px; height: 22px; width: auto;" :title="'Thêm ảnh làm đầu vào (hiện có ' + inputImages.length + ' ảnh)'">
+                <ImageIcon :size="11" style="margin-right: 2px;" /> Ảnh ({{ inputImages.length }})
+              </button>
+              <button type="button" v-if="inputImages.length > 0" @click="inputImages = []" class="img-source-pill" style="padding: 1px 6px; font-size: 11px; height: 22px; width: auto; color: var(--wx-danger-solid); border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.08);" title="Xóa tất cả ảnh">
+                <Trash2 :size="11" style="margin-right: 2px;" /> Xóa
+              </button>
+              <span class="char-counter" :class="{ limit: prompt.length > 2000 }" style="font-size: 10px; flex: none;">{{ prompt.length }}/2000</span>
             </div>
           </div>
 
-          <!-- Danh sách card prompt: mỗi card = 1 prompt + tối đa 3 ảnh riêng -->
-          <div style="flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding-right: 2px;">
-            <div
-              v-for="(card, cIdx) in promptCards"
-              :key="card.id"
-              style="border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); background: var(--wx-glass-light-bg); padding: 8px;"
-            >
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                <span style="font-size: 11.5px; font-weight: 700; color: var(--wx-brand-accent);">Prompt #{{ cIdx + 1 }}</span>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <button type="button" @click="addImageToCard(card.id)" class="img-source-pill" style="padding: 2px 6px; font-size: 11px; height: 22px;" :title="'Thêm ảnh cho prompt này (hiện có ' + card.images.length + ' ảnh)'">
-                    <ImageIcon :size="11" style="margin-right: 3px;" /> Ảnh ({{ card.images.length }})
-                  </button>
-                  <span class="char-counter" :class="{ limit: card.text.length > 2000 }">{{ card.text.length }}/2000</span>
-                  <button type="button" @click="removePromptCard(card.id)" class="img-source-pill" style="padding: 2px 6px; font-size: 11px; height: 22px; color: var(--wx-danger-solid);" title="Xóa prompt này">
-                    <Trash2 :size="11" />
-                  </button>
-                </div>
-              </div>
-              <textarea
-                v-model="card.text"
-                @input="onPromptInput"
-                @paste="handlePasteImageToCard(card.id, $event)"
-                placeholder="Mô tả ảnh bạn muốn tạo... (Gõ nhiều prompt bằng cách xuống dòng 2 lần. Nhấn Ctrl+V để dán nhiều ảnh)"
-                class="img-text-input prompt-auto-textarea"
-                maxlength="2000"
-                rows="1"
-                style="width: 100%; box-sizing: border-box; display: block;"
-              ></textarea>
-              <div v-if="card.images.length > 0" style="display: flex; gap: 8px; margin-top: 2px; overflow-x: auto; padding: 6px 6px 4px 6px; scrollbar-width: thin;">
-                <div v-for="img in card.images" :key="img.id" style="position: relative; flex: none; width: 44px; height: 44px; border-radius: 4px; border: 1px solid var(--wx-border-default); background: #000; box-shadow: 0 2px 6px rgba(0,0,0,0.4);">
-                  <img :src="img.preview" style="width: 100%; height: 100%; object-fit: cover; border-radius: 3px;" />
-                  <button type="button" @click="removeImageFromCard(card.id, img.id)" style="position: absolute; top: -5px; right: -5px; width: 15px; height: 15px; border-radius: 50%; background: var(--wx-danger-solid); color: #fff; border: 1px solid #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.4); font-size: 10px; font-weight: bold; z-index: 2;" title="Xóa ảnh">
-                    ×
-                  </button>
-                </div>
+          <div style="display: flex; flex-direction: column; flex: 1; min-height: 140px; background: var(--wx-surface-sunken); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 10px; box-sizing: border-box;">
+            <textarea
+              v-model="prompt"
+              @input="onPromptInput"
+              @paste="handlePasteImage"
+              placeholder="Mô tả ảnh bạn muốn tạo... (Gõ nhiều prompt bằng cách xuống dòng 2 lần. Nhấn Ctrl+V để dán ảnh)"
+              maxlength="2000"
+              style="width: 100%; height: 100%; flex: 1; min-height: 90px; border: none; background: transparent; outline: none; padding: 0; margin: 0; color: var(--wx-text-primary); font-family: inherit; font-size: 13px; line-height: 1.45; resize: none;"
+            ></textarea>
+
+            <!-- Minimal attached image badges -->
+            <div v-if="inputImages.length > 0" style="display: flex; gap: 8px; align-items: center; padding-top: 8px; overflow-x: auto; flex-shrink: 0; scrollbar-width: thin;">
+              <div v-for="img in inputImages" :key="img.id" style="position: relative; flex: none; width: 44px; height: 44px; border-radius: 6px; border: 1px solid var(--wx-border-default); overflow: hidden; background: #000;">
+                <img :src="img.preview" style="width: 100%; height: 100%; object-fit: cover;" />
+                <button type="button" @click="removeSelectedImage(img.id)" style="position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; border-radius: 50%; background: rgba(0, 0, 0, 0.75); color: #fff; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; font-size: 11px; line-height: 1;" title="Xóa ảnh">
+                  ×
+                </button>
               </div>
             </div>
-
-            <button type="button" @click="addPromptCard" class="img-source-pill" style="align-self: flex-start; flex: none; padding: 4px 10px; font-size: 11.5px; height: 28px;">
-              + Thêm prompt
-            </button>
           </div>
         </div>
       </div>
@@ -273,13 +257,20 @@
                 class="img-card"
                 :class="{ selected: selectedPreviewIndexes.has(pIdx) }"
                 :data-preview-idx="pIdx"
-                @click="togglePreviewImage(pIdx)"
+                @click="onCardClick(pIdx, $event)"
                 style="display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 160px; background: var(--wx-glass-light-bg); backdrop-filter: blur(var(--wx-glass-light-blur)); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); padding: 6px; box-shadow: var(--wx-shadow-md); cursor: pointer; transition: all var(--wx-d-fast) var(--wx-ease-standard); position: relative;"
               >
                 <img :src="pUrl" style="width: 100%; height: 160px; object-fit: cover; border-radius: var(--wx-radius-sm);" draggable="false" />
                 
-                <div v-if="selectedPreviewIndexes.has(pIdx)" class="img-card-check" style="position: absolute; top: 12px; right: 12px; background: var(--wx-brand-primary); color: var(--wx-text-inverse); border-radius: var(--wx-radius-full); width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; box-shadow: var(--wx-shadow-sm); border: 1px solid var(--wx-text-inverse); z-index: 10;">
-                  <Check :size="12" />
+                <div
+                  @click.stop.prevent="onBadgeClick(pIdx)"
+                  class="img-card-check"
+                  style="position: absolute; top: 10px; right: 10px; border-radius: var(--wx-radius-full); width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; box-shadow: var(--wx-shadow-sm); z-index: 10; cursor: pointer; transition: all 0.2s ease;"
+                  :style="selectedPreviewIndexes.has(pIdx) 
+                    ? 'background: var(--wx-brand-primary); color: var(--wx-text-inverse); border: 1.5px solid #fff;' 
+                    : 'background: rgba(0,0,0,0.6); color: rgba(255,255,255,0.7); border: 1.5px solid rgba(255,255,255,0.6);'"
+                >
+                  <Check v-if="selectedPreviewIndexes.has(pIdx)" :size="12" />
                 </div>
               </div>
             </div>
@@ -833,68 +824,54 @@ const onPromptInput = (e: Event) => {
   autoResizeTextarea(e.target as HTMLElement)
 }
 
-watch(
-  promptCards,
-  () => {
-    nextTick(() => {
-      const els = document.querySelectorAll('.prompt-auto-textarea')
-      els.forEach((el) => autoResizeTextarea(el as HTMLElement))
-    })
-  },
-  { deep: true, immediate: true }
-)
+const prompt = ref('')
+interface InputImage {
+  id: string
+  path: string
+  base64: string
+  preview: string
+}
+const inputImages = ref<InputImage[]>([])
 
-// Danh sách task thực tế sẽ chạy:
-// - Tách text trong mỗi ô theo 2 lần xuống dòng (\n\s*\n) thành danh sách các prompt.
-// - Nếu card CÓ ĐÍNH KÈM ẢNH: sinh số task = số lượng ảnh. Mỗi ảnh ghép ngẫu nhiên với 1 prompt trong danh sách (hoặc prompt rỗng).
-// - Nếu card KHÔNG CÓ ẢNH: mỗi prompt tách ra sinh thành 1 task độc lập.
 interface PromptTask {
   prompt: string
   images: InputImage[]
 }
 const effectiveTasks = computed<PromptTask[]>(() => {
   const tasks: PromptTask[] = []
-  
-  for (const card of promptCards.value) {
-    // BẬT tách: cắt theo dòng trống (2 lần Enter) → nhiều prompt riêng.
-    // TẮT tách: giữ nguyên toàn bộ ô làm 1 prompt duy nhất (chỉ trim 2 đầu).
-    let promptsList: string[]
-    if (splitPrompts.value) {
-      promptsList = card.text
-        .split(/\n\s*\n/)
-        .map(b => b.split('\n').map(l => l.trim()).filter(l => l !== '').join('\n').trim())
-        .filter(b => b !== '')
-    } else {
-      const whole = card.text.trim()
-      promptsList = whole !== '' ? [whole] : []
-    }
+  let promptsList: string[]
+  if (splitPrompts.value) {
+    promptsList = prompt.value
+      .split(/\n\s*\n/)
+      .map(b => b.split('\n').map(l => l.trim()).filter(l => l !== '').join('\n').trim())
+      .filter(b => b !== '')
+  } else {
+    const whole = prompt.value.trim()
+    promptsList = whole !== '' ? [whole] : []
+  }
 
-    if (card.images.length > 0) {
-      // Trường hợp có ảnh: sinh số task bằng số lượng ảnh đã đính kèm
-      for (const img of card.images) {
-        let chosenPrompt = ''
-        if (promptsList.length > 0) {
-          const randomIndex = Math.floor(Math.random() * promptsList.length)
-          chosenPrompt = promptsList[randomIndex]
-        }
-        tasks.push({
-          prompt: chosenPrompt,
-          images: [img]
-        })
-      }
-    } else {
-      // Trường hợp không có ảnh: mỗi prompt thành 1 task riêng
+  if (inputImages.value.length > 0) {
+    for (const img of inputImages.value) {
+      let chosenPrompt = ''
       if (promptsList.length > 0) {
-        for (const pText of promptsList) {
-          tasks.push({
-            prompt: pText,
-            images: []
-          })
-        }
+        const randomIndex = Math.floor(Math.random() * promptsList.length)
+        chosenPrompt = promptsList[randomIndex]
+      }
+      tasks.push({
+        prompt: chosenPrompt,
+        images: [img]
+      })
+    }
+  } else {
+    if (promptsList.length > 0) {
+      for (const pText of promptsList) {
+        tasks.push({
+          prompt: pText,
+          images: []
+        })
       }
     }
   }
-  
   return tasks
 })
 
@@ -1006,23 +983,7 @@ watch(() => result.value, () => {
 
 import { SelectImageFiles } from '../../wailsjs/go/main/App'
 
-const addPromptCard = () => {
-  promptCards.value.push({ id: `card_${Date.now()}_${Math.random()}`, text: '', images: [] })
-}
-
-const removePromptCard = (cardId: string) => {
-  if (promptCards.value.length <= 1) {
-    // Card cuối cùng: chỉ xóa nội dung, giữ lại 1 card trống.
-    promptCards.value[0].text = ''
-    promptCards.value[0].images = []
-    return
-  }
-  promptCards.value = promptCards.value.filter(c => c.id !== cardId)
-}
-
-const handlePasteImageToCard = (cardId: string, e: ClipboardEvent) => {
-  const card = promptCards.value.find(c => c.id === cardId)
-  if (!card) return
+const handlePasteImage = async (e: ClipboardEvent) => {
   const items = e.clipboardData?.items as any
   if (!items) return
   for (let i = 0; i < items.length; i++) {
@@ -1033,7 +994,7 @@ const handlePasteImageToCard = (cardId: string, e: ClipboardEvent) => {
         const reader = new FileReader()
         reader.onload = (event) => {
           const base64 = event.target?.result as string
-          card.images.push({
+          inputImages.value.push({
             id: `paste_${Date.now()}_${Math.random()}`,
             path: '',
             base64,
@@ -1048,17 +1009,19 @@ const handlePasteImageToCard = (cardId: string, e: ClipboardEvent) => {
   }
 }
 
-const addImageToCard = async (cardId: string) => {
-  const card = promptCards.value.find(c => c.id === cardId)
-  if (!card) return
+const chooseImageFile = async () => {
   try {
     const paths = await SelectImageFiles()
     if (paths && paths.length > 0) {
       let added = 0
       for (const path of paths) {
-        if (card.images.some(img => img.path === path)) continue
+        if (inputImages.value.length >= 3) {
+          showToast("Chỉ chọn được tối đa 3 ảnh, các ảnh thừa đã bị bỏ qua.", "warning")
+          break
+        }
+        if (inputImages.value.some(img => img.path === path)) continue
         const url = await GetStreamURL(path)
-        card.images.push({
+        inputImages.value.push({
           id: `file_${Date.now()}_${Math.random()}`,
           path,
           base64: '',
@@ -1073,10 +1036,8 @@ const addImageToCard = async (cardId: string) => {
   }
 }
 
-const removeImageFromCard = (cardId: string, imgId: string) => {
-  const card = promptCards.value.find(c => c.id === cardId)
-  if (!card) return
-  card.images = card.images.filter(img => img.id !== imgId)
+const removeSelectedImage = (id: string) => {
+  inputImages.value = inputImages.value.filter(img => img.id !== id)
 }
 
 const getFilename = (path: string) => {
@@ -1255,6 +1216,7 @@ onMounted(async () => {
   // dòng gắn nhãn nguồn để phân biệt log từ trang nào.
   EventsOn('browser-ai:queue-log', (e: any) => {
     if (!e) return
+    if (e.source && e.source !== 'ai-image' && e.source !== 'video-cut') return
     const d = new Date()
     queueLogs.value.push({
       id: queueLogSeq++,
@@ -1400,21 +1362,29 @@ const newJobKeepInput = async () => {
 // Xóa HẾT: làm mới hoàn toàn kể cả prompt + ảnh (về form trống). AWAIT hủy job cũ.
 const resetForm = async () => {
   try { await CancelQueueSource('ai-image') } catch (_) {}
-  clearQueueDisplay()
-  promptCards.value = [{ id: `card_${Date.now()}`, text: '', images: [] }]
+  prompt.value = ''
+  inputImages.value = []
   fileName.value = ''
   selectedResolution.value = '1K'
 }
 
+const onCardClick = (idx: number, e: MouseEvent) => {
+  toggleResultImage(idx)
+}
+
+const onBadgeClick = (idx: number) => {
+  toggleResultImage(idx)
+}
+
 // Tick chọn / bỏ chọn 1 ảnh kết quả (chỉ hiện khi tắt tự động tải).
 const toggleResultImage = (idx: number) => {
-  if (selectedResultIndexes.value.has(idx)) {
-    selectedResultIndexes.value.delete(idx)
+  const newSet = new Set(selectedResultIndexes.value)
+  if (newSet.has(idx)) {
+    newSet.delete(idx)
   } else {
-    selectedResultIndexes.value.add(idx)
+    newSet.add(idx)
   }
-  // Kích hoạt reactivity cho Set.
-  selectedResultIndexes.value = new Set(selectedResultIndexes.value)
+  selectedResultIndexes.value = newSet
 }
 
 // Chọn tất cả / bỏ chọn tất cả ảnh kết quả.

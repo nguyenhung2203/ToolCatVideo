@@ -48,6 +48,7 @@ export namespace browserai {
 	    showChrome: boolean;
 	    model: string;
 	    batchSize: string;
+	    duration: string;
 	    confirmBeforeCreate: string;
 	    resolution: string;
 	    delaySecond: number;
@@ -74,6 +75,7 @@ export namespace browserai {
 	        this.showChrome = source["showChrome"];
 	        this.model = source["model"];
 	        this.batchSize = source["batchSize"];
+	        this.duration = source["duration"];
 	        this.confirmBeforeCreate = source["confirmBeforeCreate"];
 	        this.resolution = source["resolution"];
 	        this.delaySecond = source["delaySecond"];
@@ -98,6 +100,7 @@ export namespace browserai {
 	    model: string;
 	    aspectRatio: string;
 	    batchSize: string;
+	    duration: string;
 	    resolution: string;
 	    state: string;
 	    errorMessage: string;
@@ -133,6 +136,7 @@ export namespace browserai {
 	        this.model = source["model"];
 	        this.aspectRatio = source["aspectRatio"];
 	        this.batchSize = source["batchSize"];
+	        this.duration = source["duration"];
 	        this.resolution = source["resolution"];
 	        this.state = source["state"];
 	        this.errorMessage = source["errorMessage"];
@@ -595,6 +599,9 @@ export namespace project {
 	    fontColor: string;
 	    outlineCol: string;
 	    marginV: number;
+	    positionX: number;
+	    positionY: number;
+	    hasCustomPosition: boolean;
 	    autoGen: boolean;
 	    sourceLang: string;
 	    targetLang: string;
@@ -611,6 +618,9 @@ export namespace project {
 	        this.fontColor = source["fontColor"];
 	        this.outlineCol = source["outlineCol"];
 	        this.marginV = source["marginV"];
+	        this.positionX = source["positionX"];
+	        this.positionY = source["positionY"];
+	        this.hasCustomPosition = source["hasCustomPosition"];
 	        this.autoGen = source["autoGen"];
 	        this.sourceLang = source["sourceLang"];
 	        this.targetLang = source["targetLang"];

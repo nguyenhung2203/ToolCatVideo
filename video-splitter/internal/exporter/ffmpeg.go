@@ -177,7 +177,8 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 		}
 	}
 
-	vOut, aOut, complexParts, textFiles, err := buildGraph(e, dur, wmIdx, musicIdx)
+	frameW, frameH := outputFrameSize(inputPath, e)
+	vOut, aOut, complexParts, textFiles, err := buildGraph(e, dur, wmIdx, musicIdx, frameW, frameH)
 	if err != nil {
 		return err
 	}
@@ -362,11 +363,10 @@ func getEncoderParams(hwAccel string, preset string, crf int) (encoder string, e
 	return
 }
 
-
 // buildGraph dựng toàn bộ filter_complex cho một clip. Trả về nhãn map video/audio,
 // các đoạn filter (nối bằng ';'), và danh sách file text tạm đã tạo cho drawtext.
 // Nếu không có thao tác nào cần filter, trả về complexParts rỗng (caller map thẳng).
-func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx int) (vOut, aOut string, parts []string, textFiles []string, err error) {
+func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, frameW, frameH int) (vOut, aOut string, parts []string, textFiles []string, err error) {
 	// --- Nhánh VIDEO ---
 	vSteps := []string{"setpts=PTS-STARTPTS"}
 
@@ -483,7 +483,16 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx int) (vOut, aOut
 
 	// Phụ đề burn-in (hardsub) — render sau drawtext để nằm trên khung kích thước cuối.
 	if e.Subtitle.Enabled && strings.TrimSpace(e.Subtitle.Path) != "" {
-		vSteps = append(vSteps, subtitleFilter(e.Subtitle))
+		sub := e.Subtitle
+		if sub.HasCustomPosition {
+			positionedPath, perr := writePositionedSubtitle(sub, frameW, frameH)
+			if perr != nil {
+				return "", "", nil, textFiles, perr
+			}
+			textFiles = append(textFiles, positionedPath)
+			sub.Path = positionedPath
+		}
+		vSteps = append(vSteps, subtitleFilter(sub))
 	}
 
 	// Ghép nhánh video tuyến tính.
@@ -838,6 +847,228 @@ func VerifyOutput(outputPath string, expectedDur, tolerance float64) (float64, e
 		}
 	}
 	return info.Duration, nil
+}
+
+func outputFrameSize(inputPath string, e project.EditOps) (int, int) {
+	if e.Aspect.Enabled {
+		if target, ok := aspectTargets[e.Aspect.Ratio]; ok {
+			return target[0], target[1]
+		}
+	}
+	if info, err := media.GetVideoInfo(inputPath); err == nil && info != nil && info.Width > 0 && info.Height > 0 {
+		return info.Width, info.Height
+	}
+	return 1920, 1080
+}
+
+// writePositionedSubtitle tạo bản ASS tạm có vị trí neo tâm tùy chỉnh. File gốc
+// không bị sửa; caller thêm file trả về vào danh sách cleanup sau khi FFmpeg chạy.
+func writePositionedSubtitle(s project.SubtitleOp, frameW, frameH int) (string, error) {
+	if frameW <= 0 || frameH <= 0 {
+		return "", fmt.Errorf("kích thước khung phụ đề không hợp lệ: %dx%d", frameW, frameH)
+	}
+	x := int(math.Round(math.Max(0, math.Min(1, s.PositionX)) * float64(frameW)))
+	y := int(math.Round(math.Max(0, math.Min(1, s.PositionY)) * float64(frameH)))
+
+	raw, err := os.ReadFile(s.Path)
+	if err != nil {
+		return "", fmt.Errorf("không đọc được file phụ đề để đặt vị trí: %w", err)
+	}
+
+	ext := strings.ToLower(filepath.Ext(s.Path))
+	var ass string
+	switch ext {
+	case ".srt":
+		ass, err = srtToPositionedASS(string(raw), frameW, frameH, x, y)
+	case ".ass", ".ssa":
+		ass, err = positionASSDialogues(string(raw), frameW, frameH, x, y)
+	default:
+		return "", fmt.Errorf("định dạng phụ đề %q chưa hỗ trợ kéo vị trí; hãy dùng .srt hoặc .ass", ext)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	dir := filepath.Join(os.TempDir(), "video-splitter", "subtitle-position")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(dir, "positioned_*.ass")
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	if _, err = f.WriteString(ass); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err = f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+func srtToPositionedASS(content string, frameW, frameH, x, y int) (string, error) {
+	content = strings.TrimPrefix(content, string(rune(0xFEFF)))
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	blocks := strings.Split(strings.TrimSpace(content), "\n\n")
+
+	var events strings.Builder
+	count := 0
+	for _, block := range blocks {
+		lines := strings.Split(strings.TrimSpace(block), "\n")
+		if len(lines) < 2 {
+			continue
+		}
+		timingIdx := 0
+		if !strings.Contains(lines[0], "-->") {
+			timingIdx = 1
+		}
+		if timingIdx >= len(lines) || !strings.Contains(lines[timingIdx], "-->") {
+			continue
+		}
+		parts := strings.SplitN(lines[timingIdx], "-->", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		start, okStart := srtTimestampToASS(strings.TrimSpace(parts[0]))
+		end, okEnd := srtTimestampToASS(strings.TrimSpace(strings.Fields(parts[1])[0]))
+		if !okStart || !okEnd || timingIdx+1 >= len(lines) {
+			continue
+		}
+		text := assEscapeText(strings.Join(lines[timingIdx+1:], "\n"))
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		fmt.Fprintf(&events, "Dialogue: 0,%s,%s,Default,,0,0,0,,{\\an5\\pos(%d,%d)}%s\n", start, end, x, y, text)
+		count++
+	}
+	if count == 0 {
+		return "", fmt.Errorf("file SRT không có câu phụ đề hợp lệ")
+	}
+
+	header := fmt.Sprintf(`[Script Info]
+ScriptType: v4.00+
+PlayResX: %d
+PlayResY: %d
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,24,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,5,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`, frameW, frameH)
+	return header + events.String(), nil
+}
+
+func srtTimestampToASS(value string) (string, bool) {
+	value = strings.ReplaceAll(strings.TrimSpace(value), ",", ".")
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 {
+		return "", false
+	}
+	h, errH := strconv.Atoi(parts[0])
+	m, errM := strconv.Atoi(parts[1])
+	sec, errS := strconv.ParseFloat(parts[2], 64)
+	if errH != nil || errM != nil || errS != nil || h < 0 || m < 0 || sec < 0 {
+		return "", false
+	}
+	return fmt.Sprintf("%d:%02d:%05.2f", h, m, sec), true
+}
+
+func assEscapeText(text string) string {
+	text = strings.ReplaceAll(text, "\\", "\\\\")
+	text = strings.ReplaceAll(text, "{", "\\{")
+	text = strings.ReplaceAll(text, "}", "\\}")
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	return strings.ReplaceAll(text, "\n", "\\N")
+}
+
+func positionASSDialogues(content string, frameW, frameH, x, y int) (string, error) {
+	content = strings.TrimPrefix(content, string(rune(0xFEFF)))
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	lines := strings.Split(content, "\n")
+	inEvents := false
+	textIndex := 9 // ASS mặc định
+	fieldCount := 10
+	dialogues := 0
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inEvents = strings.EqualFold(trimmed, "[Events]")
+			continue
+		}
+		if !inEvents {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(trimmed), "format:") {
+			fields := strings.Split(strings.TrimSpace(trimmed[len("format:"):]), ",")
+			fieldCount = len(fields)
+			for idx, field := range fields {
+				if strings.EqualFold(strings.TrimSpace(field), "Text") {
+					textIndex = idx
+				}
+			}
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(trimmed), "dialogue:") {
+			continue
+		}
+		payload := strings.TrimSpace(trimmed[len("dialogue:"):])
+		parts := strings.SplitN(payload, ",", fieldCount)
+		if len(parts) <= textIndex {
+			return "", fmt.Errorf("dòng Dialogue ASS không khớp Format: %s", line)
+		}
+		parts[textIndex] = fmt.Sprintf("{\\an5\\pos(%d,%d)}%s", x, y, parts[textIndex])
+		lines[i] = "Dialogue: " + strings.Join(parts, ",")
+		dialogues++
+	}
+	if dialogues == 0 {
+		return "", fmt.Errorf("file ASS không có dòng Dialogue hợp lệ")
+	}
+
+	// Đảm bảo hệ tọa độ của ASS trùng khung output. Nếu file đã có PlayRes thì ghi đè;
+	// nếu thiếu, chèn ngay sau [Script Info].
+	hasX, hasY := false, false
+	insertAt := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.EqualFold(trimmed, "[Script Info]") {
+			insertAt = i + 1
+		}
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(lower, "playresx:") {
+			lines[i] = fmt.Sprintf("PlayResX: %d", frameW)
+			hasX = true
+		}
+		if strings.HasPrefix(lower, "playresy:") {
+			lines[i] = fmt.Sprintf("PlayResY: %d", frameH)
+			hasY = true
+		}
+	}
+	if insertAt < 0 {
+		lines = append([]string{"[Script Info]", fmt.Sprintf("PlayResX: %d", frameW), fmt.Sprintf("PlayResY: %d", frameH), ""}, lines...)
+	} else {
+		missing := []string{}
+		if !hasX {
+			missing = append(missing, fmt.Sprintf("PlayResX: %d", frameW))
+		}
+		if !hasY {
+			missing = append(missing, fmt.Sprintf("PlayResY: %d", frameH))
+		}
+		if len(missing) > 0 {
+			lines = append(lines[:insertAt], append(missing, lines[insertAt:]...)...)
+		}
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 // probeFrame lấy width/height/fps của một file để chuẩn hóa concat/xfade.

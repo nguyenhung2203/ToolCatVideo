@@ -340,17 +340,66 @@ func tierFor(score int, cfg project.AnalyzerConfig) string {
 	return project.TierReject
 }
 
+// effectiveScoringConfig tạo bộ chấm điểm nội bộ theo chế độ mà không sửa cấu hình
+// người dùng đã lưu. Tự động giữ nguyên để cân bằng. Nhanh chỉ nới đủ cho hard-cut
+// rõ từ FFmpeg được giữ lại. Kỹ tăng vai trò hình ảnh/layout và giảm continuity
+// penalty để không loại nhầm ranh giới thật khi nhạc hoặc lời nói chạy xuyên qua cut.
+func effectiveScoringConfig(cfg project.AnalyzerConfig) (project.SignalWeights, int) {
+	w := cfg.Weights
+	reviewMin := cfg.ReviewMinScore
+
+	switch cfg.Mode {
+	case project.ModeSmart:
+		// Tự động là chế độ lai: hard cut hình ảnh cực rõ (100/100) phải vừa đủ
+		// qua ngưỡng review mặc định, còn scene vừa/yếu vẫn cần audio/black/layout
+		// bổ trợ để tránh cắt nhầm khi chỉ đổi góc quay.
+		if w.ContinuityPen > 10 {
+			w.ContinuityPen = 10
+		}
+	case project.ModeFast:
+		if w.VisualChange < 50 {
+			w.VisualChange = 50
+		}
+		if w.ContinuityPen > 10 {
+			w.ContinuityPen = 10
+		}
+		if reviewMin > 25 {
+			reviewMin = 25
+		}
+	case project.ModePrecise:
+		if w.VisualChange < 55 {
+			w.VisualChange = 55
+		}
+		if w.LayoutChange < 30 {
+			w.LayoutChange = 30
+		}
+		if w.AudioChange < 25 {
+			w.AudioChange = 25
+		}
+		if w.ContinuityPen > 5 {
+			w.ContinuityPen = 5
+		}
+		if reviewMin > 25 {
+			reviewMin = 25
+		}
+	}
+
+	return w, reviewMin
+}
+
 // CalculateBoundaries tính Boundary Score cho từng candidate, loại bỏ điểm dưới ngưỡng,
 // gom cụm điểm gần nhau (giữ điểm mạnh nhất), rồi dựng danh sách clip kèm confidence/tier/reason.
 // sourcePath dùng để snap boundary sang keyframe gần nhất (tối ưu cho stream-copy).
 func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, totalDuration float64, sourcePath string) []project.Clip {
-	w := cfg.Weights
+	w, reviewMin := effectiveScoringConfig(cfg)
+	tierCfg := cfg
+	tierCfg.ReviewMinScore = reviewMin
 
 	// === BƯỚC 1: Tính Boundary Score, loại điểm dưới ngưỡng review (tier reject) ===
 	var scored []scoredBoundary
 	for _, c := range candidates {
 		score, signals := boundaryScore(c, w)
-		tier := tierFor(score, cfg)
+		tier := tierFor(score, tierCfg)
 		if tier == project.TierReject {
 			continue // dưới ReviewMinScore → không dùng làm ranh giới
 		}
@@ -369,19 +418,13 @@ func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, tot
 	})
 
 	// === BƯỚC 1.5: Snap boundary sang keyframe gần nhất (nếu biết sourcePath) ===
-	// Mục đích: đảm bảo điểm cắt nằm tại I-frame để stream-copy không bị artifact.
-	// Quy tắc snap theo mode:
-	//   - fast:    snap tối đa 2.0s (độ chính xác thấp hơn, ưu tiên tốc độ xuất)
-	//   - smart:   snap tối đa 0.3s — refine trên source (fps gốc) đã cho điểm cắt
-	//     chính xác ~1/fps; chỉ snap nhẹ để bám I-frame gần nhất, KHÔNG kéo lệch >0.3s
-	//     phá lại độ chính xác vừa refine.
-	//   - precise: KHÔNG snap — AI đã phát hiện chính xác đến mili-giây, giữ nguyên
+	// Chỉ Tự động snap nhẹ sang I-frame để tối ưu stream-copy mà không kéo lệch
+	// ranh giới đáng kể. Nhanh giữ nguyên timestamp scene FFmpeg; Kỹ giữ nguyên
+	// timestamp refine ở fps gốc và lúc xuất sẽ re-encode để cắt đúng từng khung.
 	snapLimit := 0.3
 	switch cfg.Mode {
-	case project.ModeFast:
-		snapLimit = 2.0
-	case project.ModePrecise:
-		snapLimit = 0.0 // tắt snap hoàn toàn cho precise
+	case project.ModeFast, project.ModePrecise:
+		snapLimit = 0.0
 	}
 
 	if sourcePath != "" && snapLimit > 0 {
