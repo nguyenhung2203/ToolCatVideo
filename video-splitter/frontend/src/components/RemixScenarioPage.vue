@@ -135,6 +135,7 @@ const draft = reactive({
   subAutoGen: false,
   subSourceLang: 'auto',
   subTargetLang: '',
+  textEnabled: false,
   texts: [] as DraftText[],
   randomText: false,
 })
@@ -144,29 +145,33 @@ const playerFrameRef = ref<HTMLElement | null>(null)
 const dragTarget = ref<DragTarget>(null)
 const isTimelineDragging = ref(false)
 let timelineRAF = 0
-let pendingTimelineClientX: number | null = null
 
-const clamp01 = (value: number) => Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0))
-const coordExpr = (axis: 'x' | 'y', value: number, kind: 'watermark' | 'text') => {
-  const v = clamp01(value).toFixed(4)
-  if (kind === 'watermark') return axis === 'x' ? `(W-w)*${v}` : `(H-h)*${v}`
-  return axis === 'x' ? `(w-text_w)*${v}` : `(h-text_h)*${v}`
+const clamp01 = (v: number) => Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0))
+
+const coordExpr = (axis: 'x' | 'y', val: number, targetType: 'text' | 'watermark') => {
+  const norm = clamp01(val)
+  if (targetType === 'watermark') {
+    if (axis === 'x') return norm > 0.5 ? 'main_w-overlay_w-20' : '20'
+    return norm > 0.5 ? 'main_h-overlay_h-20' : '20'
+  }
+  if (axis === 'x') return '(w-text_w)/2'
+  if (norm <= 0.2) return '0.08*h'
+  if (norm >= 0.7) return 'h-text_h-0.08*h'
+  return '(h-text_h)/2'
 }
 
-const parseNormalizedExpr = (value: unknown, axis: 'x' | 'y', kind: 'watermark' | 'text', fallback: number) => {
-  const raw = String(value || '').replace(/\s+/g, '')
-  const base = kind === 'watermark'
-    ? (axis === 'x' ? '\\(W-w\\)' : '\\(H-h\\)')
-    : (axis === 'x' ? '\\(w-text_w\\)' : '\\(h-text_h\\)')
-  const match = raw.match(new RegExp(`^${base}\\*([0-9.]+)$`, 'i'))
-  if (match) return clamp01(Number(match[1]))
+const parseNormalizedExpr = (expr: unknown, axis: 'x' | 'y', targetType: 'text' | 'watermark', fallback: number) => {
+  const raw = String(expr || '').trim()
+  if (!raw) return fallback
+  const num = Number.parseFloat(raw)
+  if (!Number.isNaN(num)) return clamp01(num)
 
-  if (kind === 'watermark') {
-    if (raw === '(W-w)/2' || raw === '(H-h)/2') return 0.5
-    if (raw === '20') return 0.03
-    if (raw.includes('W-w-20') || raw.includes('H-h-20')) return 0.97
+  if (targetType === 'watermark') {
+    if (axis === 'x') return raw.includes('main_w-overlay_w') ? 0.97 : 0.03
+    if (axis === 'y') return raw.includes('main_h-overlay_h') ? 0.97 : 0.03
   } else {
-    if (raw.includes('/2')) return 0.5
+    if (axis === 'x') return 0.5
+    if (axis === 'y' && raw.includes('0.08*h')) return raw.includes('h-text_h') ? 0.9 : 0.08
     if (axis === 'y' && /^\d+(\.\d+)?$/.test(raw)) return 0.08
     if (axis === 'y' && raw.includes('h-text_h-')) return 0.9
   }
@@ -174,13 +179,19 @@ const parseNormalizedExpr = (value: unknown, axis: 'x' | 'y', kind: 'watermark' 
 }
 
 const selectedText = computed(() => draft.texts.find(t => t.id === selectedTextId.value) || null)
-const visibleTexts = computed(() => draft.texts.filter(t => {
-  if (t.selected === false) return false
-  const end = t.endTime > 0 ? t.endTime : Number.POSITIVE_INFINITY
-  return t.content.trim() && currentSec.value >= Math.max(0, t.startTime) && currentSec.value <= end
-}))
+const visibleTexts = computed(() => {
+  if (!draft.textEnabled) return []
+  return draft.texts.filter(t => {
+    if (t.selected === false) return false
+    const end = t.endTime > 0 ? t.endTime : Number.POSITIVE_INFINITY
+    return t.content.trim() && currentSec.value >= Math.max(0, t.startTime) && currentSec.value <= end
+  })
+})
 
-const selectedTextsList = computed(() => draft.texts.filter(t => t.selected !== false))
+const selectedTextsList = computed(() => {
+  if (!draft.textEnabled) return []
+  return draft.texts.filter(t => t.selected !== false)
+})
 const selectedTextsCount = computed(() => selectedTextsList.value.length)
 
 const toggleTextSelected = (text: DraftText) => {
@@ -193,6 +204,7 @@ const toggleTextSelected = (text: DraftText) => {
 }
 
 const addText = () => {
+  draft.textEnabled = true
   const id = `text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   draft.texts.push({ id, content: 'Nội dung chữ', fontSize: 48, color: '#ffffff', x: 0.5, y: 0.82, startTime: 0, endTime: 0, bgBox: true, selected: true })
   selectedTextId.value = id
@@ -205,6 +217,7 @@ const removeText = (id: string) => {
 }
 
 const duplicateText = (text: DraftText) => {
+  draft.textEnabled = true
   const copy = { ...text, id: `text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, x: clamp01(text.x + 0.04), y: clamp01(text.y + 0.04), selected: true }
   draft.texts.push(copy)
   selectedTextId.value = copy.id
@@ -728,7 +741,7 @@ const resetDraft = () => {
     muteOriginal: false, musicPath: '', musicVolume: 0.3, musicLoop: false,
     subEnabled: false, subPath: '', subFontSize: 24, subFontColor: '#ffffff', subOutlineColor: '#000000', subMarginV: 40,
     subX: 0.5, subY: 0.9, subHasCustomPosition: false,
-    subAutoGen: false, subSourceLang: 'auto', subTargetLang: '', texts: [],
+    subAutoGen: false, subSourceLang: 'auto', subTargetLang: '', textEnabled: false, texts: [],
     randomText: false,
   })
   selectedTextId.value = ''
@@ -748,6 +761,7 @@ const draftToEdit = (): any => ({
   pitch: draft.pitch,
   stripMeta: draft.stripMeta,
   randomText: draft.randomText,
+  textEnabled: draft.textEnabled,
   texts: draft.texts.map(t => ({
     content: t.content,
     fontSize: Math.round(Math.min(300, Math.max(8, t.fontSize))),
@@ -823,6 +837,7 @@ const editToDraft = (e: any) => {
     draft.subTargetLang = e.subtitle.targetLang || ''
   }
   draft.randomText = !!e.randomText
+  draft.textEnabled = e.textEnabled !== undefined ? !!e.textEnabled : (Array.isArray(e.texts) && e.texts.length > 0)
   draft.texts = Array.isArray(e.texts) ? e.texts.map((t: any, index: number) => ({
     id: `text-${Date.now()}-${index}`,
     content: t.content || '',
@@ -1268,56 +1283,63 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
 
             <div class="text-editor-section">
               <div class="text-section-head">
-                <span class="text-section-title">Chèn text ({{ draft.texts.length }})</span>
+                <div class="text-title-with-toggle">
+                  <label class="toggle-switch-lbl inline-toggle" title="Bật / Tắt tính năng chèn text">
+                    <input type="checkbox" v-model="draft.textEnabled" />
+                    <span class="switch-slider"></span>
+                  </label>
+                  <span class="text-section-title">Chèn text ({{ draft.texts.length }})</span>
+                </div>
                 <div class="text-head-actions">
-                  <button v-if="selectedTextId" class="btn-text-action deselect" @click="selectedTextId = ''" title="Bỏ chọn text (Hoặc bấm ESC)"><X :size="11" /> Bỏ chọn</button>
                   <button class="btn-text-action add" @click="addText"><Plus :size="11" /> Thêm chữ</button>
                 </div>
               </div>
 
-              <div v-if="draft.texts.length === 0" class="text-empty">Chưa có text. Bấm “Thêm chữ” để tạo tiêu đề/caption.</div>
-              <div v-else class="text-chip-list">
-                <button
-                  v-for="(text, index) in draft.texts"
-                  :key="text.id"
-                  class="text-select-chip"
-                  :class="{
-                    checked: text.selected !== false,
-                    active: selectedTextId === text.id
-                  }"
-                  @click="toggleTextSelected(text)"
-                  :title="`Bấm để ${text.selected !== false ? 'bỏ chọn' : 'tích chọn'} câu chữ này`"
-                >{{ index + 1 }}. {{ text.content || 'Text trống' }}</button>
-              </div>
+              <div v-if="draft.textEnabled">
+                <div v-if="draft.texts.length === 0" class="text-empty">Chưa có text. Bấm “Thêm chữ” để tạo tiêu đề/caption.</div>
+                <div v-else class="text-chip-list">
+                  <button
+                    v-for="(text, index) in draft.texts"
+                    :key="text.id"
+                    class="text-select-chip"
+                    :class="{
+                      checked: text.selected !== false,
+                      active: selectedTextId === text.id
+                    }"
+                    @click="toggleTextSelected(text)"
+                    :title="`Bấm để ${text.selected !== false ? 'bỏ chọn' : 'tích chọn'} câu chữ này`"
+                  >{{ index + 1 }}. {{ text.content || 'Text trống' }}</button>
+                </div>
 
-              <div v-if="selectedText" class="text-detail-card">
-                <div class="text-detail-header">
-                  <span class="text-detail-title">Chỉnh sửa chi tiết Text #{{ draft.texts.findIndex(t => t.id === selectedText?.id) + 1 }}</span>
-                  <button class="btn-done-text" @click="selectedTextId = ''" title="Bấm để ẩn bảng chỉnh sửa"><Check :size="12" /> Ẩn bảng</button>
-                </div>
-                <textarea v-model="selectedText.content" rows="2" class="scenario-textarea" placeholder="Nhập nội dung chữ..."></textarea>
-                <div class="inline-field-row editor-compact-row">
-                  <label>Cỡ <input v-model.number="selectedText.fontSize" type="number" min="8" max="300" class="scenario-input-num" /></label>
-                  <label>Màu <input v-model="selectedText.color" type="color" class="color-input" /></label>
-                  <label class="check-inline"><input v-model="selectedText.bgBox" type="checkbox" /> Nền mờ</label>
-                </div>
-                <div class="inline-field-row editor-compact-row">
-                  <label>Bắt đầu <input v-model.number="selectedText.startTime" type="number" min="0" step="0.1" class="scenario-input-num" /></label>
-                  <label>Kết thúc <input v-model.number="selectedText.endTime" type="number" min="0" step="0.1" class="scenario-input-num" /></label>
-                </div>
-                <div class="pos-action-group">
-                  <div class="pos-grid-3">
-                    <button type="button" class="pos-mini-btn" @click="setTextPosition(selectedText, 0.5, 0.08)">Trên</button>
-                    <button type="button" class="pos-mini-btn" @click="setTextPosition(selectedText, 0.5, 0.5)">Giữa</button>
-                    <button type="button" class="pos-mini-btn" @click="setTextPosition(selectedText, 0.5, 0.9)">Dưới</button>
+                <div v-if="selectedText" class="text-detail-card">
+                  <div class="text-detail-header">
+                    <span class="text-detail-title">Chỉnh sửa chi tiết Text #{{ draft.texts.findIndex(t => t.id === selectedText?.id) + 1 }}</span>
+                    <button class="btn-done-text" @click="selectedTextId = ''" title="Bấm để ẩn bảng chỉnh sửa"><Check :size="12" /> Ẩn bảng</button>
                   </div>
-                  <div class="pos-grid-2">
-                    <button type="button" class="pos-mini-btn" @click="duplicateText(selectedText)"><Copy :size="12" /> Nhân bản</button>
-                    <button type="button" class="pos-mini-btn danger" @click="removeText(selectedText.id)"><Trash2 :size="12" /> Xóa</button>
+                  <textarea v-model="selectedText.content" rows="2" class="scenario-textarea" placeholder="Nhập nội dung chữ..."></textarea>
+                  <div class="inline-field-row editor-compact-row">
+                    <label>Cỡ <input v-model.number="selectedText.fontSize" type="number" min="8" max="300" class="scenario-input-num" /></label>
+                    <label>Màu <input v-model="selectedText.color" type="color" class="color-input" /></label>
+                    <label class="check-inline"><input v-model="selectedText.bgBox" type="checkbox" /> Nền mờ</label>
                   </div>
-                </div>
-                <div class="text-detail-footer">
-                  <span class="drag-help-inline">Kéo text trực tiếp trên video. End=0 là hiện tới hết.</span>
+                  <div class="inline-field-row editor-compact-row">
+                    <label>Bắt đầu <input v-model.number="selectedText.startTime" type="number" min="0" step="0.1" class="scenario-input-num" /></label>
+                    <label>Kết thúc <input v-model.number="selectedText.endTime" type="number" min="0" step="0.1" class="scenario-input-num" /></label>
+                  </div>
+                  <div class="pos-action-group">
+                    <div class="pos-grid-3">
+                      <button type="button" class="pos-mini-btn" @click="setTextPosition(selectedText, 0.5, 0.08)">Trên</button>
+                      <button type="button" class="pos-mini-btn" @click="setTextPosition(selectedText, 0.5, 0.5)">Giữa</button>
+                      <button type="button" class="pos-mini-btn" @click="setTextPosition(selectedText, 0.5, 0.9)">Dưới</button>
+                    </div>
+                    <div class="pos-grid-2">
+                      <button type="button" class="pos-mini-btn" @click="duplicateText(selectedText)"><Copy :size="12" /> Nhân bản</button>
+                      <button type="button" class="pos-mini-btn danger" @click="removeText(selectedText.id)"><Trash2 :size="12" /> Xóa</button>
+                    </div>
+                  </div>
+                  <div class="text-detail-footer">
+                    <span class="drag-help-inline">Kéo text trực tiếp trên video. End=0 là hiện tới hết.</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2473,6 +2495,16 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
   gap: 6px;
   color: var(--wx-text-primary, #f8fafc);
   margin-bottom: 8px;
+}
+
+.text-title-with-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.toggle-switch-lbl.inline-toggle {
+  margin-top: 0 !important;
 }
 
 .text-section-title {

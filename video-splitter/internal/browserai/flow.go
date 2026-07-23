@@ -1552,15 +1552,20 @@ func GenerateFlowVideo(
 						}
 					}
 
-					// 2. Chỉ bắt spinner/progress/phần trăm % (12%, 45%, 99%) thực sự đang quay
-					const isGenerating = Array.from(document.querySelectorAll('md-circular-progress, [role="progressbar"], div, span, p')).some(el => {
-						const rect = el.getBoundingClientRect();
-						if (rect.width <= 0 || rect.height <= 0) return false;
+					// 2. Bắt spinner/progress/phần trăm % ('18' + '%') và class overlay tiến trình (sc-40f16b33) từ Google Flow DOM
+					const isGenerating = Array.from(document.querySelectorAll('*')).some(el => {
 						const txt = (el.textContent || '').trim().toLowerCase();
-						if (/\b\d{1,3}%\b/.test(txt)) return true;
+						if (/\d{1,3}\s*%/.test(txt) && txt.length < 40) return true;
+
+						const cn = String(el.className || '').toLowerCase();
+						if (cn.includes('40f16b33') || cn.includes('progress-overlay')) return true;
+
 						const tag = el.tagName.toLowerCase();
 						if (tag === 'md-circular-progress' || el.getAttribute('role') === 'progressbar') return true;
-						return txt.includes('đang tạo') || txt.includes('generating') || txt.includes('processing');
+
+						if (el.children.length <= 2 && (txt.includes('đang tạo') || txt.includes('generating') || txt.includes('processing'))) return true;
+
+						return false;
 					});
 
 					// 3. Quét trực tiếp các thẻ card tile (div[data-tile-id]) trên trang để phát hiện card báo lỗi

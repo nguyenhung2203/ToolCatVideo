@@ -701,12 +701,16 @@ const applyScenarioToClip = (clip: project.Clip, scenario: RemixScenario) => {
     ...JSON.parse(JSON.stringify(clip.edit)),
     ...JSON.parse(JSON.stringify(scenario.edit))
   })
-  const activeTexts = (merged.texts || []).filter((t: any) => t.selected !== false)
-  if (activeTexts.length > 1) {
-    const randomIndex = Math.floor(Math.random() * activeTexts.length)
-    merged.texts = [activeTexts[randomIndex]]
+  if (scenario.edit?.textEnabled === false) {
+    merged.texts = []
   } else {
-    merged.texts = activeTexts
+    const activeTexts = (merged.texts || []).filter((t: any) => t.selected !== false)
+    if (activeTexts.length > 1) {
+      const randomIndex = Math.floor(Math.random() * activeTexts.length)
+      merged.texts = [activeTexts[randomIndex]]
+    } else {
+      merged.texts = activeTexts
+    }
   }
   clip.edit = merged
 }
