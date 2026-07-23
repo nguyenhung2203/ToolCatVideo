@@ -299,6 +299,9 @@ func GetStats() SystemStats {
 		lastProcCPU = curProcCPU
 		lastAppSampleTime = now
 
+		// GPU riêng của Tool: cộng utilization các engine GPU của những PID thuộc Tool.
+		res.GpuPercent = sampleAppGpuPercent(appPids)
+
 		var activeParts []string
 		for name, count := range taskCounts {
 			cleanName := name

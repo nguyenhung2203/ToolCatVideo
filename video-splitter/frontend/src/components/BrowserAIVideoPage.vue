@@ -1,14 +1,5 @@
 <template>
   <div class="browser-ai-page">
-    <!-- Header -->
-    <div class="dl-page-header">
-      <h2 class="dl-page-title">
-        <Sparkles class="dl-title-icon" :size="20" />
-        <span>Tạo Video bằng Google AI</span>
-        <span class="dl-title-sub">Thử nghiệm — phụ thuộc giao diện Google</span>
-      </h2>
-    </div>
-
     <!-- Main Workspace (Grid layout: Left for config, Right for progress / preview) -->
     <div class="workspace-grid">
       

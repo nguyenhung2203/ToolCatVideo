@@ -407,6 +407,34 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class SubtitleGenConfig {
+	    timing: string;
+	    sourceLang: string;
+	    targetLang: string;
+	    model: string;
+	    apiKey: string;
+	    fontSize: number;
+	    marginV: number;
+	    fontColor: string;
+	    outlineCol: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SubtitleGenConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.timing = source["timing"];
+	        this.sourceLang = source["sourceLang"];
+	        this.targetLang = source["targetLang"];
+	        this.model = source["model"];
+	        this.apiKey = source["apiKey"];
+	        this.fontSize = source["fontSize"];
+	        this.marginV = source["marginV"];
+	        this.fontColor = source["fontColor"];
+	        this.outlineCol = source["outlineCol"];
+	    }
+	}
 	export class UpdateInfo {
 	    currentVersion: string;
 	    latestVersion: string;
@@ -558,6 +586,92 @@ export namespace project {
 	        this.musicTracks = source["musicTracks"];
 	    }
 	}
+	export class SubtitleOp {
+	    enabled: boolean;
+	    path: string;
+	    fontSize: number;
+	    fontColor: string;
+	    outlineCol: string;
+	    marginV: number;
+	    autoGen: boolean;
+	    sourceLang: string;
+	    targetLang: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SubtitleOp(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.path = source["path"];
+	        this.fontSize = source["fontSize"];
+	        this.fontColor = source["fontColor"];
+	        this.outlineCol = source["outlineCol"];
+	        this.marginV = source["marginV"];
+	        this.autoGen = source["autoGen"];
+	        this.sourceLang = source["sourceLang"];
+	        this.targetLang = source["targetLang"];
+	    }
+	}
+	export class NoiseOp {
+	    enabled: boolean;
+	    strength: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new NoiseOp(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.strength = source["strength"];
+	    }
+	}
+	export class RotateOp {
+	    enabled: boolean;
+	    degrees: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new RotateOp(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.degrees = source["degrees"];
+	    }
+	}
+	export class CropOp {
+	    enabled: boolean;
+	    percent: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CropOp(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.percent = source["percent"];
+	    }
+	}
+	export class ZoomPanOp {
+	    enabled: boolean;
+	    zoom: number;
+	    dir: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ZoomPanOp(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.zoom = source["zoom"];
+	        this.dir = source["dir"];
+	    }
+	}
 	export class TransitionOp {
 	    type: string;
 	    duration: number;
@@ -649,6 +763,15 @@ export namespace project {
 	    watermark: WatermarkOp;
 	    audio: AudioOp;
 	    transition: TransitionOp;
+	    zoomPan: ZoomPanOp;
+	    crop: CropOp;
+	    rotate: RotateOp;
+	    noise: NoiseOp;
+	    trimStart: number;
+	    trimEnd: number;
+	    pitch: number;
+	    subtitle: SubtitleOp;
+	    stripMeta: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new EditOps(source);
@@ -664,6 +787,15 @@ export namespace project {
 	        this.watermark = this.convertValues(source["watermark"], WatermarkOp);
 	        this.audio = this.convertValues(source["audio"], AudioOp);
 	        this.transition = this.convertValues(source["transition"], TransitionOp);
+	        this.zoomPan = this.convertValues(source["zoomPan"], ZoomPanOp);
+	        this.crop = this.convertValues(source["crop"], CropOp);
+	        this.rotate = this.convertValues(source["rotate"], RotateOp);
+	        this.noise = this.convertValues(source["noise"], NoiseOp);
+	        this.trimStart = source["trimStart"];
+	        this.trimEnd = source["trimEnd"];
+	        this.pitch = source["pitch"];
+	        this.subtitle = this.convertValues(source["subtitle"], SubtitleOp);
+	        this.stripMeta = source["stripMeta"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -742,6 +874,8 @@ export namespace project {
 	}
 	
 	
+	
+	
 	export class Project {
 	    id: string;
 	    sourcePath: string;
@@ -797,6 +931,8 @@ export namespace project {
 	
 	
 	
+	
+	
 	export class VideoInfo {
 	    SourcePath: string;
 	    Duration: number;
@@ -823,6 +959,7 @@ export namespace project {
 	        this.hasAudio = source["hasAudio"];
 	    }
 	}
+	
 
 }
 

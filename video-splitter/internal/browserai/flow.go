@@ -85,6 +85,20 @@ func GenerateFlowVideo(
 		}
 	}
 
+	// findElemTimeout tìm element bằng JS NHƯNG có timeout — tránh treo vô hạn.
+	// page.ElementByJS mặc định CHỜ MÃI đến khi element xuất hiện; ở chế độ ẩn trình
+	// duyệt (headless) nút tải/độ phân giải có thể render chậm hoặc khác → treo cứng.
+	// Bọc context có deadline để trả lỗi thay vì đứng im. Trả (nil, err) nếu quá hạn.
+	findElemTimeout := func(timeout time.Duration, js string, args ...interface{}) (*rod.Element, error) {
+		subCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		el, err := page.Context(subCtx).ElementByJS(rod.Eval(js, args...))
+		if err != nil {
+			return nil, err
+		}
+		return el.Context(ctx), nil
+	}
+
 	// Đăng ký script ẩn danh (stealth) để vượt qua bộ quét bot/webdriver của Google
 	_, _ = page.EvalOnNewDocument(`() => {
 		// 1. Ghi đè navigator.webdriver thành undefined để chống phát hiện tự động
@@ -1163,15 +1177,17 @@ func GenerateFlowVideo(
 				sleep(1500 * time.Millisecond) // wait for overlay to open fully
 				mile(fmt.Sprintf("Đã mở chi tiết ảnh %d/%d, tìm nút tải...", idx+1, len(selectedIndexes)))
 
-				// 3. Find the download dropdown button in the detail overlay
-				dlBtn, errDlBtn := page.ElementByJS(rod.Eval(`() => {
+				// 3. Find the download dropdown button in the detail overlay.
+				// Timeout 15s: overlay ở chế độ ẩn trình duyệt render chậm nhưng KHÔNG
+				// được chờ mãi — quá hạn thì bỏ qua ảnh này thay vì treo cả tiến trình.
+				dlBtn, errDlBtn := findElemTimeout(15*time.Second, `() => {
 					const buttons = Array.from(document.querySelectorAll('button'));
 					return buttons.find(el => {
 						const icon = el.querySelector('i');
 						const isVisible = el.getBoundingClientRect().width > 0;
 						return isVisible && icon && icon.textContent.trim() === 'download';
 					});
-				}`))
+				}`)
 				if errDlBtn != nil || dlBtn == nil {
 					logDebug("Không tìm thấy nút tải xuống cho ảnh thứ %d, bỏ qua", idx+1)
 					mile(fmt.Sprintf("⚠ Không thấy nút tải cho ảnh %d/%d, bỏ qua", idx+1, len(selectedIndexes)))
@@ -1205,22 +1221,23 @@ func GenerateFlowVideo(
 				logDebug("Đang chọn độ phân giải %s cho ảnh thứ %d/%d...", strings.ToUpper(targetRes), idx+1, len(selectedIndexes))
 				mile(fmt.Sprintf("Chọn độ phân giải %s cho ảnh %d/%d...", strings.ToUpper(targetRes), idx+1, len(selectedIndexes)))
 
-				// Click resolution button (1K, 2K, 4K) in dropdown
-				optionBtn, errOpt := page.ElementByJS(rod.Eval(`(target) => {
+				// Click resolution button (1K, 2K, 4K) in dropdown. Timeout 8s: dropdown
+				// vừa mở nên nếu không thấy trong 8s coi như không có → bỏ qua, không treo.
+				optionBtn, errOpt := findElemTimeout(8*time.Second, `(target) => {
 					const items = Array.from(document.querySelectorAll('button, div[role="menuitem"], div[role="button"]'));
 					return items.find(el => {
 						const txt = el.textContent.toLowerCase();
 						const isVisible = el.getBoundingClientRect().width > 0;
 						return isVisible && txt.includes(target);
 					});
-				}`, targetRes))
-				
+				}`, targetRes)
+
 				if errOpt != nil || optionBtn == nil {
 					logDebug("Không tìm thấy tùy chọn độ phân giải %s cho ảnh thứ %d, thử tìm tùy chọn 1K mặc định...", targetRes, idx+1)
-					optionBtn, _ = page.ElementByJS(rod.Eval(`() => {
+					optionBtn, _ = findElemTimeout(8*time.Second, `() => {
 						const items = Array.from(document.querySelectorAll('button, div[role="menuitem"]'));
 						return items.find(el => el.getBoundingClientRect().width > 0 && el.textContent.toLowerCase().includes('1k'));
-					}`))
+					}`)
 				}
 				
 				if optionBtn == nil {

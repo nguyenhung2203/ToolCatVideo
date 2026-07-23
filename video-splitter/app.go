@@ -30,6 +30,7 @@ import (
 	"video-splitter/internal/media"
 	"video-splitter/internal/project"
 	"video-splitter/internal/storage"
+	"video-splitter/internal/subtitle"
 	"video-splitter/internal/utils"
 	"video-splitter/internal/browserai"
 	"video-splitter/internal/sysmonitor"
@@ -120,7 +121,20 @@ func (a *App) startup(ctx context.Context) {
 				}
 				filePath := r.URL.Query().Get("path")
 				if filePath != "" {
-					http.ServeFile(w, r, filePath)
+					f, err := os.Open(filePath)
+					if err != nil {
+						http.Error(w, "file not found", http.StatusNotFound)
+						return
+					}
+					defer f.Close()
+
+					stat, err := f.Stat()
+					if err != nil || stat.IsDir() {
+						http.Error(w, "invalid file", http.StatusBadRequest)
+						return
+					}
+
+					http.ServeContent(w, r, stat.Name(), stat.ModTime(), f)
 				}
 			})
 			http.Serve(listener, mux)
@@ -811,7 +825,7 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 					// Trích 1 khung hình rõ nét từ VIDEO GỐC (lấy được trước cả khi cắt xong).
 					clipDuration := clip.EndTime - clip.StartTime
 					clearFramePath := filepath.Join(os.TempDir(), "TrafficTool", fmt.Sprintf("clearframe_%s_%d.jpg", clip.ID, clip.Index))
-					extractedFrame, errFrame := media.ExtractClearFrame(clipCtx, sourcePath, clipDuration, clearFramePath)
+					extractedFrame, errFrame := media.ExtractClearFrame(clipCtx, sourcePath, clip.StartTime, clipDuration, clearFramePath)
 
 					if errFrame == nil && extractedFrame != "" {
 						theme := cfg.Prompt
@@ -989,6 +1003,427 @@ func (a *App) SelectAudioFile() (string, error) {
 			{DisplayName: "Âm thanh (*.mp3;*.wav;*.aac;*.m4a)", Pattern: "*.mp3;*.wav;*.aac;*.m4a"},
 		},
 	})
+}
+
+// SelectSubtitleFile mở hộp thoại chọn file phụ đề .srt/.ass để burn vào video.
+func (a *App) SelectSubtitleFile() (string, error) {
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Chọn file phụ đề (.srt / .ass)",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Phụ đề (*.srt;*.ass)", Pattern: "*.srt;*.ass"},
+		},
+	})
+}
+
+// === PHỤ ĐỀ TỰ ĐỘNG (Whisper nghe + Gemini dịch) ===
+
+// SubtitleGenConfig gom tham số tạo phụ đề tự động cho một hoặc nhiều clip.
+type SubtitleGenConfig struct {
+	Timing     string `json:"timing"`     // "whole" (nghe cả video 1 lần) / "per-clip" (nghe từng clip)
+	SourceLang string `json:"sourceLang"` // "auto" hoặc mã ISO ("vi","en"...) — ngôn ngữ nghe
+	TargetLang string `json:"targetLang"` // "" = giữ gốc; khác gốc → dịch bằng Gemini
+	Model      string `json:"model"`      // whisper model: base/small/medium/large-v3
+	APIKey     string `json:"apiKey"`     // Gemini API key (chỉ cần khi dịch)
+	FontSize   int    `json:"fontSize"`   // style burn (0 = mặc định 24)
+	MarginV    int    `json:"marginV"`    // lề dưới px (0 = mặc định 40)
+	FontColor  string `json:"fontColor"`  // "" = trắng
+	OutlineCol string `json:"outlineCol"` // "" = đen
+}
+
+// whisperModelDir trả về nơi cache model Whisper (tải tự động lần đầu).
+func whisperModelDir() string {
+	dir, err := os.UserConfigDir()
+	if err != nil || dir == "" {
+		dir = os.TempDir()
+	}
+	d := filepath.Join(dir, "TrafficTool", "whisper")
+	_ = os.MkdirAll(d, 0755)
+	return d
+}
+
+// subtitleWorkDir trả về thư mục ghi file .srt cho một video nguồn.
+func subtitleWorkDir(sourcePath string) string {
+	d := filepath.Join(os.TempDir(), "TrafficTool", hashPath(sourcePath), "subtitles")
+	_ = os.MkdirAll(d, 0755)
+	return d
+}
+
+// applySubtitleStyle set các field style burn từ config vào clip.Edit.Subtitle.
+func applySubtitleStyle(clip *project.Clip, srtPath string, cfg SubtitleGenConfig) {
+	clip.Edit.Subtitle.Enabled = true
+	clip.Edit.Subtitle.Path = srtPath
+	if cfg.FontSize > 0 {
+		clip.Edit.Subtitle.FontSize = cfg.FontSize
+	} else if clip.Edit.Subtitle.FontSize <= 0 {
+		clip.Edit.Subtitle.FontSize = 24
+	}
+	if cfg.MarginV > 0 {
+		clip.Edit.Subtitle.MarginV = cfg.MarginV
+	} else if clip.Edit.Subtitle.MarginV <= 0 {
+		clip.Edit.Subtitle.MarginV = 40
+	}
+	clip.Edit.Subtitle.FontColor = cfg.FontColor
+	clip.Edit.Subtitle.OutlineCol = cfg.OutlineCol
+}
+
+// genSubtitleForClip tạo phụ đề cho một clip từ danh sách segment đã có sẵn (chế độ
+// "whole" — nghe cả video) hoặc bằng cách nghe riêng đoạn clip (chế độ "per-clip").
+// wholeSegments != nil nghĩa là chế độ whole (cắt từ đó ra); ngược lại nghe riêng.
+func (a *App) genSubtitleForClip(ctx context.Context, sourcePath string, clip *project.Clip,
+	cfg SubtitleGenConfig, wholeSegments []subtitle.Segment, onProgress subtitle.ProgressFn) error {
+
+	var segs []subtitle.Segment
+	if wholeSegments != nil {
+		segs = subtitle.SliceForClip(wholeSegments, clip.StartTime, clip.EndTime)
+	} else {
+		s, _, err := subtitle.Transcribe(ctx, sourcePath, cfg.SourceLang, cfg.Model,
+			whisperModelDir(), clip.StartTime, clip.EndTime, onProgress)
+		if err != nil {
+			return err
+		}
+		segs = s
+	}
+
+	if len(segs) == 0 {
+		return nil // clip không có tiếng nói → bỏ qua, không bật phụ đề
+	}
+
+	// Dịch nếu cần.
+	if cfg.TargetLang != "" {
+		translated, err := a.translateSegments(segs, cfg.TargetLang, cfg.APIKey)
+		if err != nil {
+			return fmt.Errorf("lỗi dịch phụ đề: %v", err)
+		}
+		segs = translated
+	}
+
+	srtContent := subtitle.ToSRT(segs, 0)
+	if strings.TrimSpace(srtContent) == "" {
+		return nil
+	}
+	srtPath, err := subtitle.WriteSRTFile(subtitleWorkDir(sourcePath), clip.ID, srtContent)
+	if err != nil {
+		return err
+	}
+	applySubtitleStyle(clip, srtPath, cfg)
+	return nil
+}
+
+// TranscribeClips tạo phụ đề tự động cho nhiều clip (luồng hàng loạt). Trả về danh sách
+// clip đã cập nhật (mỗi clip có .srt riêng, đã set Edit.Subtitle để burn khi xuất).
+func (a *App) TranscribeClips(sourcePath string, clips []project.Clip, cfg SubtitleGenConfig) ([]project.Clip, error) {
+	if len(clips) == 0 {
+		return clips, nil
+	}
+	if cfg.Model == "" {
+		cfg.Model = "small"
+	}
+	if cfg.SourceLang == "" {
+		cfg.SourceLang = "auto"
+	}
+	ctx := context.Background()
+
+	emit := func(pct int, msg string) {
+		payload := map[string]interface{}{"path": sourcePath}
+		if pct >= 0 {
+			payload["progress"] = pct
+		}
+		if msg != "" {
+			payload["log"] = msg
+		}
+		runtime.EventsEmit(a.ctx, "subtitle_progress", payload)
+	}
+
+	// Chế độ "whole": nghe cả video 1 lần rồi cắt phụ đề theo từng clip.
+	var wholeSegments []subtitle.Segment
+	if cfg.Timing == "whole" {
+		emit(2, "Đang nghe toàn bộ video (1 lần)...")
+		segs, _, err := subtitle.Transcribe(ctx, sourcePath, cfg.SourceLang, cfg.Model,
+			whisperModelDir(), 0, 0, emit)
+		if err != nil {
+			return nil, err
+		}
+		wholeSegments = segs
+	}
+
+	out := make([]project.Clip, len(clips))
+	copy(out, clips)
+	for i := range out {
+		select {
+		case <-a.ctx.Done():
+			return out, a.ctx.Err()
+		default:
+		}
+		emit(-1, fmt.Sprintf("Tạo phụ đề clip #%d/%d...", i+1, len(out)))
+		if err := a.genSubtitleForClip(ctx, sourcePath, &out[i], cfg, wholeSegments, emit); err != nil {
+			emit(-1, fmt.Sprintf("Clip #%d lỗi: %v", i+1, err))
+			// Không dừng cả loạt vì 1 clip lỗi — tiếp tục các clip còn lại.
+			continue
+		}
+		emit(int((i+1)*100/len(out)), "")
+	}
+	emit(100, fmt.Sprintf("Hoàn tất tạo phụ đề cho %d clip.", len(out)))
+	return out, nil
+}
+
+// TranscribeSingleClip tạo phụ đề cho MỘT clip (luồng trong màn sửa clip).
+func (a *App) TranscribeSingleClip(sourcePath string, clip project.Clip, cfg SubtitleGenConfig) (project.Clip, error) {
+	if cfg.Model == "" {
+		cfg.Model = "small"
+	}
+	if cfg.SourceLang == "" {
+		cfg.SourceLang = "auto"
+	}
+	emit := func(pct int, msg string) {
+		payload := map[string]interface{}{"path": sourcePath, "clipId": clip.ID}
+		if pct >= 0 {
+			payload["progress"] = pct
+		}
+		if msg != "" {
+			payload["log"] = msg
+		}
+		runtime.EventsEmit(a.ctx, "subtitle_progress", payload)
+	}
+	// 1 clip → luôn nghe riêng đoạn clip (không cần chế độ whole).
+	if err := a.genSubtitleForClip(context.Background(), sourcePath, &clip, cfg, nil, emit); err != nil {
+		return clip, err
+	}
+	emit(100, "Xong.")
+	return clip, nil
+}
+
+// AutoGenSubtitlesForClips tạo phụ đề tự động cho các clip khi XUẤT (do kịch bản áp
+// vào với Subtitle.AutoGen=true). Đây là đường tối ưu tốc độ: thay vì nghe Whisper
+// từng clip (mỗi lần spawn worker + NẠP LẠI model ~vài giây), khi các clip cần phụ đề
+// phủ phần lớn video thì nghe CẢ VIDEO 1 LẦN rồi cắt segment theo mốc từng clip
+// (SliceForClip) — bỏ được (N-1) lần nạp model. Ngưỡng coverage 60%: dưới ngưỡng
+// (chỉ vài clip rải rác trong video dài) thì nghe cả video lại phí, nên nghe riêng
+// từng clip như cũ.
+//
+// Mỗi clip GIỮ NGUYÊN cấu hình phụ đề riêng của nó (targetLang dịch, cỡ chữ, lề) đọc
+// từ clip.Edit.Subtitle; model + apiKey lấy từ cfg chung. Trả về danh sách clip đã
+// điền Subtitle.Path. Clip lỗi được bỏ qua (không chặn cả loạt), xuất không phụ đề.
+func (a *App) AutoGenSubtitlesForClips(sourcePath string, clips []project.Clip, cfg SubtitleGenConfig) ([]project.Clip, error) {
+	out := make([]project.Clip, len(clips))
+	copy(out, clips)
+	if cfg.Model == "" {
+		cfg.Model = "small"
+	}
+
+	// Lọc index các clip cần tự nghe: AutoGen bật & chưa có sẵn file .srt.
+	var need []int
+	var needDur float64
+	for i := range out {
+		s := out[i].Edit.Subtitle
+		if s.AutoGen && s.Path == "" {
+			need = append(need, i)
+			needDur += out[i].EndTime - out[i].StartTime
+		}
+	}
+	if len(need) == 0 {
+		return out, nil
+	}
+
+	emit := func(pct int, msg string) {
+		payload := map[string]interface{}{"path": sourcePath}
+		if pct >= 0 {
+			payload["progress"] = pct
+		}
+		if msg != "" {
+			payload["log"] = msg
+		}
+		runtime.EventsEmit(a.ctx, "subtitle_progress", payload)
+	}
+
+	// Quyết định chế độ: nghe cả video 1 lần nếu phần cần phụ đề phủ ≥60% thời lượng.
+	var totalDur float64
+	if vi, err := media.GetVideoInfo(sourcePath); err == nil && vi != nil {
+		totalDur = vi.Duration
+	}
+	useWhole := totalDur > 0 && needDur >= totalDur*0.6
+
+	// perClipCfg dựng cfg riêng cho từng clip từ Edit.Subtitle của nó, kế thừa model
+	// + apiKey từ cfg chung. Thiếu key → không dịch (giữ gốc), tránh lỗi giữa chừng.
+	perClipCfg := func(c *project.Clip) SubtitleGenConfig {
+		s := c.Edit.Subtitle
+		target := s.TargetLang
+		if target != "" && cfg.APIKey == "" {
+			target = ""
+		}
+		src := s.SourceLang
+		if src == "" {
+			src = "auto"
+		}
+		fs := s.FontSize
+		mv := s.MarginV
+		return SubtitleGenConfig{
+			Timing:     "per-clip",
+			SourceLang: src,
+			TargetLang: target,
+			Model:      cfg.Model,
+			APIKey:     cfg.APIKey,
+			FontSize:   fs,
+			MarginV:    mv,
+		}
+	}
+
+	ctx := context.Background()
+
+	var wholeSegments []subtitle.Segment
+	if useWhole {
+		emit(2, fmt.Sprintf("Đang nghe toàn bộ video 1 lần (%d clip cần phụ đề)...", len(need)))
+		// Ngôn ngữ nghe: dùng của clip đầu tiên cần phụ đề (1 video ~ 1 ngôn ngữ nguồn).
+		srcLang := out[need[0]].Edit.Subtitle.SourceLang
+		if srcLang == "" {
+			srcLang = "auto"
+		}
+		segs, _, err := subtitle.Transcribe(ctx, sourcePath, srcLang, cfg.Model,
+			whisperModelDir(), 0, 0, emit)
+		if err != nil {
+			return out, err
+		}
+		wholeSegments = segs
+	}
+
+	for k, i := range need {
+		select {
+		case <-a.ctx.Done():
+			return out, a.ctx.Err()
+		default:
+		}
+		emit(-1, fmt.Sprintf("Tạo phụ đề clip #%d (%d/%d)...", out[i].Index, k+1, len(need)))
+		if err := a.genSubtitleForClip(ctx, sourcePath, &out[i], perClipCfg(&out[i]), wholeSegments, emit); err != nil {
+			emit(-1, fmt.Sprintf("Clip #%d lỗi: %v", out[i].Index, err))
+			continue
+		}
+		emit((k+1)*100/len(need), "")
+	}
+	emit(100, "Hoàn tất tạo phụ đề.")
+	return out, nil
+}
+
+// translateSegments dịch text của các segment sang targetLang bằng Gemini, giữ nguyên
+// start/end. Gộp mọi câu thành 1 request (đánh số dòng) để giữ mapping 1-1; nếu số dòng
+// trả về khác input thì giữ nguyên text gốc (an toàn hơn là dịch lệch dòng).
+func (a *App) translateSegments(segments []subtitle.Segment, targetLang, apiKey string) ([]subtitle.Segment, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("cần Gemini API key để dịch phụ đề")
+	}
+	if len(segments) == 0 {
+		return segments, nil
+	}
+
+	// Đánh số từng câu: "1|||text". Yêu cầu Gemini trả đúng định dạng, đúng số dòng.
+	var sb strings.Builder
+	for i, s := range segments {
+		fmt.Fprintf(&sb, "%d|||%s\n", i+1, strings.ReplaceAll(s.Text, "\n", " "))
+	}
+
+	langNames := map[string]string{
+		"vi": "tiếng Việt", "en": "tiếng Anh", "zh": "tiếng Trung", "ja": "tiếng Nhật",
+		"ko": "tiếng Hàn", "th": "tiếng Thái", "es": "tiếng Tây Ban Nha", "fr": "tiếng Pháp",
+	}
+	langLabel := langNames[targetLang]
+	if langLabel == "" {
+		langLabel = targetLang
+	}
+
+	prompt := fmt.Sprintf(
+		"Dịch các câu phụ đề sau sang %s. Mỗi dòng có định dạng SỐ|||NỘI DUNG.\n"+
+			"Yêu cầu BẮT BUỘC:\n"+
+			"- Giữ NGUYÊN số dòng và số thứ tự đầu dòng, đúng định dạng SỐ|||BẢN DỊCH.\n"+
+			"- KHÔNG gộp, KHÔNG tách, KHÔNG thêm bớt dòng.\n"+
+			"- Chỉ trả về các dòng đã dịch, không giải thích.\n\n%s",
+		langLabel, sb.String())
+
+	geminiPayload := map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{"parts": []map[string]interface{}{{"text": prompt}}},
+		},
+	}
+	payloadBytes, err := json.Marshal(geminiPayload)
+	if err != nil {
+		return nil, err
+	}
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	modelsToTry := []string{"gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"}
+	var respText string
+	var lastErr error
+	for _, modelName := range modelsToTry {
+		geminiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", modelName)
+		req, err := http.NewRequest("POST", geminiURL, bytes.NewBuffer(payloadBytes))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-goog-api-key", apiKey)
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("model %s lỗi %d: %s", modelName, resp.StatusCode, string(b))
+			continue
+		}
+		var gResp struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&gResp); err != nil {
+			resp.Body.Close()
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+		if len(gResp.Candidates) > 0 && len(gResp.Candidates[0].Content.Parts) > 0 {
+			respText = strings.TrimSpace(gResp.Candidates[0].Content.Parts[0].Text)
+			if respText != "" {
+				lastErr = nil
+				break
+			}
+		}
+	}
+	if respText == "" {
+		return nil, fmt.Errorf("Gemini không trả bản dịch (lỗi cuối: %v)", lastErr)
+	}
+
+	// Parse lại "SỐ|||BẢN DỊCH" về map index→text.
+	translated := make(map[int]string)
+	for _, line := range strings.Split(respText, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|||", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		idx, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil {
+			continue
+		}
+		translated[idx] = strings.TrimSpace(parts[1])
+	}
+
+	// Áp bản dịch; câu nào thiếu bản dịch thì giữ text gốc.
+	out := make([]subtitle.Segment, len(segments))
+	copy(out, segments)
+	for i := range out {
+		if t, ok := translated[i+1]; ok && t != "" {
+			out[i].Text = t
+		}
+	}
+	return out, nil
 }
 
 // === PERSISTENCE (SQLite) ===

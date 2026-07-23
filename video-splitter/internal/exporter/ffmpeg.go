@@ -3,6 +3,7 @@ package exporter
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,6 +60,18 @@ func needsReencode(e project.EditOps) bool {
 	if e.Audio.FadeIn > 0 || e.Audio.FadeOut > 0 {
 		return true
 	}
+	// Nhóm xào nấu chống trùng lặp.
+	if e.ZoomPan.Enabled || e.Crop.Enabled || e.Rotate.Enabled || e.Noise.Enabled {
+		return true
+	}
+	if e.Pitch != 0 {
+		return true
+	}
+	if e.Subtitle.Enabled && e.Subtitle.Path != "" {
+		return true
+	}
+	// TrimStart/TrimEnd và StripMeta KHÔNG cần re-encode: xử lý riêng qua -ss/-t và
+	// -map_metadata -1 ngay cả khi stream-copy (xem CutVideo).
 	return false
 }
 
@@ -68,17 +81,24 @@ func needsReencode(e project.EditOps) bool {
 //
 // Kỹ thuật: Đặt -ss TRƯỚC -i (input seeking) để ffmpeg seek đến keyframe gần nhất
 // rồi bỏ packet thừa khi mux. -avoid_negative_ts make_zero đảm bảo PTS bắt đầu từ 0.
-func cutVideoStreamCopy(ctx context.Context, inputPath string, startTime, dur float64, outputPath string) error {
+func cutVideoStreamCopy(ctx context.Context, inputPath string, startTime, dur float64, outputPath string, stripMeta bool) error {
 	args := []string{
 		"-y",
 		"-ss", fmt.Sprintf("%.3f", startTime),
 		"-i", inputPath,
 		"-t", fmt.Sprintf("%.3f", dur),
 		"-c", "copy",
+	}
+	if stripMeta {
+		// Xóa toàn bộ metadata (title/encoder/creation_time) — né đối chiếu metadata
+		// của FB/TikTok. Vẫn stream-copy được vì chỉ bỏ tag, không đụng khung hình.
+		args = append(args, "-map_metadata", "-1")
+	}
+	args = append(args,
 		"-avoid_negative_ts", "make_zero",
 		"-movflags", "+faststart",
 		outputPath,
-	}
+	)
 	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), args...)
 	utils.HideCmdWindow(cmd)
 	out, err := cmd.CombinedOutput()
@@ -98,6 +118,26 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 		return fmt.Errorf("clip %s có thời lượng không hợp lệ", clip.ID)
 	}
 	e := clip.Edit
+
+	// Trim ngẫu nhiên đầu/cuối (chống trùng: đổi độ dài + hash). Dịch điểm seek sang
+	// phải TrimStart giây và giảm thời lượng cả hai đầu. Giữ lại tối thiểu 0.5s để
+	// không tạo clip rỗng khi khoảng trim vô tình lớn hơn clip.
+	effStart := clip.StartTime
+	if e.TrimStart > 0 {
+		effStart += e.TrimStart
+		dur -= e.TrimStart
+	}
+	if e.TrimEnd > 0 {
+		dur -= e.TrimEnd
+	}
+	if dur < 0.5 {
+		// Khoảng trim quá lớn so với clip → bỏ trim, giữ nguyên clip gốc.
+		effStart = clip.StartTime
+		dur = clip.EndTime - clip.StartTime
+		if dur <= 0 {
+			dur = clip.Duration
+		}
+	}
 
 	// File text tạm cho drawtext (tránh phải escape nội dung Unicode/ký tự đặc biệt).
 	var tmpFiles []string
@@ -154,7 +194,7 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 	buildArgs := func(vcodec string, extraArgs []string, hwDecArgs []string) []string {
 		args := []string{"-y", "-accurate_seek", "-fflags", "+genpts"}
 		args = append(args, hwDecArgs...)
-		args = append(args, "-ss", fmt.Sprintf("%.3f", clip.StartTime), "-i", inputPath)
+		args = append(args, "-ss", fmt.Sprintf("%.3f", effStart), "-i", inputPath)
 		if e.Watermark.Enabled && e.Watermark.ImgPath != "" {
 			args = append(args, "-i", e.Watermark.ImgPath)
 		}
@@ -183,6 +223,11 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 			"-avoid_negative_ts", "make_zero",
 			"-movflags", "+faststart",
 		)
+		if e.StripMeta {
+			// Xóa toàn bộ metadata (title/encoder/creation_time) — FB/TikTok đọc các
+			// trường này để nhận diện nguồn. -map_metadata -1 bỏ mọi metadata kế thừa.
+			args = append(args, "-map_metadata", "-1")
+		}
 		if threads > 0 {
 			args = append(args, "-threads", strconv.Itoa(threads))
 		}
@@ -246,7 +291,22 @@ func CutVideo(ctx context.Context, inputPath string, clip project.Clip, outputPa
 	// Không cần filter → stream-copy (nhanh gấp nhiều lần)
 	// Chỉ sử dụng stream-copy nếu không phải chế độ Precise (Kỹ), vì Precise yêu cầu chính xác tuyệt đối từng khung hình (bắt buộc re-encode).
 	if mode != "precise" && !needsReencode(clip.Edit) {
-		err := cutVideoStreamCopy(ctx, inputPath, clip.StartTime, dur, outputPath)
+		// Trim đầu/cuối vẫn áp được ở stream-copy (chỉ dịch -ss / giảm -t).
+		scStart := clip.StartTime
+		scDur := dur
+		if clip.Edit.TrimStart > 0 {
+			scStart += clip.Edit.TrimStart
+			scDur -= clip.Edit.TrimStart
+		}
+		if clip.Edit.TrimEnd > 0 {
+			scDur -= clip.Edit.TrimEnd
+		}
+		if scDur < 0.5 {
+			// Trim quá lớn → bỏ trim, giữ nguyên clip.
+			scStart = clip.StartTime
+			scDur = dur
+		}
+		err := cutVideoStreamCopy(ctx, inputPath, scStart, scDur, outputPath, clip.Edit.StripMeta)
 		if err == nil {
 			return nil
 		}
@@ -320,6 +380,49 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx int) (vOut, aOut
 		vSteps = append(vSteps, "hflip")
 	}
 
+	// === Nhóm xào nấu hình học (đặt TRƯỚC aspect để aspect chuẩn hóa khung cuối) ===
+
+	// Cắt rìa: bỏ p% mỗi mép rồi scale lại về đúng kích thước cũ (nội dung không đổi
+	// nhưng mọi pixel dịch → lệch bố cục so bản gốc). scale dùng iw/ih SAU crop nên
+	// /(1-2p) đưa về đúng kích thước ban đầu.
+	if e.Crop.Enabled && e.Crop.Percent > 0 && e.Crop.Percent < 0.45 {
+		p := e.Crop.Percent
+		keep := 1 - 2*p
+		vSteps = append(vSteps,
+			fmt.Sprintf("crop=iw*%s:ih*%s:iw*%s:ih*%s", trimFloat(keep), trimFloat(keep), trimFloat(p), trimFloat(p)),
+			fmt.Sprintf("scale=iw/%s:ih/%s", trimFloat(keep), trimFloat(keep)))
+	}
+
+	// Xoay nhẹ vài độ + zoom bù (scale 1.10 rồi crop về giữa) để che góc đen.
+	// Góc nhỏ (≤3°) thì 10% zoom là dư để lấp viền.
+	if e.Rotate.Enabled && e.Rotate.Degrees != 0 {
+		vSteps = append(vSteps,
+			fmt.Sprintf("rotate=%s*PI/180:fillcolor=black", trimFloat(e.Rotate.Degrees)),
+			"scale=iw*1.10:ih*1.10",
+			"crop=iw/1.10:ih/1.10")
+	}
+
+	// Zoom tĩnh (Ken Burns dạng an toàn): scale lên Z rồi crop cửa sổ về kích thước cũ.
+	// Không dùng filter zoompan vì nó reset PTS/fps → giật và lệch tiếng khi concat.
+	// Dir chỉ dịch tâm cửa sổ crop (tĩnh), không pan động.
+	if e.ZoomPan.Enabled && e.ZoomPan.Zoom > 1.0 {
+		z := e.ZoomPan.Zoom
+		x, y := "(in_w-out_w)/2", "(in_h-out_h)/2" // giữa
+		switch e.ZoomPan.Dir {
+		case "left":
+			x = "0"
+		case "right":
+			x = "in_w-out_w"
+		case "up":
+			y = "0"
+		case "down":
+			y = "in_h-out_h"
+		}
+		vSteps = append(vSteps,
+			fmt.Sprintf("scale=iw*%s:ih*%s", trimFloat(z), trimFloat(z)),
+			fmt.Sprintf("crop=iw/%s:ih/%s:%s:%s", trimFloat(z), trimFloat(z), x, y))
+	}
+
 	// Tỷ lệ khung.
 	blurGraph := ""
 	if e.Aspect.Enabled {
@@ -355,6 +458,15 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx int) (vOut, aOut
 		}
 	}
 
+	// Hạt nhiễu (grain) — đổi đặc trưng nén để né fingerprint. all=cường độ toàn khung.
+	if e.Noise.Enabled && e.Noise.Strength > 0 {
+		s := e.Noise.Strength
+		if s > 60 {
+			s = 60
+		}
+		vSteps = append(vSteps, fmt.Sprintf("noise=alls=%d:allf=t", s))
+	}
+
 	// Text overlay (drawtext) — mỗi TextOp một bộ lọc, dùng textfile để an toàn Unicode.
 	fontPath := utils.GetFontPath()
 	for i, t := range e.Texts {
@@ -367,6 +479,11 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx int) (vOut, aOut
 		}
 		textFiles = append(textFiles, txtFile)
 		vSteps = append(vSteps, drawText(t, fontPath, txtFile))
+	}
+
+	// Phụ đề burn-in (hardsub) — render sau drawtext để nằm trên khung kích thước cuối.
+	if e.Subtitle.Enabled && strings.TrimSpace(e.Subtitle.Path) != "" {
+		vSteps = append(vSteps, subtitleFilter(e.Subtitle))
 	}
 
 	// Ghép nhánh video tuyến tính.
@@ -413,6 +530,12 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx int) (vOut, aOut
 		}
 	}
 	a := e.Audio
+	// Đổi cao độ giọng (pitch) theo semitone — né audio fingerprint mà vẫn nghe tự nhiên.
+	// rubberband đổi pitch mà KHÔNG đổi tốc độ; hệ số pitch = 2^(semitone/12).
+	if e.Pitch != 0 {
+		factor := math.Pow(2, e.Pitch/12.0)
+		aSteps = append(aSteps, "rubberband=pitch="+trimFloat(factor))
+	}
 	if a.Mute {
 		aSteps = append(aSteps, "volume=0")
 	} else if a.Volume > 0 && a.Volume != 1.0 {
@@ -497,6 +620,43 @@ func drawText(t project.TextOp, fontPath, txtFile string) string {
 		fmt.Fprintf(&b, ":enable='between(t,%s,%s)'", trimFloat(t.StartTime), trimFloat(end))
 	}
 	return b.String()
+}
+
+// subtitleFilter dựng filter subtitles= (hardsub qua libass) từ SubtitleOp.
+// Dùng force_style để chỉnh font/màu/viền/lề. Màu ASS dạng &HBBGGRR (BGR, không RGB).
+// Đường dẫn cần escape 2 lớp: ffFilterPath cho filtergraph (':' của ổ đĩa), và ở đây
+// bọc trong dấu ' vì filename có thể chứa khoảng trắng.
+func subtitleFilter(s project.SubtitleOp) string {
+	size := s.FontSize
+	if size <= 0 {
+		size = 24
+	}
+	primary := s.FontColor
+	if primary == "" {
+		primary = "&Hffffff" // trắng
+	}
+	outline := s.OutlineCol
+	if outline == "" {
+		outline = "&H000000" // đen
+	}
+	marginV := s.MarginV
+	if marginV < 0 {
+		marginV = 0
+	}
+	// Tên font ưu tiên có sẵn trên Windows + phủ dấu tiếng Việt.
+	style := fmt.Sprintf(
+		"FontName=Arial,Fontsize=%d,PrimaryColour=%s,OutlineColour=%s,Outline=1,Shadow=0,MarginV=%d",
+		size, primary, outline, marginV)
+	return fmt.Sprintf("subtitles='%s':force_style='%s'", ffSubPath(s.Path), style)
+}
+
+// ffSubPath escape đường dẫn file phụ đề cho option subtitles=. Ngoài đổi '\'→'/'
+// và escape ':' ổ đĩa như ffFilterPath, còn phải escape '\' còn lại cho libass.
+func ffSubPath(p string) string {
+	p = filepath.ToSlash(p)
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = strings.ReplaceAll(p, ":", "\\:")
+	return p
 }
 
 // ConcatClips ghép nhiều file video (đã cắt/chỉnh) thành một file duy nhất.

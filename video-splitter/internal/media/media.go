@@ -453,20 +453,23 @@ func IsBlackOrDarkImage(imagePath string) (bool, error) {
 	return false, nil
 }
 
-// ExtractClearFrame cắt 1 khung hình đẹp, tự động bỏ qua các khung hình bị đen/tối
-func ExtractClearFrame(ctx context.Context, inputPath string, duration float64, outputPath string) (string, error) {
+// ExtractClearFrame cắt 1 khung hình đẹp, tự động bỏ qua các khung hình bị đen/tối.
+// startOffset là mốc BẮT ĐẦU clip trong video gốc (giây): mọi timestamp trích frame
+// đều tính TỪ startOffset trở đi, để mỗi clip lấy frame trong ĐÚNG đoạn của nó. Nếu
+// bỏ qua (0) thì trích từ đầu video — khiến các clip cùng độ dài ra frame giống hệt.
+func ExtractClearFrame(ctx context.Context, inputPath string, startOffset float64, duration float64, outputPath string) (string, error) {
 	var timestamps []float64
 
 	if duration > 0 {
 		timestamps = []float64{
-			duration * 0.30,
-			duration * 0.50,
-			duration * 0.70,
-			duration * 0.15,
-			0.5,
+			startOffset + duration*0.30,
+			startOffset + duration*0.50,
+			startOffset + duration*0.70,
+			startOffset + duration*0.15,
+			startOffset + 0.5,
 		}
 	} else {
-		timestamps = []float64{1.0, 2.0, 0.5}
+		timestamps = []float64{startOffset + 1.0, startOffset + 2.0, startOffset + 0.5}
 	}
 
 	tmpPath := outputPath + ".tmp.jpg"
@@ -496,9 +499,9 @@ func ExtractClearFrame(ctx context.Context, inputPath string, duration float64, 
 		}
 	}
 
-	fallbackTs := 0.5
+	fallbackTs := startOffset + 0.5
 	if duration > 0 {
-		fallbackTs = duration * 0.5
+		fallbackTs = startOffset + duration*0.5
 	}
 	errFallback := ExtractFrame(ctx, inputPath, fallbackTs, outputPath)
 	if errFallback != nil && lastErr != nil {

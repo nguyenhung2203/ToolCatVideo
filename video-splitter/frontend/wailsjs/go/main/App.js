@@ -10,6 +10,10 @@ export function ApplyManifestUpdate() {
   return window['go']['main']['App']['ApplyManifestUpdate']();
 }
 
+export function AutoGenSubtitlesForClips(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AutoGenSubtitlesForClips'](arg1, arg2, arg3);
+}
+
 export function CancelAnalysis() {
   return window['go']['main']['App']['CancelAnalysis']();
 }
@@ -148,4 +152,16 @@ export function SelectImageFile() {
 
 export function SelectImageFiles() {
   return window['go']['main']['App']['SelectImageFiles']();
+}
+
+export function SelectSubtitleFile() {
+  return window['go']['main']['App']['SelectSubtitleFile']();
+}
+
+export function TranscribeClips(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TranscribeClips'](arg1, arg2, arg3);
+}
+
+export function TranscribeSingleClip(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TranscribeSingleClip'](arg1, arg2, arg3);
 }

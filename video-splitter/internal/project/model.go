@@ -60,6 +60,60 @@ type EditOps struct {
 	Watermark   WatermarkOp  `json:"watermark"`   // overlay logo / watermark ảnh
 	Audio       AudioOp      `json:"audio"`       // âm lượng, nhạc nền, fade
 	Transition  TransitionOp `json:"transition"`  // hiệu ứng chuyển vào đầu clip (khi ghép)
+
+	// === Nhóm "xào nấu" chống trùng lặp (né fingerprint FB/TikTok/YouTube) ===
+	ZoomPan    ZoomPanOp    `json:"zoomPan"`    // Ken Burns: phóng to + dịch chậm suốt clip
+	Crop       CropOp       `json:"crop"`       // cắt rìa % rồi scale lại (lệch bố cục pixel)
+	Rotate     RotateOp     `json:"rotate"`     // xoay nhẹ vài độ + zoom bù lấp góc đen
+	Noise      NoiseOp      `json:"noise"`      // thêm hạt grain (đổi đặc trưng nén)
+	TrimStart  float64      `json:"trimStart"`  // cắt bỏ N giây ĐẦU clip (0 = không)
+	TrimEnd    float64      `json:"trimEnd"`    // cắt bỏ N giây CUỐI clip (0 = không)
+	Pitch      float64      `json:"pitch"`      // đổi cao độ giọng theo semitone (0 = giữ nguyên, ±1..±3)
+	Subtitle   SubtitleOp   `json:"subtitle"`   // burn phụ đề SRT vào video
+	StripMeta  bool         `json:"stripMeta"`  // xóa toàn bộ metadata (title/encoder/creation_time)
+}
+
+// ZoomPanOp mô tả hiệu ứng Ken Burns (phóng to + dịch chuyển chậm) để đổi từng khung
+// hình, né fingerprint mạnh hơn lật ngang.
+type ZoomPanOp struct {
+	Enabled bool    `json:"enabled"`
+	Zoom    float64 `json:"zoom"`      // hệ số zoom cuối clip (VD 1.08 = phóng to 8%)
+	Dir     string  `json:"dir"`       // hướng dịch: "in" / "out" / "left" / "right" / "up" / "down"
+}
+
+// CropOp cắt bỏ một tỷ lệ mép quanh khung rồi scale lại full, làm lệch bố cục pixel.
+type CropOp struct {
+	Enabled bool    `json:"enabled"`
+	Percent float64 `json:"percent"` // % cắt mỗi mép (VD 0.04 = cắt 4% quanh viền)
+}
+
+// RotateOp xoay khung một góc nhỏ (độ) + zoom bù để không lộ góc đen.
+type RotateOp struct {
+	Enabled bool    `json:"enabled"`
+	Degrees float64 `json:"degrees"` // góc xoay (VD 1.5 hoặc -1.5)
+}
+
+// NoiseOp thêm hạt nhiễu nhẹ lên khung hình.
+type NoiseOp struct {
+	Enabled  bool `json:"enabled"`
+	Strength int  `json:"strength"` // cường độ nhiễu (ffmpeg alls, khoảng 5..30)
+}
+
+// SubtitleOp burn phụ đề từ file .srt/.ass vào video (hardsub).
+type SubtitleOp struct {
+	Enabled    bool   `json:"enabled"`
+	Path       string `json:"path"`       // đường dẫn file .srt / .ass
+	FontSize   int    `json:"fontSize"`   // cỡ chữ (mặc định 24)
+	FontColor  string `json:"fontColor"`  // màu chữ dạng "&HBBGGRR" hoặc tên; rỗng = trắng
+	OutlineCol string `json:"outlineCol"` // màu viền; rỗng = đen
+	MarginV    int    `json:"marginV"`    // lề dưới (px) — đẩy phụ đề lên/xuống
+
+	// Tự nghe tạo phụ đề (dùng cho KỊCH BẢN áp cho video tương lai): khi AutoGen=true
+	// và Path rỗng, lúc xuất frontend sẽ nghe từng clip (Whisper) ra .srt rồi điền Path.
+	// SourceLang="auto" tự nhận diện; TargetLang rỗng = giữ gốc, khác = dịch (Gemini).
+	AutoGen    bool   `json:"autoGen"`
+	SourceLang string `json:"sourceLang"`
+	TargetLang string `json:"targetLang"`
 }
 
 // AspectOp mô tả cách chuyển tỷ lệ khung hình.
@@ -121,9 +175,14 @@ type TransitionOp struct {
 // DefaultEditOps trả về EditOps trung tính (không áp thao tác nào).
 func DefaultEditOps() EditOps {
 	return EditOps{
-		Speed: 1.0,
-		Color: ColorOp{Saturation: 1.0},
-		Audio: AudioOp{Volume: 1.0, MusicVolume: 1.0},
+		Speed:    1.0,
+		Color:    ColorOp{Saturation: 1.0},
+		Audio:    AudioOp{Volume: 1.0, MusicVolume: 1.0},
+		ZoomPan:  ZoomPanOp{Zoom: 1.08, Dir: "in"},
+		Crop:     CropOp{Percent: 0.04},
+		Rotate:   RotateOp{Degrees: 1.5},
+		Noise:    NoiseOp{Strength: 12},
+		Subtitle: SubtitleOp{FontSize: 24, MarginV: 40},
 	}
 }
 

@@ -1154,6 +1154,108 @@ def analyze_video(proxy_path, audio_path, source_path=None, ffmpeg_path="ffmpeg"
 
 
 # ──────────────────────────────────────────────────────────
+# Transcribe (Whisper offline) — nghe tiếng ra phụ đề có timestamp
+# ──────────────────────────────────────────────────────────
+def transcribe_audio(media_path, language="auto", model_name="small",
+                     model_dir=None, clip_start=None, clip_end=None,
+                     ffmpeg_path="ffmpeg"):
+    """Nghe tiếng trong 1 file (audio hoặc video) bằng faster-whisper.
+
+    Trả về dict {status, language, segments:[{start,end,text}]}.
+    - language="auto" → tự nhận diện; hoặc mã ISO ("vi","en","ja"...).
+    - model_name: base/small/medium/large-v3 (mọi model nghe 99 ngôn ngữ,
+      size chỉ đổi độ chính xác).
+    - clip_start/clip_end: nếu có, chỉ nghe đoạn [start,end] của media (giây).
+      Ta trích đoạn ra WAV tạm bằng ffmpeg rồi nghe → timestamp segment sẽ
+      0-based theo đoạn (khớp clip khi burn).
+    - model_dir: nơi cache model (tải tự động lần đầu).
+    """
+    try:
+        from faster_whisper import WhisperModel
+    except Exception as e:
+        return {"status": "error",
+                "message": f"Chưa cài faster-whisper trong worker: {e}"}
+
+    src = get_short_path(media_path)
+    if not src or not os.path.exists(src):
+        return {"status": "error", "message": f"Không tìm thấy file: {media_path}"}
+
+    # Nếu chỉ nghe 1 đoạn → trích WAV tạm 16k mono cho đoạn đó.
+    tmp_wav = ""
+    listen_path = src
+    if clip_start is not None and clip_end is not None and clip_end > clip_start:
+        import tempfile
+        tmp_wav = os.path.join(
+            tempfile.gettempdir(),
+            f"vs_trans_{abs(hash(media_path)) % (10**8)}_{clip_start:.0f}.wav")
+        dur = clip_end - clip_start
+        cmd = [
+            ffmpeg_path, '-y', '-hide_banner', '-nostdin', '-loglevel', 'error',
+            '-ss', f"{clip_start:.3f}", '-i', src, '-t', f"{dur:.3f}",
+            '-vn', '-map', '0:a:0?', '-acodec', 'pcm_s16le',
+            '-ar', '16000', '-ac', '1', tmp_wav,
+        ]
+        try:
+            subprocess.run(cmd, stderr=subprocess.DEVNULL, timeout=600)
+            if os.path.exists(tmp_wav):
+                listen_path = tmp_wav
+        except Exception as e:
+            print(f"trích đoạn audio lỗi: {e}", file=sys.stderr)
+
+    print("STATUS_LOG:Đang tải mô hình Whisper (lần đầu có thể mất vài phút)...", flush=True)
+    print("PROGRESS:5", flush=True)
+    t0 = time.time()
+    try:
+        model = WhisperModel(model_name, device="cpu", compute_type="int8",
+                             download_root=model_dir)
+    except Exception as e:
+        if tmp_wav and os.path.exists(tmp_wav):
+            try: os.remove(tmp_wav)
+            except OSError: pass
+        return {"status": "error",
+                "message": f"Không tải được mô hình Whisper '{model_name}': {e}"}
+
+    _log_time("whisper_load", t0)
+    print("STATUS_LOG:Đang nghe tiếng và tạo phụ đề...", flush=True)
+    print("PROGRESS:15", flush=True)
+
+    lang_arg = None if (not language or language == "auto") else language
+    t1 = time.time()
+    segments_out = []
+    detected_lang = language
+    try:
+        seg_iter, info = model.transcribe(listen_path, language=lang_arg,
+                                          vad_filter=True)
+        detected_lang = getattr(info, "language", None) or language
+        total_dur = float(getattr(info, "duration", 0.0)) or 0.0
+        for seg in seg_iter:
+            text = (seg.text or "").strip()
+            if text:
+                segments_out.append({
+                    "start": float(seg.start),
+                    "end": float(seg.end),
+                    "text": text,
+                })
+            if total_dur > 0:
+                pct = 15 + int(min(1.0, seg.end / total_dur) * 80)
+                print(f"PROGRESS:{pct}", flush=True)
+    except Exception as e:
+        if tmp_wav and os.path.exists(tmp_wav):
+            try: os.remove(tmp_wav)
+            except OSError: pass
+        return {"status": "error", "message": f"Lỗi khi nghe tiếng: {e}"}
+
+    if tmp_wav and os.path.exists(tmp_wav):
+        try: os.remove(tmp_wav)
+        except OSError: pass
+
+    _log_time("whisper_transcribe", t1)
+    print(f"STATUS_LOG:Nghe xong: {len(segments_out)} câu phụ đề ({detected_lang}).", flush=True)
+    print("PROGRESS:98", flush=True)
+    return {"status": "success", "language": detected_lang, "segments": segments_out}
+
+
+# ──────────────────────────────────────────────────────────
 # Entry point
 # ──────────────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -1171,7 +1273,32 @@ if __name__ == "__main__":
     # tham số nữa — refine-source đọc pts_time thật qua showinfo nên tự đúng cho cả
     # VFR, và timestamp giữ hệ 0-based nhất quán với lúc cắt (không cộng start_time).
     parser.add_argument("--no-audio",   action="store_true", help="Video KHÔNG có audio stream")
+    # === Transcribe (Whisper) — chế độ riêng: nếu có --transcribe thì bỏ qua analyze ===
+    parser.add_argument("--transcribe",     default="",       help="Path media để nghe tiếng ra phụ đề (bật chế độ transcribe)")
+    parser.add_argument("--language",       default="auto",   help="Ngôn ngữ nguồn: auto / vi / en / ...")
+    parser.add_argument("--whisper-model",  default="small",  help="Model Whisper: base/small/medium/large-v3")
+    parser.add_argument("--model-dir",      default="",       help="Thư mục cache model Whisper")
+    parser.add_argument("--clip-start",     default=None,     type=float, help="Chỉ nghe từ giây này (tùy chọn)")
+    parser.add_argument("--clip-end",       default=None,     type=float, help="Chỉ nghe tới giây này (tùy chọn)")
     args = parser.parse_args()
+
+    # ══════ Chế độ TRANSCRIBE (Whisper) ══════
+    if args.transcribe:
+        try:
+            data = transcribe_audio(
+                args.transcribe,
+                language=args.language,
+                model_name=args.whisper_model,
+                model_dir=(args.model_dir or None),
+                clip_start=args.clip_start,
+                clip_end=args.clip_end,
+                ffmpeg_path=args.ffmpeg,
+            )
+            print(json.dumps(data))
+        except Exception as e:
+            print(json.dumps({"status": "error", "message": str(e)}))
+            sys.exit(1)
+        sys.exit(0)
 
     try:
         data = analyze_video(

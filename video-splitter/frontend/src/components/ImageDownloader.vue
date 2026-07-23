@@ -143,15 +143,6 @@ function updateSelectionFromDrag() {
 <template>
   <div class="img-page">
 
-    <!-- ── Header ────────────────────────────────────── -->
-    <div class="img-page-header">
-      <h2 class="img-page-title">
-        <ImageIcon :size="20" class="img-title-icon" />
-        Tải Ảnh Theo Chủ Đề
-        <span class="img-title-sub">Làm Ảnh Bìa / Hình Nền AI</span>
-      </h2>
-    </div>
-
     <!-- ── Scrollable body ──────────────────────────────── -->
     <div class="img-body">
 

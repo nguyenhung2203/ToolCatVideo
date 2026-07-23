@@ -11,6 +11,8 @@ export function Analyze(arg1:string,arg2:project.AnalyzerConfig):Promise<Array<p
 
 export function ApplyManifestUpdate():Promise<void>;
 
+export function AutoGenSubtitlesForClips(arg1:string,arg2:Array<project.Clip>,arg3:main.SubtitleGenConfig):Promise<Array<project.Clip>>;
+
 export function CancelAnalysis():Promise<void>;
 
 export function CancelDownload():Promise<void>;
@@ -80,3 +82,9 @@ export function SelectFolder():Promise<string>;
 export function SelectImageFile():Promise<string>;
 
 export function SelectImageFiles():Promise<Array<string>>;
+
+export function SelectSubtitleFile():Promise<string>;
+
+export function TranscribeClips(arg1:string,arg2:Array<project.Clip>,arg3:main.SubtitleGenConfig):Promise<Array<project.Clip>>;
+
+export function TranscribeSingleClip(arg1:string,arg2:project.Clip,arg3:main.SubtitleGenConfig):Promise<project.Clip>;

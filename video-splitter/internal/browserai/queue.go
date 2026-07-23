@@ -585,8 +585,8 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 				}
 			} else {
 				qm.tasks[idx].State = QueueStateCompleted
-				qm.tasks[idx].ResultPath = task.FinalVideoPath
-				qm.tasks[idx].ResultPaths = []string{task.FinalVideoPath}
+				qm.tasks[idx].ResultPath = introImg
+				qm.tasks[idx].ResultPaths = []string{introImg, task.FinalVideoPath}
 				completedTask := qm.tasks[idx]
 				qm.mu.Unlock()
 				if usedFallback {

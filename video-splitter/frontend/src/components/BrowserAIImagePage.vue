@@ -1,14 +1,5 @@
 <template>
   <div class="browser-ai-page">
-    <!-- Header -->
-    <div class="dl-page-header">
-      <h2 class="dl-page-title">
-        <Sparkles class="dl-title-icon" :size="20" />
-        <span>Tạo Ảnh bằng Google AI</span>
-        <span class="dl-title-sub">Thử nghiệm — phụ thuộc giao diện Google</span>
-      </h2>
-    </div>
-
     <!-- Main Workspace (Grid layout: Left for config, Right for progress / preview) -->
     <div class="workspace-grid">
       
@@ -204,8 +195,11 @@
               <button v-if="queueStatus.isRunning" @click="cancelQueue" class="img-source-pill" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px; color: var(--wx-danger-solid);">
                 <StopCircle :size="12" style="margin-right: 3px;" /> Dừng
               </button>
-              <button v-else @click="resetForm" class="img-source-pill active" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px;">
-                <RefreshCw :size="12" style="margin-right: 3px;" /> Tạo mới
+              <button v-else @click="newJobKeepInput" class="img-source-pill active" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px;" title="Tạo lại với cùng prompt & ảnh (không phải nhập lại)">
+                <RefreshCw :size="12" style="margin-right: 3px;" /> Tạo lại
+              </button>
+              <button @click="resetForm" class="img-source-pill" style="font-size: 11px; height: 28px; flex: none; width: auto; padding: 0 12px;" title="Xóa hết prompt & ảnh, làm mới hoàn toàn">
+                <Trash2 :size="12" style="margin-right: 3px;" /> Xóa hết
               </button>
             </div>
           </div>
@@ -354,7 +348,7 @@
           <AlertCircle :size="40" class="failed-icon" />
           <h3 class="failed-title">Tạo thất bại</h3>
           <p class="failed-desc">{{ error }}</p>
-          <button @click="resetForm" class="img-dir-btn">
+          <button @click="newJobKeepInput" class="img-dir-btn" title="Thử lại với cùng prompt & ảnh (không phải nhập lại)">
             <RefreshCw :size="12" style="margin-right: 4px;" /> Thử lại
           </button>
         </div>
@@ -417,7 +411,7 @@
 
           <!-- Single Row Bottom Action & Info Bar -->
           <div class="completed-actions" style="flex-shrink: 0; margin-top: 8px; display: flex; gap: 8px; align-items: center; width: 100%;">
-            <button @click="resetForm" class="img-dir-btn" style="height: 38px;">
+            <button @click="newJobKeepInput" class="img-dir-btn" style="height: 38px;" title="Tạo lại với cùng prompt & ảnh (không phải nhập lại)">
               <RefreshCw :size="12" style="margin-right: 4px;" /> Tạo lại
             </button>
 
@@ -1380,12 +1374,11 @@ const openFolder = async () => {
   }
 }
 
-const resetForm = () => {
+// Dọn sạch trạng thái hàng đợi + kết quả hiển thị (KHÔNG đụng prompt/ảnh). Dùng
+// chung cho cả "làm mới giữ input" lẫn "xóa hết".
+const clearQueueDisplay = () => {
   reset()
-  promptCards.value = [{ id: `card_${Date.now()}`, text: '', images: [] }]
-  fileName.value = ''
   previewURL.value = ''
-  selectedResolution.value = '1K'
   queueMode.value = false
   queueStatus.total = 0
   queueStatus.completed = 0
@@ -1394,8 +1387,23 @@ const resetForm = () => {
   queueResultPaths.value = []
   queueResultLocalPaths.value = []
   selectedResultIndexes.value = new Set()
-  // Chỉ dọn task nguồn ai-image, giữ nguyên task video-cut nếu đang chạy.
-  try { CancelQueueSource('ai-image') } catch (_) {}
+}
+
+// Làm mới để tạo JOB MỚI nhưng GIỮ NGUYÊN prompt + ảnh đã nhập (tránh phải gõ lại
+// khi tạo lỗi hoặc muốn tạo thêm cùng nội dung). AWAIT hủy job ai-image cũ TRƯỚC để
+// không còn lệnh hủy lơ lửng giết nhầm job mới (lỗi "context canceled").
+const newJobKeepInput = async () => {
+  try { await CancelQueueSource('ai-image') } catch (_) {}
+  clearQueueDisplay()
+}
+
+// Xóa HẾT: làm mới hoàn toàn kể cả prompt + ảnh (về form trống). AWAIT hủy job cũ.
+const resetForm = async () => {
+  try { await CancelQueueSource('ai-image') } catch (_) {}
+  clearQueueDisplay()
+  promptCards.value = [{ id: `card_${Date.now()}`, text: '', images: [] }]
+  fileName.value = ''
+  selectedResolution.value = '1K'
 }
 
 // Tick chọn / bỏ chọn 1 ảnh kết quả (chỉ hiện khi tắt tự động tải).

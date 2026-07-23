@@ -10,6 +10,8 @@ param(
 
     [switch]$SkipBuild,
 
+    [switch]$SkipWorker,
+
     [switch]$NoGit
 )
 
@@ -93,9 +95,57 @@ if ($curVer -ne $Tag) {
     Write-Host "      Da cap nhat CurrentAppVersion = '$Tag' vao update.go" -ForegroundColor Gray
 }
 
+# --- 2.5. Build lai worker.exe KHI CAN (python_worker doi so voi worker.exe ship) ---
+# worker.exe chua phan Python (phan tich + phu de Whisper). release.ps1 khong tu build
+# no truoc day nen sua python_worker se KHONG toi tay khach. O day: neu bat ky file
+# trong python_worker\ moi hon worker.exe trong Dist (hoac worker.exe chua co) -> tu
+# chay build_worker.bat roi chep sang Dist\bin. Bo qua bang -SkipWorker khi chac chan
+# python khong doi (tiet kiem 2-5 phut dong goi PyInstaller).
+if (-not $SkipBuild -and -not $SkipWorker) {
+    $distWorker = Join-Path $Dist "bin\worker.exe"
+    $workerSrcDir = Join-Path $scriptDir "python_worker"
+    $needWorker = $true
+    if (Test-Path $distWorker) {
+        $workerTime = (Get-Item $distWorker).LastWriteTimeUtc
+        # Chi xet file nguon that (.py/.bat/.spec/.txt), bo qua thu muc build tam.
+        $srcFiles = Get-ChildItem -Path $workerSrcDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\(build|_pyi_build|__pycache__|\.venv)\\' -and
+                           $_.Extension -in '.py', '.bat', '.spec', '.txt' }
+        $newer = $srcFiles | Where-Object { $_.LastWriteTimeUtc -gt $workerTime }
+        if (-not $newer) { $needWorker = $false }
+    }
+
+    if ($needWorker) {
+        Write-Host "`n[1/8] python_worker doi -> dang build lai worker.exe (PyInstaller, ~2-5 phut)..." -ForegroundColor Green
+        Push-Location $workerSrcDir
+        & "$workerSrcDir\build_worker.bat"
+        $workerExit = $LASTEXITCODE
+        Pop-Location
+        if ($workerExit -ne 0) {
+            Write-Host "LOI: build worker.exe that bai." -ForegroundColor Red
+            Revert-VersionCode
+            exit 1
+        }
+        # build_worker.bat ghi vao video-splitter\bin\worker.exe -> chep sang Dist\bin.
+        $builtWorker = Join-Path $scriptDir "bin\worker.exe"
+        if (Test-Path $builtWorker) {
+            $distBin = Join-Path $Dist "bin"
+            if (-not (Test-Path $distBin)) { New-Item -ItemType Directory -Path $distBin | Out-Null }
+            Copy-Item $builtWorker $distWorker -Force
+            Write-Host "      Da chep worker.exe moi vao $distBin" -ForegroundColor Gray
+        } else {
+            Write-Host "LOI: Khong thay worker.exe sau khi build." -ForegroundColor Red
+            Revert-VersionCode
+            exit 1
+        }
+    } else {
+        Write-Host "`n[1/8] worker.exe da moi hon python_worker -> bo qua build worker." -ForegroundColor Gray
+    }
+}
+
 # --- 3. Build ung dung ----------------------------------------------------
 if (-not $SkipBuild) {
-    Write-Host "`n[1/6] Dang build ung dung (wails build)..." -ForegroundColor Green
+    Write-Host "`n[2/8] Dang build ung dung (wails build)..." -ForegroundColor Green
     wails build
     if ($LASTEXITCODE -ne 0) {
         Write-Host "LOI: wails build that bai." -ForegroundColor Red
@@ -114,7 +164,7 @@ if (Test-Path $builtExe) {
         Start-Sleep -Milliseconds 500
         Copy-Item $builtExe (Join-Path $Dist "TrafficTool.exe") -Force
     }
-    Write-Host "[2/6] Da chep TrafficTool.exe moi vao $Dist" -ForegroundColor Green
+    Write-Host "[3/8] Da chep TrafficTool.exe moi vao $Dist" -ForegroundColor Green
 } elseif (-not $SkipBuild) {
     Write-Host "LOI: Khong thay $builtExe sau khi build." -ForegroundColor Red
     Revert-VersionCode
@@ -122,7 +172,7 @@ if (Test-Path $builtExe) {
 }
 
 # --- 5. Quet de quy Dist, tinh SHA256 ------------------------------------
-Write-Host "`n[3/6] Dang quet thu muc ship va tinh SHA256..." -ForegroundColor Green
+Write-Host "`n[4/8] Dang quet thu muc ship va tinh SHA256..." -ForegroundColor Green
 $distFull = (Resolve-Path $Dist).Path
 $files = Get-ChildItem -Path $distFull -Recurse -File | Where-Object {
     # Bo qua file rac cap nhat + manifest.json (chinh script ghi vao Dist o buoc sau;
@@ -146,7 +196,7 @@ foreach ($f in $files) {
 Write-Host "      Tim thay $($manifestFiles.Count) file trong bo ship." -ForegroundColor Gray
 
 # --- 6. Doi chieu voi manifest truoc -------------------------------------
-Write-Host "`n[4/6] Dang doi chieu voi ban phat hanh truoc..." -ForegroundColor Green
+Write-Host "`n[5/8] Dang doi chieu voi ban phat hanh truoc..." -ForegroundColor Green
 $prevFilesByHash = @{}
 try {
     $tmpPrev = New-TemporaryFile
@@ -189,10 +239,10 @@ $manifestObj = [PSCustomObject]@{
 $manifestPath = Join-Path $distFull "manifest.json"
 $jsonManifest = $manifestObj | ConvertTo-Json -Depth 5
 [System.IO.File]::WriteAllText($manifestPath, $jsonManifest, (New-Object System.Text.UTF8Encoding $false))
-Write-Host "`n[5/6] Da tao manifest.json" -ForegroundColor Green
+Write-Host "`n[6/8] Da tao manifest.json" -ForegroundColor Green
 
 # --- 8. Tao GitHub Release + upload --------------------------------------
-Write-Host "`n[6/6] Dang tao Release $Tag va upload..." -ForegroundColor Green
+Write-Host "`n[7/8] Dang tao Release $Tag va upload..." -ForegroundColor Green
 
 $uploadArgs = @()
 $stageDir = Join-Path $env:TEMP ("trafficool_release_" + $Tag)
