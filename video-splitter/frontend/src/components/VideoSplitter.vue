@@ -115,6 +115,7 @@ const thumbnailIntroDuration = ref(0.5)
 const sysStats = ref({
   appRamMB: 0,
   sysRamPercent: 0,
+  appCpuPercent: 0,
   sysCpuPercent: 0,
   gpuPercent: 0,
   activeTasks: ''
@@ -3797,16 +3798,16 @@ const formatSize = (bytes: number) => {
           <strong style="color: var(--wx-text-primary);">{{ sysStats.appRamMB > 0 ? sysStats.appRamMB.toFixed(0) + ' MB' : sysStats.sysRamPercent.toFixed(0) + '%' }}</strong>
         </span>
 
-        <span :title="`CPU toàn hệ thống: ${sysStats.sysCpuPercent.toFixed(0)}%`" style="display: inline-flex; align-items: center; gap: 5px;">
+        <span :title="`CPU riêng Tool: ${sysStats.appCpuPercent.toFixed(0)}%  (toàn máy: ${sysStats.sysCpuPercent.toFixed(0)}%)`" style="display: inline-flex; align-items: center; gap: 5px;">
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M20 15h2M20 9h2M2 15h2M2 9h2"/></svg>
           <span style="opacity: 0.8;">CPU:</span>
-          <strong style="color: var(--wx-text-primary);">{{ sysStats.sysCpuPercent.toFixed(0) }}%</strong>
+          <strong style="color: var(--wx-text-primary);">{{ sysStats.appCpuPercent.toFixed(0) }}%</strong>
         </span>
 
-        <span :title="`GPU xử lý đồ họa/video`" style="display: inline-flex; align-items: center; gap: 5px;">
+        <span :title="`GPU riêng Tool (xử lý đồ họa/video)`" style="display: inline-flex; align-items: center; gap: 5px;">
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           <span style="opacity: 0.8;">GPU:</span>
-          <strong style="color: var(--wx-text-primary);">{{ (isAnalyzing || isExporting) ? 'Đang chạy' : 'Sẵn sàng' }}</strong>
+          <strong style="color: var(--wx-text-primary);">{{ sysStats.gpuPercent.toFixed(0) }}%</strong>
         </span>
       </div>
     </footer>

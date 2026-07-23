@@ -860,6 +860,7 @@ export namespace sysmonitor {
 	export class SystemStats {
 	    appRamMB: number;
 	    sysRamPercent: number;
+	    appCpuPercent: number;
 	    sysCpuPercent: number;
 	    gpuPercent: number;
 	    activeTasks: string;
@@ -872,6 +873,7 @@ export namespace sysmonitor {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.appRamMB = source["appRamMB"];
 	        this.sysRamPercent = source["sysRamPercent"];
+	        this.appCpuPercent = source["appCpuPercent"];
 	        this.sysCpuPercent = source["sysCpuPercent"];
 	        this.gpuPercent = source["gpuPercent"];
 	        this.activeTasks = source["activeTasks"];

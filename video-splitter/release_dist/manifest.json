@@ -1,12 +1,12 @@
-﻿{
-    "version":  "v1.0.2",
-    "notes":  "TrafficTool v1.0.2",
+{
+    "version":  "v1.0.6",
+    "notes":  "TrafficTool v1.0.6",
     "files":  [
                   {
                       "path":  "TrafficTool.exe",
-                      "sha256":  "0b72575e4af9c3ce3de4687e74cb05251236eed60d20cb8295384fa3d885658f",
-                      "url":  "https://github.com/nguyenhung2203/ToolCatVideo/releases/download/v1.0.2/TrafficTool.exe",
-                      "size":  26909184
+                      "sha256":  "75078cfb69733c511ab474c8949b9562316dfed36999a48003126aa08e6c6786",
+                      "url":  "https://github.com/nguyenhung2203/ToolCatVideo/releases/download/v1.0.6/TrafficTool.exe",
+                      "size":  26920448
                   },
                   {
                       "path":  "bin/ffmpeg.exe",

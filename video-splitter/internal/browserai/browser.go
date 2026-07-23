@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 
@@ -15,6 +16,11 @@ import (
 type BrowserSession struct {
 	mu          sync.Mutex
 	launcher    *launcher.Launcher
+	// chromeCmd là tiến trình Chrome do launchBrowserHidden tự khởi (Windows). Vì
+	// ta KHÔNG gọi launcher.Launch() nên launcher.Kill() là no-op — phải tự giữ PID
+	// ở đây và Kill lúc đóng, nếu không mỗi lần đóng sẽ rò 1 Chrome ngầm giữ profile
+	// khiến lần mở sau bị handoff → không có cửa sổ nào hiện lên.
+	chromeCmd   *exec.Cmd
 	browser     *rod.Browser
 	page        *rod.Page
 	profileDir  string
@@ -134,6 +140,12 @@ func (b *BrowserSession) Start(
 			b.launcher.Kill()
 			b.launcher = nil
 		}
+		// Kill Chrome cũ do launchBrowserHidden khởi: nếu bỏ, toggle ẩn/hiện sẽ để lại
+		// Chrome ngầm giữ profile → lần mở lại bị handoff, không cửa sổ nào hiện lên.
+		if b.chromeCmd != nil && b.chromeCmd.Process != nil {
+			_ = b.chromeCmd.Process.Kill()
+			b.chromeCmd = nil
+		}
 		b.page = nil
 	}
 
@@ -169,7 +181,14 @@ func (b *BrowserSession) Start(
 
 	l = l.Bin(chromeExecutable)
 
-	controlURL, err := launchBrowserHidden(l)
+	// Dọn Chrome mồ côi còn bám profile trước khi launch. Tại đây nhánh cleanup đầu
+	// hàm đã đóng browser cũ của app (nếu có), nên MỌI chrome.exe còn giữ profile này
+	// đều là tiến trình rò từ lần chạy trước (app crash / tắt bằng Task Manager) —
+	// giết hết để tránh handoff làm Chrome mới thoát ngay. Lọc theo đường dẫn profile
+	// riêng nên không đụng Chrome cá nhân của người dùng.
+	killOrphanChromeForProfile(profileDir)
+
+	controlURL, chromeCmd, err := launchBrowserHidden(l)
 	if err != nil {
 		return fmt.Errorf("launch Chrome: %w", err)
 	}
@@ -180,6 +199,9 @@ func (b *BrowserSession) Start(
 		Context(ctx)
 
 	if err := browser.Connect(); err != nil {
+		if chromeCmd != nil && chromeCmd.Process != nil {
+			_ = chromeCmd.Process.Kill()
+		}
 		l.Kill()
 		return fmt.Errorf("connect Chrome: %w", err)
 	}
@@ -190,6 +212,9 @@ func (b *BrowserSession) Start(
 		},
 	)
 	if err != nil {
+		if chromeCmd != nil && chromeCmd.Process != nil {
+			_ = chromeCmd.Process.Kill()
+		}
 		_ = browser.Close()
 		l.Kill()
 		return fmt.Errorf("open page: %w", err)
@@ -197,6 +222,7 @@ func (b *BrowserSession) Start(
 	enableFocusEmulation(page)
 
 	b.launcher = l
+	b.chromeCmd = chromeCmd
 	b.browser = browser
 	b.page = page
 	b.profileDir = profileDir
@@ -302,6 +328,13 @@ func (b *BrowserSession) Close() error {
 	if b.launcher != nil {
 		b.launcher.Kill()
 		b.launcher = nil
+	}
+	// Kill tiến trình Chrome do launchBrowserHidden tự khởi: launcher.Kill() không
+	// đụng tới nó vì ta chưa từng gọi launcher.Launch(). Bỏ bước này thì browser.Close()
+	// chỉ ngắt kết nối CDP còn Chrome vẫn sống ngầm, giữ profile → rò tiến trình.
+	if b.chromeCmd != nil && b.chromeCmd.Process != nil {
+		_ = b.chromeCmd.Process.Kill()
+		b.chromeCmd = nil
 	}
 	b.page = nil
 	return err

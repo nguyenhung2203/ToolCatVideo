@@ -440,7 +440,7 @@
              nguồn (cắt video + tạo ảnh AI), mỗi dòng có nhãn nguồn để phân biệt. Nhờ
              tách khỏi block queueMode nên khi cắt video chạy mà trang AI đang ở màn
              chờ, log vẫn hiện. -->
-        <div v-if="queueLogs.length > 0" style="flex-shrink: 0; margin-top: 8px; border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); background: var(--wx-surface-sunken, #0e1626); overflow: hidden;">
+        <div v-if="queueLogs.length > 0" style="width: 100%; flex-shrink: 0; margin-top: 8px; border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); background: var(--wx-surface-sunken, #0e1626); overflow: hidden;">
           <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 6px 10px; background: rgba(0,0,0,0.15); border-bottom: 1px solid var(--wx-border-subtle, rgba(255,255,255,0.05));">
             <span style="font-size: 11.5px; font-weight: 700; color: var(--wx-brand-accent); display: inline-flex; align-items: center; gap: 6px;">
               Nhật ký tiến trình ({{ queueLogs.length }})

@@ -107,7 +107,13 @@ if (-not $SkipBuild) {
 # --- 4. Chuan bi file ship TrafficTool.exe ------------------------------
 $builtExe = ".\build\bin\TrafficTool.exe"
 if (Test-Path $builtExe) {
-    Copy-Item $builtExe (Join-Path $Dist "TrafficTool.exe") -Force
+    try {
+        Copy-Item $builtExe (Join-Path $Dist "TrafficTool.exe") -Force -ErrorAction Stop
+    } catch {
+        Get-Process TrafficTool -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
+        Copy-Item $builtExe (Join-Path $Dist "TrafficTool.exe") -Force
+    }
     Write-Host "[2/6] Da chep TrafficTool.exe moi vao $Dist" -ForegroundColor Green
 } elseif (-not $SkipBuild) {
     Write-Host "LOI: Khong thay $builtExe sau khi build." -ForegroundColor Red
@@ -181,7 +187,8 @@ $manifestObj = [PSCustomObject]@{
     }
 }
 $manifestPath = Join-Path $distFull "manifest.json"
-$manifestObj | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding utf8
+$jsonManifest = $manifestObj | ConvertTo-Json -Depth 5
+[System.IO.File]::WriteAllText($manifestPath, $jsonManifest, (New-Object System.Text.UTF8Encoding $false))
 Write-Host "`n[5/6] Da tao manifest.json" -ForegroundColor Green
 
 # --- 8. Tao GitHub Release + upload --------------------------------------
@@ -228,11 +235,16 @@ Remove-Item $stageDir -Recurse -Force -ErrorAction SilentlyContinue
 if (-not $NoGit) {
     if (Get-Command git -ErrorAction SilentlyContinue) {
         Write-Host "`n[7/7] Dang commit + push version $Tag..." -ForegroundColor Green
-        git add update.go 2>$null
-        git commit -m ("release: " + $Tag) 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            git push 2>$null
-        }
+        try {
+            $prevEA = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            $null = git add update.go 2>&1
+            $null = git commit -m ("release: " + $Tag) 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $null = git push 2>&1
+            }
+            $ErrorActionPreference = $prevEA
+        } catch {}
     }
 }
 
