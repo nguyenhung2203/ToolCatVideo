@@ -100,40 +100,8 @@ func GenerateFlowVideo(
 		return el.Context(ctx), nil
 	}
 
-	// Đăng ký script ẩn danh (stealth) để vượt qua bộ quét bot/webdriver của Google
-	_, _ = page.EvalOnNewDocument(`() => {
-		// 1. Ghi đè navigator.webdriver thành undefined để chống phát hiện tự động
-		Object.defineProperty(navigator, 'webdriver', {
-			get: () => undefined
-		});
-
-		// 2. Xóa các biến signature ẩn của Chrome DevTools Protocol
-		try {
-			delete window.cdc_adoQyhkntgdgCwRuuFormiP_Array;
-			delete window.cdc_adoQyhkntgdgCwRuuFormiP_Promise;
-		} catch (e) {}
-
-		// 3. Giả lập chrome object giống trình duyệt người dùng bình thường
-		window.chrome = {
-			runtime: {},
-			loadTimes: function() {},
-			csi: function() {},
-			app: {}
-		};
-
-		// 4. Khai báo plugins giả
-		Object.defineProperty(navigator, 'plugins', {
-			get: () => [
-				{ name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-				{ name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
-			]
-		});
-
-		// 5. Khai báo danh sách ngôn ngữ chuẩn
-		Object.defineProperty(navigator, 'languages', {
-			get: () => ['vi-VN', 'vi', 'en-US', 'en']
-		});
-	}`)
+	// Script ẩn danh (stealth) chống phát hiện webdriver/bot đã được đăng ký MỘT LẦN
+	// lúc tạo page (applyStealthScript trong browser.go) và tồn tại qua mọi navigate.
 
 	logDebug("Bắt đầu mở trang Google Flow: %s", targetURL)
 	tm.EmitStatus(TaskStateLaunching, "Đang mở trang Google Flow...", 10)
@@ -358,15 +326,8 @@ func GenerateFlowVideo(
 		}
 	} else {
 		// Kiểm tra xem dự án cũ có vượt quá ngưỡng ảnh cho phép hay không
-		totalCardsCountObj, errTotalCount := page.Eval(`() => {
-			const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
-				const src = img.getAttribute('src') || '';
-				return src.includes('getMediaUrl') || src.includes('/fx/api/');
-			});
-			return imgs.length;
-		}`)
-		if errTotalCount == nil && totalCardsCountObj != nil {
-			totalCount := totalCardsCountObj.Value.Int()
+		{
+			totalCount := countProjectImages(page)
 			logDebug("Số lượng hình ảnh hiện có trong dự án cũ: %d", totalCount)
 			if totalCount >= MaxProjectImages {
 				logDebug("Dự án hiện tại đã có %d hình ảnh (vượt ngưỡng %d ảnh để tránh lag). Xóa dự án cũ và tiến hành tự động tạo dự án mới ngay lập tức...", totalCount, MaxProjectImages)
@@ -542,51 +503,13 @@ func GenerateFlowVideo(
 	}
 
 	// Kiểm tra và in log tổng số lượng hình ảnh hiện có trong dự án trước khi bấm Tạo
-	totalCardsCountObj, errTotalCount := page.Eval(`() => {
-		const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
-			const src = img.getAttribute('src') || '';
-			return src.includes('getMediaUrl') || src.includes('/fx/api/');
-		});
-		return imgs.length;
-	}`)
-	if errTotalCount == nil && totalCardsCountObj != nil {
-		logDebug("Số lượng hình ảnh đang có trong dự án trước khi tạo: %d ảnh", totalCardsCountObj.Value.Int())
-	}
+	logDebug("Số lượng hình ảnh đang có trong dự án trước khi tạo: %d ảnh", countProjectImages(page))
 
 	// Count initial download buttons and video tile cards if it is Video type
 	initialVideoButtonsCount := 0
 	initialVideoTilesCount := 0
 	if req.MediaType == MediaTypeVideo {
-		hasDlCount, errDlCount := page.Eval(`() => {
-			const candidates = Array.from(document.querySelectorAll('button, a'));
-			let count = 0;
-			for (const el of candidates) {
-				const icon = el.querySelector('i, span.google-symbols, .material-icons, [class*="icon"]');
-				const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
-				const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-				const title = (el.getAttribute('title') || '').toLowerCase();
-				if (iconText === 'download' || iconText === 'file_download' || 
-				    aria.includes('download') || aria.includes('tải xuống') || aria.includes('tải về') ||
-				    title.includes('download') || title.includes('tải xuống') || title.includes('tải về')) {
-					count++;
-				}
-			}
-			return count;
-		}`)
-		if errDlCount == nil && hasDlCount != nil {
-			initialVideoButtonsCount = hasDlCount.Value.Int()
-		}
-
-		hasTileCount, errTileCount := page.Eval(`() => {
-			const tiles = Array.from(document.querySelectorAll('[data-tile-id], div[role="button"][aria-roledescription="draggable"], div[class*="tile"], video')).filter(el => {
-				const rect = el.getBoundingClientRect();
-				return rect.width > 80 && rect.height > 80;
-			});
-			return tiles.length;
-		}`)
-		if errTileCount == nil && hasTileCount != nil {
-			initialVideoTilesCount = hasTileCount.Value.Int()
-		}
+		initialVideoButtonsCount, initialVideoTilesCount = countVideoButtonsAndTiles(page)
 		logDebug("Số lượng nút tải video cũ: %d, Số lượng card video cũ: %d", initialVideoButtonsCount, initialVideoTilesCount)
 	}
 
@@ -608,35 +531,7 @@ func GenerateFlowVideo(
 
 			// Cập nhật lại số lượng nút tải & card video cũ trước khi retry lần tiếp theo
 			if req.MediaType == MediaTypeVideo {
-				hasDlCount, errDlCount := page.Eval(`() => {
-					const candidates = Array.from(document.querySelectorAll('button, a'));
-					let count = 0;
-					for (const el of candidates) {
-						const icon = el.querySelector('i, span.google-symbols, .material-icons, [class*="icon"]');
-						const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
-						const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-						const title = (el.getAttribute('title') || '').toLowerCase();
-						if (iconText === 'download' || iconText === 'file_download' || 
-						    aria.includes('download') || aria.includes('tải xuống') || aria.includes('tải về') ||
-						    title.includes('download') || title.includes('tải xuống') || title.includes('tải về')) {
-							count++;
-						}
-					}
-					return count;
-				}`)
-				if errDlCount == nil && hasDlCount != nil {
-					initialVideoButtonsCount = hasDlCount.Value.Int()
-				}
-				hasTileCount, errTileCount := page.Eval(`() => {
-					const tiles = Array.from(document.querySelectorAll('[data-tile-id], div[role="button"][aria-roledescription="draggable"], div[class*="tile"], video')).filter(el => {
-						const rect = el.getBoundingClientRect();
-						return rect.width > 80 && rect.height > 80;
-					});
-					return tiles.length;
-				}`)
-				if errTileCount == nil && hasTileCount != nil {
-					initialVideoTilesCount = hasTileCount.Value.Int()
-				}
+				initialVideoButtonsCount, initialVideoTilesCount = countVideoButtonsAndTiles(page)
 				logDebug("Cập nhật lại số lượng nút tải cũ (%d) và card video cũ (%d) trước khi retry", initialVideoButtonsCount, initialVideoTilesCount)
 			}
 		}
@@ -1098,20 +993,11 @@ func GenerateFlowVideo(
 							logDebug("Chốt nhóm ảnh mới sinh: %d ảnh (kỳ vọng %d).", len(newGroupUrls), expectedImages)
 
 							// Kiểm tra tổng số ảnh trên toàn trang để tránh lag
-							totalCardsCountObj, errTotalCount := page.Eval(`() => {
-								const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
-									const src = img.getAttribute('src') || '';
-									return src.includes('getMediaUrl') || src.includes('/fx/api/');
-								});
-								return imgs.length;
-							}`)
-							if errTotalCount == nil && totalCardsCountObj != nil {
-								totalCount := totalCardsCountObj.Value.Int()
-								logDebug("Tổng số lượng hình ảnh đang có trong dự án: %d", totalCount)
-								if totalCount >= MaxProjectImages {
-									logDebug("Dự án hiện tại có %d hình ảnh (vượt ngưỡng %d ảnh để tránh lag Chrome). Tiến hành xóa link dự án cũ để lần sau tự động tạo dự án mới...", totalCount, MaxProjectImages)
-									saveProjectURL("") // Xóa link project để lần sau tạo dự án mới tinh!
-								}
+							totalCount := countProjectImages(page)
+							logDebug("Tổng số lượng hình ảnh đang có trong dự án: %d", totalCount)
+							if totalCount >= MaxProjectImages {
+								logDebug("Dự án hiện tại có %d hình ảnh (vượt ngưỡng %d ảnh để tránh lag Chrome). Tiến hành xóa link dự án cũ để lần sau tự động tạo dự án mới...", totalCount, MaxProjectImages)
+								saveProjectURL("") // Xóa link project để lần sau tạo dự án mới tinh!
 							}
 
 							// Bắt đầu xử lý preview: Đảm bảo có tiền tố https://labs.google
@@ -1398,12 +1284,13 @@ func GenerateFlowVideo(
 				// Tuần tự hóa đoạn tải: WaitDownload ở cấp browser nên nhiều tab tải
 				// cùng lúc dễ bắt nhầm file của nhau. Chỉ khóa quanh đoạn download ngắn.
 				session.LockDownload()
-				waitDownload := session.browser.WaitDownload(session.downloadDir)
+				dlDir := session.DownloadDir()
+				waitDownload := session.Browser().WaitDownload(dlDir)
 				// Click resolution option to trigger download / upscaling
 				_ = optionBtn.Click(proto.InputMouseButtonLeft, 1)
 				logDebug("Đã click chọn độ phân giải %s. Đang chờ file được tải về máy...", strings.ToUpper(targetRes))
 				mile(fmt.Sprintf("Đã chọn %s cho ảnh %d/%d, đang chờ tải file về...", strings.ToUpper(targetRes), idx+1, len(selectedIndexes)))
-				filePath, errMove := WaitAndMoveDownload(ctx, waitDownload, session.downloadDir, req.OutputDir, customFileName, MediaTypeImage)
+				filePath, errMove := WaitAndMoveDownload(ctx, waitDownload, dlDir, req.OutputDir, customFileName, MediaTypeImage)
 				session.UnlockDownload()
 				if errMove == nil {
 					logDebug("Tải ảnh thứ %d/%d thành công (%s): %s", idx+1, len(selectedIndexes), strings.ToUpper(targetRes), filePath)
@@ -1976,10 +1863,11 @@ func GenerateFlowVideo(
 						tm.EmitStatus(TaskStateDownloading, "Đang tải video xuống...", 85)
 					}
 					session.LockDownload()
-					waitDownload := session.browser.WaitDownload(session.downloadDir)
+					dlDir := session.DownloadDir()
+					waitDownload := session.Browser().WaitDownload(dlDir)
 					_ = btnDl.Click(proto.InputMouseButtonLeft, 1)
 
-					filePath, errMove := WaitAndMoveDownload(ctx, waitDownload, session.downloadDir, req.OutputDir, customFileName, MediaTypeVideo)
+					filePath, errMove := WaitAndMoveDownload(ctx, waitDownload, dlDir, req.OutputDir, customFileName, MediaTypeVideo)
 					session.UnlockDownload()
 
 					if errMove == nil {
@@ -2542,19 +2430,30 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		logDebug("Cấu hình thời lượng video: %s", targetDuration)
 		clickDurationBtn, errDur := getElement(3*time.Second, `(dur) => {
 			const cleanDigit = dur.toLowerCase().replace('s', '').trim();
-			// 1. Tìm nút theo ID trigger (ví dụ button[id$="-trigger-6s"] hoặc button[id$="-trigger-6"])
-			const btn1 = document.querySelector('button[id$="-trigger-' + cleanDigit + 's"]');
-			if (btn1) return btn1;
-			const btn2 = document.querySelector('button[id$="-trigger-' + cleanDigit + '"]');
-			if (btn2) return btn2;
+			// QUAN TRỌNG: KHÔNG dùng id$="-trigger-N" (id trần) cho thời lượng — nút
+			// batch size (x4) cũng có id kết thúc "-trigger-4", và querySelector trả về
+			// nút ĐẦU TIÊN theo thứ tự DOM (batch đứng trước) → bấm nhầm x4 thay vì 4s.
+			// Nút thời lượng có text DUY NHẤT dạng "4s"/"6s"/"8s" (batch là "x4"/"4x"),
+			// nên khớp theo text chính xác là an toàn nhất.
 
-			// 2. Tìm trong popover đang mở
+			// 1. Ưu tiên khớp text chính xác "Ns" trên toàn trang (duy nhất, không lẫn batch)
+			const wantText = cleanDigit + 's';
+			const exactByText = Array.from(document.querySelectorAll('button[role="tab"], button')).find(b => {
+				return b.textContent.trim().toLowerCase() === wantText;
+			});
+			if (exactByText) return exactByText;
+
+			// 2. Thử id trigger CÓ HẬU TỐ 's' (button[id$="-trigger-6s"]) — không đụng batch
+			const btnIdS = document.querySelector('button[id$="-trigger-' + cleanDigit + 's"]');
+			if (btnIdS) return btnIdS;
+
+			// 3. Dự phòng: tìm trong popover đang mở theo text
 			const popover = document.querySelector('[data-state="open"][role="menu"], [data-state="open"]');
 			if (popover) {
 				const buttons = Array.from(popover.querySelectorAll('button'));
 				return buttons.find(b => {
 					const txt = b.textContent.toLowerCase().trim();
-					return txt === dur || txt === cleanDigit + 's' || txt === cleanDigit;
+					return txt === dur || txt === wantText;
 				}) || null;
 			}
 			return null;
@@ -2647,9 +2546,6 @@ func ConfigureFlowSettings(ctx context.Context, page *rod.Page, req GenerateRequ
 		logDebug("Model (%s) đã đúng sẵn, bỏ qua không chỉnh lại.", req.Model)
 	}
 
-	// 7. Đóng popover bằng cách click lại nút menu hoặc click vào ô nhập prompt
-	logDebug("Đóng hộp thoại cấu hình tác nhân...")
-	
 	// 7. Đóng popover bằng cách click lại nút menu trigger
 	logDebug("Đóng hộp thoại cấu hình tác nhân bằng cách click lại nút cài đặt...")
 	if isFlowPopoverOpen(page) && configTriggerBtn != nil {
@@ -2998,8 +2894,6 @@ func saveProjectURL(projectURL string) {
 	}
 }
 
-
-// CopyImageToClipboardWindows nạp file ảnh trực tiếp vào Clipboard của hệ thống Windows qua PowerShell
 // CopyImageToClipboardWindows nạp file ảnh trực tiếp vào Clipboard của hệ thống Windows qua PowerShell
 func CopyImageToClipboardWindows(imagePath string) error {
 	absPath, err := filepath.Abs(imagePath)
@@ -3179,4 +3073,54 @@ func WaitUntilImageAttachedAndLoaded(ctx context.Context, page *rod.Page, timeou
 		logDebug("Cảnh báo: Hết thời gian chờ (%v) nhưng vẫn tiếp tục luồng...", timeout)
 	}
 	return false
+}
+
+// jsMediaImgFilter là biểu thức JS dùng chung để lọc các <img> là ảnh media do
+// Flow sinh ra (src chứa getMediaUrl hoặc /fx/api/), tránh lặp lại ở nhiều chỗ.
+const jsMediaImgFilter = `Array.from(document.querySelectorAll('img')).filter(img => {
+	const src = img.getAttribute('src') || '';
+	return src.includes('getMediaUrl') || src.includes('/fx/api/');
+})`
+
+// countProjectImages đếm tổng số ảnh media đang hiển thị trong dự án Flow.
+func countProjectImages(page *rod.Page) int {
+	obj, err := page.Eval(`() => { return ` + jsMediaImgFilter + `.length; }`)
+	if err != nil || obj == nil {
+		return 0
+	}
+	return obj.Value.Int()
+}
+
+// countVideoButtonsAndTiles đếm số nút Tải xuống và số thẻ card video/tile đang
+// có trên trang. Dùng để so mốc "trước/sau khi tạo" nhằm phát hiện video mới sinh.
+func countVideoButtonsAndTiles(page *rod.Page) (dlCount, tileCount int) {
+	if dlObj, err := page.Eval(`() => {
+		const candidates = Array.from(document.querySelectorAll('button, a'));
+		let count = 0;
+		for (const el of candidates) {
+			const icon = el.querySelector('i, span.google-symbols, .material-icons, [class*="icon"]');
+			const iconText = icon ? icon.textContent.trim().toLowerCase() : '';
+			const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+			const title = (el.getAttribute('title') || '').toLowerCase();
+			if (iconText === 'download' || iconText === 'file_download' ||
+			    aria.includes('download') || aria.includes('tải xuống') || aria.includes('tải về') ||
+			    title.includes('download') || title.includes('tải xuống') || title.includes('tải về')) {
+				count++;
+			}
+		}
+		return count;
+	}`); err == nil && dlObj != nil {
+		dlCount = dlObj.Value.Int()
+	}
+
+	if tileObj, err := page.Eval(`() => {
+		const tiles = Array.from(document.querySelectorAll('[data-tile-id], div[role="button"][aria-roledescription="draggable"], div[class*="tile"], video')).filter(el => {
+			const rect = el.getBoundingClientRect();
+			return rect.width > 80 && rect.height > 80;
+		});
+		return tiles.length;
+	}`); err == nil && tileObj != nil {
+		tileCount = tileObj.Value.Int()
+	}
+	return dlCount, tileCount
 }

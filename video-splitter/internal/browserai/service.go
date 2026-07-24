@@ -246,62 +246,13 @@ func (s *Service) Generate(req GenerateRequest) (TaskInfo, error) {
 	go func() {
 		defer cancel()
 
-		// Decode pasted base64 images if exist
-		var decodedPaths []string
-		if len(req.InputImageBase64s) > 0 {
-			for idx, b64 := range req.InputImageBase64s {
-				if b64 == "" {
-					continue
-				}
-				parts := strings.Split(b64, ",")
-				base64Data := b64
-				ext := ".png"
-				if len(parts) > 1 {
-					base64Data = parts[1]
-					header := parts[0]
-					if strings.Contains(header, "image/jpeg") || strings.Contains(header, "image/jpg") {
-						ext = ".jpg"
-					} else if strings.Contains(header, "image/gif") {
-						ext = ".gif"
-					}
-				}
-
-				data, errDecode := base64.StdEncoding.DecodeString(base64Data)
-				if errDecode == nil {
-					tempDir := os.TempDir()
-					tempFile := filepath.Join(tempDir, fmt.Sprintf("pasted_img_%s_%d%s", taskID, idx, ext))
-					errWrite := os.WriteFile(tempFile, data, 0644)
-					if errWrite == nil {
-						decodedPaths = append(decodedPaths, tempFile)
-						fmt.Println("[Base64] Lưu ảnh thành công từ clipboard:", tempFile)
-					}
-				}
-			}
-		} else if req.InputImageBase64 != "" {
-			parts := strings.Split(req.InputImageBase64, ",")
-			base64Data := req.InputImageBase64
-			ext := ".png"
-			if len(parts) > 1 {
-				base64Data = parts[1]
-				header := parts[0]
-				if strings.Contains(header, "image/jpeg") || strings.Contains(header, "image/jpg") {
-					ext = ".jpg"
-				} else if strings.Contains(header, "image/gif") {
-					ext = ".gif"
-				}
-			}
-
-			data, errDecode := base64.StdEncoding.DecodeString(base64Data)
-			if errDecode == nil {
-				tempDir := os.TempDir()
-				tempFile := filepath.Join(tempDir, fmt.Sprintf("pasted_img_%s%s", taskID, ext))
-				errWrite := os.WriteFile(tempFile, data, 0644)
-				if errWrite == nil {
-					decodedPaths = append(decodedPaths, tempFile)
-					fmt.Println("[Base64] Lưu ảnh thành công từ clipboard:", tempFile)
-				}
-			}
+		// Giải mã ảnh dán từ clipboard (base64) ra file tạm. Ưu tiên danh sách nhiều
+		// ảnh; nếu rỗng thì fallback về ảnh đơn cũ. Dùng chung helper với worker queue.
+		base64s := req.InputImageBase64s
+		if len(base64s) == 0 && req.InputImageBase64 != "" {
+			base64s = []string{req.InputImageBase64}
 		}
+		decodedPaths, cleanupDecoded := decodeBase64ImagesToTemp(taskID, base64s)
 
 		// Combine file paths
 		var allInputPaths []string
@@ -315,13 +266,7 @@ func (s *Service) Generate(req GenerateRequest) (TaskInfo, error) {
 		req.InputImagePaths = allInputPaths
 
 		// Register cleanup
-		if len(decodedPaths) > 0 {
-			defer func() {
-				for _, p := range decodedPaths {
-					_ = os.Remove(p)
-				}
-			}()
-		}
+		defer cleanupDecoded()
 
 		var filePaths []string
 		var genErr error

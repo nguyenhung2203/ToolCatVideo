@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -15,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -26,6 +24,7 @@ import (
 	"video-splitter/internal/browserai"
 	"video-splitter/internal/downloader"
 	"video-splitter/internal/exporter"
+	"video-splitter/internal/googlesheet"
 	"video-splitter/internal/imagedownloader"
 	"video-splitter/internal/media"
 	"video-splitter/internal/project"
@@ -49,6 +48,7 @@ func hashPath(sourcePath string) string {
 type App struct {
 	ctx               context.Context
 	browserAIService  *browserai.Service
+	googleSheetService *googlesheet.Service
 	cancelFuncs       map[string]context.CancelFunc
 	cancelMu          sync.Mutex
 	exportCancelFuncs map[string]context.CancelFunc
@@ -69,7 +69,8 @@ type App struct {
 // NewApp creates a new App application struct
 func NewApp(browserAIService *browserai.Service) *App {
 	return &App{
-		browserAIService: browserAIService,
+		browserAIService:   browserAIService,
+		googleSheetService: googlesheet.NewService(),
 	}
 }
 
@@ -399,180 +400,53 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 		}
 	}
 
-	type pythonThumbJob struct {
-		Index     int     `json:"index"`
-		Timestamp float64 `json:"timestamp"`
-		Path      string  `json:"path"`
-		Type      string  `json:"type"`
-	}
-
-	var pythonJobs []pythonThumbJob
-	for i := 0; i < len(clips); i++ {
-		thumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumb_%s_%d.jpg", clips[i].ID, i))
-		pythonJobs = append(pythonJobs, pythonThumbJob{
-			Index:     i,
-			Timestamp: clips[i].StartTime,
-			Path:      thumbPath,
-			Type:      "start",
-		})
-
-		endThumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumbend_%s_%d.jpg", clips[i].ID, i))
-		endAt := clips[i].EndTime - 0.1
-		if endAt < clips[i].StartTime {
-			endAt = clips[i].StartTime
-		}
-		pythonJobs = append(pythonJobs, pythonThumbJob{
-			Index:     i,
-			Timestamp: endAt,
-			Path:      endThumbPath,
-			Type:      "end",
-		})
-	}
-
-	jobsBytes, err := json.Marshal(pythonJobs)
-	if err != nil {
-		return nil, fmt.Errorf("lỗi serialize thumbnail jobs: %v", err)
-	}
-
-	scriptPath := filepath.Join(filepath.Dir(utils.GetWorkerScript()), "extract_thumbs.py")
-
-	cmd := exec.CommandContext(ctx, pythonExe, scriptPath, "--video", thumbInputPath)
-	cmd.Env = append(os.Environ(), "PYTHONUTF8=1", "PYTHONIOENCODING=utf-8")
-	utils.HideCmdWindow(cmd)
-
-	stdinPipe, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("lỗi tạo stdin pipe cho thumbnail extractor: %v", err)
-	}
-
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("lỗi tạo stdout pipe cho thumbnail extractor: %v", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("lỗi chạy thumbnail extractor: %v", err)
-	}
-
-	go func() {
-		defer stdinPipe.Close()
-		_, _ = stdinPipe.Write(jobsBytes)
-	}()
-
-	clipDone := make(map[int]int)
-	var completedJobs int
-	numJobs := len(pythonJobs)
+	// Trích ảnh xem trước bằng ffmpeg (có sẵn trong bin/, không phụ thuộc Python).
+	// Mỗi clip lấy 2 ảnh: đầu clip (Thumbnail) và ngay trước điểm cắt cuối (ThumbEnd).
+	// Mỗi clip xử lý trong 1 luồng rồi phát clip_thumb_update ngay để ảnh hiện dần
+	// (video nhiều clip không phải chờ toàn bộ). Giới hạn 8 luồng để không nghẽn CPU/GPU.
+	var wgThumbs sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	var completed int
 	var mu sync.Mutex
+	numClips := len(clips)
 
-	scanner := bufio.NewScanner(stdoutPipe)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "DONE:") {
-			parts := strings.Split(strings.TrimPrefix(line, "DONE:"), "|")
-			if len(parts) == 3 {
-				idx, _ := strconv.Atoi(parts[0])
-				jobType := parts[1]
-				path := parts[2]
+	for i := 0; i < len(clips); i++ {
+		wgThumbs.Add(1)
+		go func(idx int) {
+			defer wgThumbs.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-				mu.Lock()
-				if jobType == "start" {
-					clips[idx].Thumbnail = path
-				} else {
-					clips[idx].ThumbEnd = path
-				}
+			thumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumb_%s_%d.jpg", clips[idx].ID, idx))
+			_ = media.ExtractFrame(ctx, thumbInputPath, clips[idx].StartTime, thumbPath)
 
-				completedJobs++
-				prog := 92 + (completedJobs * 7 / numJobs)
-				if prog > 99 {
-					prog = 99
-				}
-				runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": prog})
-
-				clipDone[idx]++
-				if clipDone[idx] >= 2 {
-					doneClips := 0
-					for _, v := range clipDone {
-						if v >= 2 {
-							doneClips++
-						}
-					}
-					totalClips := len(clips)
-					runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("  Bước 3/3: Đã trích xuất ảnh clip %d/%d", doneClips, totalClips))
-					runtime.EventsEmit(a.ctx, "clip_thumb_update", map[string]interface{}{
-						"path":      sourcePath,
-						"clipId":    clips[idx].ID,
-						"thumbnail": clips[idx].Thumbnail,
-						"thumbEnd":  clips[idx].ThumbEnd,
-					})
-				}
-				mu.Unlock()
+			endThumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumbend_%s_%d.jpg", clips[idx].ID, idx))
+			endAt := clips[idx].EndTime - 0.1
+			if endAt < clips[idx].StartTime {
+				endAt = clips[idx].StartTime
 			}
-		}
-	}
+			_ = media.ExtractFrame(ctx, thumbInputPath, endAt, endThumbPath)
 
-	if err := cmd.Wait(); err != nil {
-		runtime.EventsEmit(a.ctx, "analyze_log", "Cảnh báo: Lỗi batch thumbnail. Đang chạy chế độ fallback bằng ffmpeg...")
-		var wgThumbs sync.WaitGroup
-		sem := make(chan struct{}, 8)
-		var completed int
-		var mu2 sync.Mutex
+			mu.Lock()
+			clips[idx].Thumbnail = thumbPath
+			clips[idx].ThumbEnd = endThumbPath
+			completed++
+			prog := 92 + (completed * 7 / numClips)
+			if prog > 99 {
+				prog = 99
+			}
+			mu.Unlock()
 
-		for i := 0; i < len(clips); i++ {
-			wgThumbs.Add(1)
-			go func(idx int) {
-				defer wgThumbs.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-
-				thumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumb_%s_%d.jpg", clips[idx].ID, idx))
-				_ = media.ExtractFrame(ctx, thumbInputPath, clips[idx].StartTime, thumbPath)
-
-				mu2.Lock()
-				clips[idx].Thumbnail = thumbPath
-				completed++
-				prog := 92 + (completed * 7 / (len(clips) * 2))
-				if prog > 99 {
-					prog = 99
-				}
-				runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": prog})
-				mu2.Unlock()
-			}(i)
-
-			wgThumbs.Add(1)
-			go func(idx int) {
-				defer wgThumbs.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-
-				endThumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumbend_%s_%d.jpg", clips[idx].ID, idx))
-				endAt := clips[idx].EndTime - 0.1
-				if endAt < clips[idx].StartTime {
-					endAt = clips[idx].StartTime
-				}
-				_ = media.ExtractFrame(ctx, thumbInputPath, endAt, endThumbPath)
-
-				mu2.Lock()
-				clips[idx].ThumbEnd = endThumbPath
-				completed++
-				prog := 92 + (completed * 7 / (len(clips) * 2))
-				if prog > 99 {
-					prog = 99
-				}
-				runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": prog})
-				mu2.Unlock()
-			}(i)
-		}
-		wgThumbs.Wait()
-
-		for idx := range clips {
+			runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": prog})
 			runtime.EventsEmit(a.ctx, "clip_thumb_update", map[string]interface{}{
 				"path":      sourcePath,
 				"clipId":    clips[idx].ID,
 				"thumbnail": clips[idx].Thumbnail,
 				"thumbEnd":  clips[idx].ThumbEnd,
 			})
-		}
+		}(i)
 	}
+	wgThumbs.Wait()
 
 	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Phân tích hoàn tất! Đã tìm thấy %d phân đoạn.", len(clips)))
 	return clips, nil
@@ -2239,4 +2113,153 @@ func (a *App) GetDefaultImageDownloadDir() string {
 // GetSystemStats trả về thông số CPU, RAM, GPU và các tiến trình tác vụ đang chạy.
 func (a *App) GetSystemStats() sysmonitor.SystemStats {
 	return sysmonitor.GetStats()
+}
+
+type ParsedSheetResult struct {
+	SpreadsheetID string   `json:"spreadsheetId"`
+	Gid           string   `json:"gid"`
+	TabName       string   `json:"tabName"`
+	DetectedMode  string   `json:"detectedMode"`
+	Headers       []string `json:"headers"`
+	RawURL        string   `json:"rawUrl"`
+}
+
+// ParseGoogleSheetLink bóc tách Spreadsheet ID và GID (ID Tab) từ đường link Google Sheet
+func (a *App) ParseGoogleSheetLink(rawURL string) (*ParsedSheetResult, error) {
+	if a.googleSheetService == nil {
+		a.googleSheetService = googlesheet.NewService()
+	}
+	info, err := a.googleSheetService.ParseLink(rawURL)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &ParsedSheetResult{
+		SpreadsheetID: info.SpreadsheetID,
+		Gid:           info.Gid,
+		TabName:       info.TabName,
+		RawURL:        info.RawURL,
+	}
+
+	if info.Gid == "1228770940" {
+		res.TabName = "WEB - THỦY"
+		res.DetectedMode = "web_thuy"
+	}
+
+	headers, detectedTab, err := a.googleSheetService.FetchSheetHeaders(a.ctx, info.SpreadsheetID, info.Gid)
+	if err == nil && len(headers) > 0 {
+		res.Headers = headers
+		if detectedTab != "" {
+			res.TabName = detectedTab
+			if detectedTab == "WEB - THỦY" {
+				res.DetectedMode = "web_thuy"
+			} else if detectedTab == "CONTEN THỦY" {
+				res.DetectedMode = "conten_thuy"
+			}
+		}
+	}
+
+	return res, nil
+}
+
+// FetchGoogleSheetStructure đọc toàn bộ danh sách Tab & Cột thực tế từ Google Sheet
+func (a *App) FetchGoogleSheetStructure(webAppURL string, rawURL string) ([]googlesheet.SheetTabInfo, error) {
+	if a.googleSheetService == nil {
+		a.googleSheetService = googlesheet.NewService()
+	}
+
+	spreadsheetID := ""
+	defaultGid := ""
+	if info, err := a.googleSheetService.ParseLink(rawURL); err == nil && info != nil {
+		spreadsheetID = info.SpreadsheetID
+		defaultGid = info.Gid
+	}
+
+	return a.googleSheetService.FetchSheetStructure(a.ctx, webAppURL, spreadsheetID, defaultGid)
+}
+
+// PushGoogleSheetRow đẩy 1 dòng dữ liệu vào Google Sheet qua Web App URL
+func (a *App) PushGoogleSheetRow(webAppURL string, gid string, tabName string, row []string) error {
+	if a.googleSheetService == nil {
+		a.googleSheetService = googlesheet.NewService()
+	}
+	return a.googleSheetService.PushRowToWebApp(a.ctx, webAppURL, gid, tabName, row)
+}
+
+// PushGoogleSheetBatch đẩy danh sách nhiều dòng dữ liệu vào Google Sheet qua Web App URL
+func (a *App) PushGoogleSheetBatch(webAppURL string, gid string, tabName string, rows [][]string) error {
+	if a.googleSheetService == nil {
+		a.googleSheetService = googlesheet.NewService()
+	}
+	return a.googleSheetService.PushBatchToWebApp(a.ctx, webAppURL, gid, tabName, rows)
+}
+
+// GetGoogleAppsScriptTemplate trả về đoạn mã mẫu Apps Script để dán vào Google Sheet
+func (a *App) GetGoogleAppsScriptTemplate() string {
+	if a.googleSheetService == nil {
+		a.googleSheetService = googlesheet.NewService()
+	}
+	return a.googleSheetService.GetAppsScriptTemplate()
+}
+
+// GenerateAIContentText gọi trực tiếp Gemini AI từ backend để sinh văn bản / caption / bình luận
+func (a *App) GenerateAIContentText(apiKey string, prompt string) (string, error) {
+	apiKey = strings.TrimSpace(apiKey)
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return "", fmt.Errorf("prompt không được để trống")
+	}
+
+	if apiKey == "" {
+		// Tìm apiKey lưu trong cài đặt chung nếu không truyền
+		if settingsStr, err := a.GetGlobalSettings(); err == nil && settingsStr != "" {
+			var parsed struct {
+				GeminiAPIKey string `json:"geminiAPIKey"`
+			}
+			if err := json.Unmarshal([]byte(settingsStr), &parsed); err == nil && parsed.GeminiAPIKey != "" {
+				apiKey = parsed.GeminiAPIKey
+			}
+		}
+	}
+
+	if apiKey != "" {
+		url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=%s", apiKey)
+		reqBody := map[string]interface{}{
+			"contents": []map[string]interface{}{
+				{
+					"parts": []map[string]interface{}{
+						{"text": prompt},
+					},
+				},
+			},
+		}
+		jsonBytes, err := json.Marshal(reqBody)
+		if err == nil {
+			req, err := http.NewRequestWithContext(a.ctx, "POST", url, bytes.NewBuffer(jsonBytes))
+			if err == nil {
+				req.Header.Set("Content-Type", "application/json")
+				client := &http.Client{Timeout: 15 * time.Second}
+				resp, err := client.Do(req)
+				if err == nil {
+					defer resp.Body.Close()
+					if resp.StatusCode == http.StatusOK {
+						var res struct {
+							Candidates []struct {
+								Content struct {
+									Parts []struct {
+										Text string `json:"text"`
+									} `json:"parts"`
+								} `json:"content"`
+							} `json:"candidates"`
+						}
+						if err := json.NewDecoder(resp.Body).Decode(&res); err == nil && len(res.Candidates) > 0 && len(res.Candidates[0].Content.Parts) > 0 {
+							return strings.TrimSpace(res.Candidates[0].Content.Parts[0].Text), nil
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("không có API key Gemini hoặc gọi AI thất bại. Vui lòng kiểm tra API Key trong Cài Đặt")
 }

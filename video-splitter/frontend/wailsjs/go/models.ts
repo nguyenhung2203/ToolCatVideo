@@ -300,6 +300,27 @@ export namespace downloader {
 
 }
 
+export namespace googlesheet {
+	
+	export class SheetTabInfo {
+	    name: string;
+	    gid: string;
+	    headers: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SheetTabInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.gid = source["gid"];
+	        this.headers = source["headers"];
+	    }
+	}
+
+}
+
 export namespace imagedownloader {
 	
 	export class ImageDownloadResult {
@@ -411,6 +432,28 @@ export namespace main {
 	        this.outPath = source["outPath"];
 	        this.duration = source["duration"];
 	        this.error = source["error"];
+	    }
+	}
+	export class ParsedSheetResult {
+	    spreadsheetId: string;
+	    gid: string;
+	    tabName: string;
+	    detectedMode: string;
+	    headers: string[];
+	    rawUrl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ParsedSheetResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.spreadsheetId = source["spreadsheetId"];
+	        this.gid = source["gid"];
+	        this.tabName = source["tabName"];
+	        this.detectedMode = source["detectedMode"];
+	        this.headers = source["headers"];
+	        this.rawUrl = source["rawUrl"];
 	    }
 	}
 	export class SubtitleGenConfig {
@@ -592,6 +635,44 @@ export namespace project {
 	        this.musicTracks = source["musicTracks"];
 	    }
 	}
+	export class CardOp {
+	    enabled: boolean;
+	    mode: string;
+	    preset: string;
+	    imgPath: string;
+	    color: string;
+	    color2: string;
+	    opacity: number;
+	    x: string;
+	    y: string;
+	    width: number;
+	    height: number;
+	    borderRadius: number;
+	    startTime: number;
+	    endTime: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CardOp(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.mode = source["mode"];
+	        this.preset = source["preset"];
+	        this.imgPath = source["imgPath"];
+	        this.color = source["color"];
+	        this.color2 = source["color2"];
+	        this.opacity = source["opacity"];
+	        this.x = source["x"];
+	        this.y = source["y"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.borderRadius = source["borderRadius"];
+	        this.startTime = source["startTime"];
+	        this.endTime = source["endTime"];
+	    }
+	}
 	export class SubtitleOp {
 	    enabled: boolean;
 	    path: string;
@@ -705,6 +786,8 @@ export namespace project {
 	    y: string;
 	    opacity: number;
 	    scale: number;
+	    startTime: number;
+	    endTime: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new WatermarkOp(source);
@@ -718,6 +801,8 @@ export namespace project {
 	        this.y = source["y"];
 	        this.opacity = source["opacity"];
 	        this.scale = source["scale"];
+	        this.startTime = source["startTime"];
+	        this.endTime = source["endTime"];
 	    }
 	}
 	export class TextOp {
@@ -773,6 +858,7 @@ export namespace project {
 	    hflip: boolean;
 	    texts: TextOp[];
 	    watermark: WatermarkOp;
+	    card: CardOp;
 	    audio: AudioOp;
 	    transition: TransitionOp;
 	    zoomPan: ZoomPanOp;
@@ -797,6 +883,7 @@ export namespace project {
 	        this.hflip = source["hflip"];
 	        this.texts = this.convertValues(source["texts"], TextOp);
 	        this.watermark = this.convertValues(source["watermark"], WatermarkOp);
+	        this.card = this.convertValues(source["card"], CardOp);
 	        this.audio = this.convertValues(source["audio"], AudioOp);
 	        this.transition = this.convertValues(source["transition"], TransitionOp);
 	        this.zoomPan = this.convertValues(source["zoomPan"], ZoomPanOp);

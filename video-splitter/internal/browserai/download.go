@@ -32,6 +32,11 @@ func WaitAndMoveDownload(
 	}
 
 	tempPath := filepath.Join(downloadDir, downloadInfo.GUID)
+	// Chrome tải ra file tạm ĐÚNG TÊN "GUID.crdownload" rồi đổi tên thành "GUID" khi
+	// xong. Nên chỉ theo dõi đúng cặp file của download này — KHÔNG quét cả thư mục
+	// (một .crdownload mồ côi của lần tải hỏng trước sẽ khiến vòng lặp chờ tới hết
+	// timeout dù file của ta đã xong từ lâu).
+	crDownloadPath := tempPath + ".crdownload"
 
 	// 2. Wait for download completion (temporary .crdownload file to disappear and tempPath to exist)
 	// We poll and wait.
@@ -41,6 +46,7 @@ func WaitAndMoveDownload(
 	// Timeout for download wait: default 10 minutes
 	deadline := time.Now().Add(10 * time.Minute)
 
+	var lastSize int64 = -1
 	for {
 		select {
 		case <-ctx.Done():
@@ -52,29 +58,22 @@ func WaitAndMoveDownload(
 			return "", NewError(ErrGenerationTimeout, "Quá thời gian tải file.")
 		}
 
-		// Check if any .crdownload file exists in the downloadDir
-		files, err := os.ReadDir(downloadDir)
-		if err != nil {
+		// File .crdownload của CHÍNH download này vẫn còn → đang tải, chờ tiếp.
+		if _, err := os.Stat(crDownloadPath); err == nil {
+			lastSize = -1 // reset theo dõi kích thước ổn định
 			continue
 		}
 
-		hasCrDownload := false
-		for _, f := range files {
-			if strings.HasSuffix(f.Name(), ".crdownload") {
-				hasCrDownload = true
-				break
-			}
+		// File đích đã tồn tại và kích thước không đổi giữa 2 vòng poll → coi như
+		// Chrome đã ghi xong (chờ size ổn định thay cho sleep cứng, chắc chắn hơn).
+		info, err := os.Stat(tempPath)
+		if err != nil || info.Size() == 0 {
+			continue
 		}
-
-		// If no .crdownload and the tempPath exists with size > 0
-		if !hasCrDownload {
-			info, err := os.Stat(tempPath)
-			if err == nil && info.Size() > 0 {
-				// Let's sleep a tiny bit to make sure writing is fully flushed
-				time.Sleep(500 * time.Millisecond)
-				break
-			}
+		if info.Size() == lastSize {
+			break
 		}
+		lastSize = info.Size()
 	}
 
 	// 3. Validate file

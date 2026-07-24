@@ -155,7 +155,8 @@ func GenerateGeminiImage(
 	}
 
 	tm.EmitStatus(TaskStateDownloading, "Đang tải ảnh xuống...", 85)
-	waitDownload := session.browser.WaitDownload(session.downloadDir)
+	downloadDir := session.DownloadDir()
+	waitDownload := session.Browser().WaitDownload(downloadDir)
 	err = downloadBtn.Click(proto.InputMouseButtonLeft, 1)
 	if err != nil {
 		return nil, fmt.Errorf("click download button: %w", err)
@@ -165,9 +166,9 @@ func GenerateGeminiImage(
 	if active := tm.GetActiveTask(); active != nil {
 		taskID = active.ID
 	}
-	tempOutputDir := filepath.Join(session.downloadDir, "preview_temp", taskID)
+	tempOutputDir := filepath.Join(downloadDir, "preview_temp", taskID)
 
-	filePath, err := WaitAndMoveDownload(ctx, waitDownload, session.downloadDir, tempOutputDir, fmt.Sprintf("temp_%d", 1), MediaTypeImage)
+	filePath, err := WaitAndMoveDownload(ctx, waitDownload, downloadDir, tempOutputDir, fmt.Sprintf("temp_%d", 1), MediaTypeImage)
 	if err != nil {
 		return nil, err
 	}

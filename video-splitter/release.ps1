@@ -126,20 +126,33 @@ if (-not $SkipBuild -and -not $SkipWorker) {
             Revert-VersionCode
             exit 1
         }
-        # build_worker.bat ghi vao video-splitter\bin\worker.exe -> chep sang Dist\bin.
-        $builtWorker = Join-Path $scriptDir "bin\worker.exe"
-        if (Test-Path $builtWorker) {
-            $distBin = Join-Path $Dist "bin"
-            if (-not (Test-Path $distBin)) { New-Item -ItemType Directory -Path $distBin | Out-Null }
-            Copy-Item $builtWorker $distWorker -Force
-            Write-Host "      Da chep worker.exe moi vao $distBin" -ForegroundColor Gray
-        } else {
-            Write-Host "LOI: Khong thay worker.exe sau khi build." -ForegroundColor Red
-            Revert-VersionCode
-            exit 1
-        }
     } else {
         Write-Host "`n[1/8] worker.exe da moi hon python_worker -> bo qua build worker." -ForegroundColor Gray
+    }
+}
+
+# --- 2.6. Tu dong dong bo tat ca file binaries/python build tu .\bin sang release_dist\bin ---
+$srcBinDir = Join-Path $scriptDir "bin"
+$distBinDir = Join-Path $Dist "bin"
+if (-not (Test-Path $distBinDir)) { New-Item -ItemType Directory -Path $distBinDir | Out-Null }
+
+if (Test-Path $srcBinDir) {
+    $binFiles = Get-ChildItem -Path $srcBinDir -File -ErrorAction SilentlyContinue
+    foreach ($bf in $binFiles) {
+        $destPath = Join-Path $distBinDir $bf.Name
+        $shouldCopy = $false
+        if (-not (Test-Path $destPath)) {
+            $shouldCopy = $true
+        } else {
+            $destFile = Get-Item $destPath
+            if ($bf.LastWriteTimeUtc -gt $destFile.LastWriteTimeUtc -or $bf.Length -ne $destFile.Length) {
+                $shouldCopy = $true
+            }
+        }
+        if ($shouldCopy) {
+            Copy-Item $bf.FullName $destPath -Force
+            Write-Host "      [Auto-Sync] Da coppy file moi sang release_dist\bin: $($bf.Name)" -ForegroundColor Green
+        }
     }
 }
 

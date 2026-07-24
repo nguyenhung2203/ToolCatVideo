@@ -126,6 +126,7 @@ func (b *BrowserSession) Start(
 				// Browser is already running with requested headless mode, just navigate/create target
 				page, err := b.browser.Page(proto.TargetCreateTarget{URL: startURL})
 				if err == nil {
+					applyStealthScript(page)
 					enableFocusEmulation(page)
 					b.page = page
 					return nil
@@ -221,6 +222,7 @@ func (b *BrowserSession) Start(
 		return fmt.Errorf("open page: %w", err)
 	}
 	enableFocusEmulation(page)
+	applyStealthScript(page)
 
 	b.launcher = l
 	b.chromeCmd = chromeCmd
@@ -244,6 +246,53 @@ func enableFocusEmulation(page *rod.Page) {
 		return
 	}
 	_ = proto.EmulationSetFocusEmulationEnabled{Enabled: true}.Call(page)
+}
+
+// stealthScript là script ẩn danh (chống phát hiện webdriver/bot của Google) chạy
+// TRƯỚC mọi tài liệu của trang qua EvalOnNewDocument, nên có hiệu lực cho cả các
+// lần navigate sau. Đăng ký ĐÚNG MỘT LẦN cho mỗi page mới (applyStealthScript) —
+// nếu gọi lại trên page tái dùng thì mỗi lần sẽ chồng thêm một bản script y hệt.
+const stealthScript = `() => {
+	// 1. Ghi đè navigator.webdriver thành undefined để chống phát hiện tự động
+	Object.defineProperty(navigator, 'webdriver', {
+		get: () => undefined
+	});
+
+	// 2. Xóa các biến signature ẩn của Chrome DevTools Protocol
+	try {
+		delete window.cdc_adoQyhkntgdgCwRuuFormiP_Array;
+		delete window.cdc_adoQyhkntgdgCwRuuFormiP_Promise;
+	} catch (e) {}
+
+	// 3. Giả lập chrome object giống trình duyệt người dùng bình thường
+	window.chrome = {
+		runtime: {},
+		loadTimes: function() {},
+		csi: function() {},
+		app: {}
+	};
+
+	// 4. Khai báo plugins giả
+	Object.defineProperty(navigator, 'plugins', {
+		get: () => [
+			{ name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+			{ name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
+		]
+	});
+
+	// 5. Khai báo danh sách ngôn ngữ chuẩn
+	Object.defineProperty(navigator, 'languages', {
+		get: () => ['vi-VN', 'vi', 'en-US', 'en']
+	});
+}`
+
+// applyStealthScript đăng ký stealthScript cho một page MỚI. Chỉ gọi tại nơi thực
+// sự tạo page mới, không gọi trên page tái dùng để tránh chồng script trùng lặp.
+func applyStealthScript(page *rod.Page) {
+	if page == nil {
+		return
+	}
+	_, _ = page.EvalOnNewDocument(stealthScript)
 }
 
 func (b *BrowserSession) GetPage() (*rod.Page, error) {
@@ -273,6 +322,7 @@ func (b *BrowserSession) NewPage(startURL string) (*rod.Page, error) {
 		return nil, fmt.Errorf("mở cửa sổ mới: %w", err)
 	}
 	enableFocusEmulation(page)
+	applyStealthScript(page)
 	return page, nil
 }
 
@@ -308,6 +358,7 @@ func (b *BrowserSession) AcquirePageForWorker(workerID int, startURL string) (pa
 		return nil, false, fmt.Errorf("mở cửa sổ mới: %w", err)
 	}
 	enableFocusEmulation(newPage)
+	applyStealthScript(newPage)
 	return newPage, false, nil
 }
 

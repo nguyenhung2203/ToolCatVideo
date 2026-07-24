@@ -58,8 +58,16 @@ export function ExtractClipFrames(arg1, arg2, arg3) {
   return window['go']['main']['App']['ExtractClipFrames'](arg1, arg2, arg3);
 }
 
+export function FetchGoogleSheetStructure(arg1, arg2) {
+  return window['go']['main']['App']['FetchGoogleSheetStructure'](arg1, arg2);
+}
+
 export function FetchImageAsBase64(arg1) {
   return window['go']['main']['App']['FetchImageAsBase64'](arg1);
+}
+
+export function GenerateAIContentText(arg1, arg2) {
+  return window['go']['main']['App']['GenerateAIContentText'](arg1, arg2);
 }
 
 export function GenerateAIThumbnail(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
@@ -90,6 +98,10 @@ export function GetGlobalSettings() {
   return window['go']['main']['App']['GetGlobalSettings']();
 }
 
+export function GetGoogleAppsScriptTemplate() {
+  return window['go']['main']['App']['GetGoogleAppsScriptTemplate']();
+}
+
 export function GetStreamURL(arg1) {
   return window['go']['main']['App']['GetStreamURL'](arg1);
 }
@@ -118,8 +130,20 @@ export function OpenWebURL(arg1) {
   return window['go']['main']['App']['OpenWebURL'](arg1);
 }
 
+export function ParseGoogleSheetLink(arg1) {
+  return window['go']['main']['App']['ParseGoogleSheetLink'](arg1);
+}
+
 export function ProbeOnlineURL(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['ProbeOnlineURL'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function PushGoogleSheetBatch(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['PushGoogleSheetBatch'](arg1, arg2, arg3, arg4);
+}
+
+export function PushGoogleSheetRow(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['PushGoogleSheetRow'](arg1, arg2, arg3, arg4);
 }
 
 export function SaveGlobalSettings(arg1) {

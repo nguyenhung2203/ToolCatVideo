@@ -22,6 +22,18 @@ var aspectTargets = map[string][2]int{
 	"16:9": {1920, 1080},
 }
 
+// cardEnabled trả về true nếu card/banner cần render. Chế độ "image" yêu cầu có ImgPath;
+// "preset"/"color" luôn dựng được (không cần input phụ).
+func cardEnabled(c project.CardOp) bool {
+	if !c.Enabled {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(c.Mode)) == "image" {
+		return strings.TrimSpace(c.ImgPath) != ""
+	}
+	return true
+}
+
 // needsReencode kiểm tra xem clip có bất kỳ filter/chỉnh sửa nào cần re-encode hay không.
 // Nếu tất cả filter đều tắt (tỷ lệ, màu, tốc độ, text, watermark, nhạc nền, flip...),
 // ta có thể dùng stream-copy (-c copy) để cắt nhanh gấp 5-20 lần.
@@ -46,6 +58,10 @@ func needsReencode(e project.EditOps) bool {
 		}
 	}
 	if e.Watermark.Enabled && e.Watermark.ImgPath != "" {
+		return true
+	}
+	// Card/banner: bật (chế độ image phải có ảnh; preset/color luôn dựng được).
+	if cardEnabled(e.Card) {
 		return true
 	}
 	if e.Audio.MusicPath != "" || len(e.Audio.MusicTracks) > 0 {
@@ -178,7 +194,28 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 	}
 
 	frameW, frameH := outputFrameSize(inputPath, e)
-	vOut, aOut, complexParts, textFiles, err := buildGraph(e, dur, wmIdx, musicIdx, frameW, frameH)
+
+	// Card/banner: render thành PNG (đúng kích thước px trong khung xuất) rồi overlay.
+	// Đặt làm input CUỐI cùng để KHÔNG lệch wmIdx/musicIdx đã gán ở trên.
+	cardIdx := -1
+	cardPath := ""
+	if cardEnabled(e.Card) {
+		p, cerr := renderCardPNG(e.Card, frameW, frameH)
+		if cerr != nil {
+			return cerr
+		}
+		cardPath = p
+		tmpFiles = append(tmpFiles, p)
+		cardIdx = 1
+		if wmIdx >= 0 {
+			cardIdx++
+		}
+		if musicIdx >= 0 {
+			cardIdx++
+		}
+	}
+
+	vOut, aOut, complexParts, textFiles, err := buildGraph(e, dur, wmIdx, musicIdx, cardIdx, frameW, frameH)
 	if err != nil {
 		return err
 	}
@@ -204,6 +241,10 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 				args = append(args, "-stream_loop", "-1") // Lặp vô hạn nhạc nền
 			}
 			args = append(args, "-i", musicPathToUse)
+		}
+		// Card PNG là input CUỐI cùng (khớp cardIdx tính ở trên).
+		if cardPath != "" {
+			args = append(args, "-i", cardPath)
 		}
 		if len(complexParts) > 0 {
 			args = append(args, "-filter_complex", strings.Join(complexParts, ";"))
@@ -366,7 +407,7 @@ func getEncoderParams(hwAccel string, preset string, crf int) (encoder string, e
 // buildGraph dựng toàn bộ filter_complex cho một clip. Trả về nhãn map video/audio,
 // các đoạn filter (nối bằng ';'), và danh sách file text tạm đã tạo cho drawtext.
 // Nếu không có thao tác nào cần filter, trả về complexParts rỗng (caller map thẳng).
-func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, frameW, frameH int) (vOut, aOut string, parts []string, textFiles []string, err error) {
+func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, cardIdx, frameW, frameH int) (vOut, aOut string, parts []string, textFiles []string, err error) {
 	// --- Nhánh VIDEO ---
 	vSteps := []string{"setpts=PTS-STARTPTS"}
 
@@ -467,7 +508,32 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, frameW, frameH 
 		vSteps = append(vSteps, fmt.Sprintf("noise=alls=%d:allf=t", s))
 	}
 
-	// Text overlay (drawtext) — mỗi TextOp một bộ lọc, dùng textfile để an toàn Unicode.
+	// === Ghép nền video (hình học + màu + nhiễu) TRƯỚC, để overlay card nằm DƯỚI chữ ===
+	// Nhánh nền tuyến tính: setpts/hflip/crop/rotate/zoom/aspect/color/noise → [vpre].
+	linearPre := strings.Join(vSteps, ",")
+	preLabel := "[vpre]"
+	if blurGraph != "" {
+		parts = append(parts, fmt.Sprintf("[0:v]%s,%s%s", linearPre, blurGraph, preLabel))
+	} else {
+		parts = append(parts, fmt.Sprintf("[0:v]%s%s", linearPre, preLabel))
+	}
+	curLabel := preLabel
+
+	// Overlay Card/banner (NỀN, nằm dưới chữ). Card đã render sẵn thành PNG (cardIdx).
+	// Card.X/Card.Y là phân số 0..1 (fx=0 mép trái, fx=1 mép phải, 0.5 giữa) — khớp cách
+	// preview đặt card theo % không gian trống. Thời gian hiện qua enable=between(...).
+	if cardIdx >= 0 {
+		fx := parseFrac(e.Card.X, 0.5)
+		fy := parseFrac(e.Card.Y, 0.5)
+		parts = append(parts, fmt.Sprintf("[%d:v]format=rgba[cardimg]", cardIdx))
+		parts = append(parts, fmt.Sprintf(
+			"%s[cardimg]overlay=(main_w-overlay_w)*%s:(main_h-overlay_h)*%s%s[vcard]",
+			curLabel, trimFloat(fx), trimFloat(fy), betweenEnable(e.Card.StartTime, e.Card.EndTime)))
+		curLabel = "[vcard]"
+	}
+
+	// Chữ + phụ đề (nằm TRÊN card). Áp tuyến tính lên nhánh hiện tại → [vtext].
+	var textSteps []string
 	fontPath := utils.GetFontPath()
 	for i, t := range e.Texts {
 		if strings.TrimSpace(t.Content) == "" || fontPath == "" {
@@ -478,9 +544,8 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, frameW, frameH 
 			return "", "", nil, textFiles, ferr
 		}
 		textFiles = append(textFiles, txtFile)
-		vSteps = append(vSteps, drawText(t, fontPath, txtFile))
+		textSteps = append(textSteps, drawText(t, fontPath, txtFile))
 	}
-
 	// Phụ đề burn-in (hardsub) — render sau drawtext để nằm trên khung kích thước cuối.
 	if e.Subtitle.Enabled && strings.TrimSpace(e.Subtitle.Path) != "" {
 		sub := e.Subtitle
@@ -492,17 +557,14 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, frameW, frameH 
 			textFiles = append(textFiles, positionedPath)
 			sub.Path = positionedPath
 		}
-		vSteps = append(vSteps, subtitleFilter(sub))
+		textSteps = append(textSteps, subtitleFilter(sub))
+	}
+	if len(textSteps) > 0 {
+		parts = append(parts, fmt.Sprintf("%s%s[vtext]", curLabel, strings.Join(textSteps, ",")))
+		curLabel = "[vtext]"
 	}
 
-	// Ghép nhánh video tuyến tính.
-	linearV := strings.Join(vSteps, ",")
-	vLabel := "[vbase]"
-	if blurGraph != "" {
-		parts = append(parts, fmt.Sprintf("[0:v]%s,%s%s", linearV, blurGraph, vLabel))
-	} else {
-		parts = append(parts, fmt.Sprintf("[0:v]%s%s", linearV, vLabel))
-	}
+	vLabel := curLabel
 
 	// Watermark overlay (input phụ): scale + opacity rồi overlay lên video.
 	if wmIdx >= 0 {
@@ -525,7 +587,8 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, frameW, frameH 
 		parts = append(parts, fmt.Sprintf(
 			"[%d:v]scale=iw*%s:-1,format=rgba,colorchannelmixer=aa=%s[wm]",
 			wmIdx, trimFloat(scale), trimFloat(opacity)))
-		parts = append(parts, fmt.Sprintf("%s[wm]overlay=%s:%s[vout]", vLabel, x, y))
+		parts = append(parts, fmt.Sprintf("%s[wm]overlay=%s:%s%s[vout]",
+			vLabel, x, y, betweenEnable(e.Watermark.StartTime, e.Watermark.EndTime)))
 		vOut = "[vout]"
 	} else {
 		vOut = vLabel
@@ -1258,6 +1321,36 @@ func atempoChain(speed float64) []float64 {
 // trimFloat format float gọn (bỏ số 0 thừa) để lệnh ffmpeg sạch.
 func trimFloat(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// parseFrac đọc vị trí dạng phân số 0..1 từ chuỗi (UI card gửi "0.5", "0.75"...).
+// Kẹp về [0,1]; rỗng/không parse được thì trả fallback.
+func parseFrac(s string, fallback float64) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return fallback
+	}
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+// betweenEnable dựng option ':enable=between(t,start,end)' cho overlay theo thời gian.
+// end<=0 nghĩa là hiện tới hết clip (dùng 1e9 như drawText). Trả chuỗi rỗng nếu
+// không giới hạn thời gian (start<=0 và end<=0) để giữ overlay suốt clip như cũ.
+func betweenEnable(start, end float64) string {
+	if start <= 0 && end <= 0 {
+		return ""
+	}
+	e := end
+	if e <= 0 {
+		e = 1e9
+	}
+	return fmt.Sprintf(":enable='between(t,%s,%s)'", trimFloat(start), trimFloat(e))
 }
 
 // mergeMusicTracks ghép nối tiếp nhiều bài nhạc nền thành một file MP3 duy nhất.

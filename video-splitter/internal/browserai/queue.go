@@ -128,6 +128,14 @@ func (qm *AIQueueManager) SetContext(ctx context.Context) {
 	qm.ctx = ctx
 }
 
+// appCtx đọc ctx ứng dụng (Wails) an toàn dưới khóa. qm.ctx set một lần lúc
+// Startup nhưng worker chạy ở goroutine khác nên đọc trực tiếp là data race.
+func (qm *AIQueueManager) appCtx() context.Context {
+	qm.mu.Lock()
+	defer qm.mu.Unlock()
+	return qm.ctx
+}
+
 // SetConcurrency đặt số worker (tab) chạy song song cho Hàng Đợi AI.
 // Giá trị được kẹp trong [1, MaxBrowserConcurrency]. Thay đổi chỉ áp dụng cho
 // lần chạy hàng đợi kế tiếp (không tác động tới các worker đang chạy).
@@ -425,6 +433,7 @@ func (qm *AIQueueManager) retireWorker(ctx context.Context, workerID int) {
 
 // worker cấp tab (tận dụng tab gốc nếu workerID == 0) và xử lý các task cho tới khi hết hoặc ctx bị hủy.
 func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
+	appCtx := qm.appCtx()
 	flowURL := "https://labs.google/fx/vi/tools/flow"
 	page, isRoot, err := qm.service.session.AcquirePageForWorker(workerID, flowURL)
 	if err != nil {
@@ -541,8 +550,8 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			}
 		}
 		emitLog := func(level, step string) {
-			if qm.ctx != nil {
-				runtime.EventsEmit(qm.ctx, "browser-ai:queue-log", map[string]interface{}{
+			if appCtx != nil {
+				runtime.EventsEmit(appCtx, "browser-ai:queue-log", map[string]interface{}{
 					"worker": workerID + 1,
 					"name":   task.ClipName,
 					"level":  level,
@@ -616,9 +625,9 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 				flowLogf("[W%d %s] Ghép intro vào clip thất bại: %v", workerID+1, task.ClipName, mergeErr)
 				emitLog("error", "Ghép intro lỗi: "+mergeErr.Error())
 				qm.mu.Unlock()
-				if qm.ctx != nil {
-					runtime.EventsEmit(qm.ctx, "export_log", fmt.Sprintf("⚠ %s: Ghép ảnh bìa vào đầu video thất bại (%v).", task.ClipName, mergeErr))
-					runtime.EventsEmit(qm.ctx, "clip_ai_thumb_failed", failedTask)
+				if appCtx != nil {
+					runtime.EventsEmit(appCtx, "export_log", fmt.Sprintf("⚠ %s: Ghép ảnh bìa vào đầu video thất bại (%v).", task.ClipName, mergeErr))
+					runtime.EventsEmit(appCtx, "clip_ai_thumb_failed", failedTask)
 				}
 			} else {
 				qm.tasks[idx].State = QueueStateCompleted
@@ -631,8 +640,8 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 				} else {
 					emitLog("success", "Đã ghép ảnh bìa AI vào đầu video")
 				}
-				if qm.ctx != nil {
-					runtime.EventsEmit(qm.ctx, "clip_ai_thumb_completed", completedTask)
+				if appCtx != nil {
+					runtime.EventsEmit(appCtx, "clip_ai_thumb_completed", completedTask)
 				}
 			}
 			qm.emitProgress()
@@ -647,9 +656,9 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			flowLogf("[W%d %s] KHÔNG tạo được thumbnail: %v", workerID+1, task.ClipName, genErr)
 			emitLog("error", "Thất bại: "+genErr.Error())
 			// Cảnh báo người dùng: clip này KHÔNG còn ảnh dự phòng (đã bỏ frame gốc).
-			if qm.ctx != nil {
-				runtime.EventsEmit(qm.ctx, "export_log", fmt.Sprintf("⚠ %s: KHÔNG tạo được ảnh thumbnail AI (%v). Clip này hiện chưa có ảnh bìa.", task.ClipName, genErr))
-				runtime.EventsEmit(qm.ctx, "clip_ai_thumb_failed", failedTask)
+			if appCtx != nil {
+				runtime.EventsEmit(appCtx, "export_log", fmt.Sprintf("⚠ %s: KHÔNG tạo được ảnh thumbnail AI (%v). Clip này hiện chưa có ảnh bìa.", task.ClipName, genErr))
+				runtime.EventsEmit(appCtx, "clip_ai_thumb_failed", failedTask)
 			}
 		} else {
 			qm.tasks[idx].State = QueueStateCompleted
@@ -663,8 +672,8 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			} else {
 				emitLog("success", "Đã tạo xong ảnh")
 			}
-			if qm.ctx != nil {
-				runtime.EventsEmit(qm.ctx, "clip_ai_thumb_completed", completedTask)
+			if appCtx != nil {
+				runtime.EventsEmit(appCtx, "clip_ai_thumb_completed", completedTask)
 			}
 		}
 		qm.mu.Unlock()

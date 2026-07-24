@@ -11,12 +11,16 @@ const props = defineProps<{
   exportProgress?: { done: number; total: number }
   exportStatusText?: string
   etaText?: string
+  videos?: string[]
+  activeVideoIndex?: number
 }>()
 
 const emit = defineEmits<{
   (e: 'back'): void
-  (e: 'export'): void
+  (e: 'export', scenarioId: string): void
   (e: 'update:outputDir', dir: string): void
+  (e: 'selectVideo', index: number): void
+  (e: 'selectExternalVideo'): void
 }>()
 
 interface RemixScenario {
@@ -38,7 +42,7 @@ interface DraftText {
   selected?: boolean
 }
 
-type DragTarget = 'watermark' | 'subtitle' | `text:${string}` | null
+type DragTarget = 'watermark' | 'subtitle' | 'card' | `text:${string}` | null
 
 const STORAGE_KEY = 'remix_scenarios_list'
 
@@ -119,6 +123,8 @@ const draft = reactive({
   wmPos: 'br',
   wmX: 0.97,
   wmY: 0.97,
+  wmStartTime: 0,
+  wmEndTime: 0,
   muteOriginal: false,
   musicPath: '',
   musicVolume: 0.3,
@@ -138,6 +144,20 @@ const draft = reactive({
   textEnabled: false,
   texts: [] as DraftText[],
   randomText: false,
+  cardEnabled: false,
+  cardMode: 'preset' as 'preset' | 'color' | 'image',
+  cardPreset: 'glass',
+  cardImgPath: '',
+  cardColor: '#0f172a',
+  cardColor2: '#1e293b',
+  cardOpacity: 0.85,
+  cardX: 0.5,
+  cardY: 0.75,
+  cardWidth: 82,
+  cardHeight: 22,
+  cardBorderRadius: 12,
+  cardStartTime: 0,
+  cardEndTime: 0,
 })
 
 const selectedTextId = ref('')
@@ -223,6 +243,19 @@ const duplicateText = (text: DraftText) => {
   selectedTextId.value = copy.id
 }
 
+// Chỉ giữ các mẫu THỰC SỰ render được (có style CSS .card-preview-overlay.preset-* và
+// khớp bộ render PNG ở exporter/card.go). Bỏ các mẫu hoa văn cũ chưa có style/render để
+// preview luôn == video xuất.
+const patternPresets = [
+  { id: 'glass', name: 'Kính Mờ Glass' },
+  { id: 'gradient-purple', name: 'Tím Neon Gradient' },
+  { id: 'gold', name: 'Hoàng Gia Gold' },
+  { id: 'ribbon', name: 'Băng Rôn Đỏ' },
+  { id: 'vintage', name: 'Giấy Cổ Vintage' },
+  { id: 'neon', name: 'Viền Neon Cyan' },
+  { id: 'stripes', name: 'Sọc Chéo Stripes' },
+]
+
 const setWatermarkPosition = (x: number, y: number) => {
   draft.wmX = clamp01(x)
   draft.wmY = clamp01(y)
@@ -240,7 +273,7 @@ const setTextPosition = (text: DraftText, x: number, y: number) => {
 }
 
 
-const load = () => {
+function load() {
   const data = localStorage.getItem(STORAGE_KEY)
   if (data) {
     try { scenarios.value = JSON.parse(data) as RemixScenario[] } catch (e) { console.error(e) }
@@ -254,12 +287,118 @@ const load = () => {
   }
 }
 
-const persist = () => {
+function persist() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(scenarios.value))
   window.dispatchEvent(new Event('remix_scenarios_updated'))
 }
 
-onMounted(load)
+const cardStreamUrl = ref('')
+watch(() => draft.cardImgPath, async (p) => {
+  if (!p) { cardStreamUrl.value = ''; return }
+  try { cardStreamUrl.value = await GetStreamURL(p) } catch (e) { cardStreamUrl.value = '' }
+}, { immediate: true })
+
+const pickCardImage = async () => {
+  try {
+    const res = await SelectImageFile()
+    if (res) {
+      draft.cardImgPath = res
+      draft.cardMode = 'image'
+      draft.cardEnabled = true
+    }
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+const isCardVisible = computed(() => {
+  if (!draft.cardEnabled) return false
+  const st = Math.max(0, Number(draft.cardStartTime) || 0)
+  const et = Number(draft.cardEndTime) > st ? Number(draft.cardEndTime) : Number.POSITIVE_INFINITY
+  return currentSec.value >= st && currentSec.value <= et
+})
+
+const cardStyle = computed(() => {
+  const w = Math.min(100, Math.max(10, Number(draft.cardWidth) || 82))
+  const h = Math.min(100, Math.max(5, Number(draft.cardHeight) || 22))
+  const x = clamp01(Number(draft.cardX) ?? 0.5)
+  const y = clamp01(Number(draft.cardY) ?? 0.8)
+  const op = String(Math.min(1, Math.max(0.05, Number(draft.cardOpacity) || 0.85)))
+  const r = Number(draft.cardBorderRadius) || 12
+
+  const base: Record<string, string> = {
+    position: 'absolute',
+    width: `${w}%`,
+    height: `${h}%`,
+    left: `${x * (100 - Math.min(95, Math.max(10, w)))}%`,
+    top: `${y * (100 - Math.min(95, Math.max(5, h)))}%`,
+    borderRadius: `${r}px`,
+    opacity: op,
+    pointerEvents: 'auto',
+    cursor: dragTarget.value === 'card' ? 'grabbing' : 'grab',
+    touchAction: 'none',
+    zIndex: '3',
+  }
+  if (draft.cardMode === 'color') {
+    if (draft.cardColor2 && draft.cardColor2 !== draft.cardColor) {
+      base.background = `linear-gradient(135deg, ${draft.cardColor}, ${draft.cardColor2})`
+    } else {
+      base.backgroundColor = draft.cardColor || '#0f172a'
+    }
+  }
+  return base
+})
+
+const cardBlockStyle = computed(() => {
+  const total = Math.max(0.001, durationSec.value > 0 ? durationSec.value : 10)
+  const start = Math.min(total, Math.max(0, draft.cardStartTime || 0))
+  const end = draft.cardEndTime > start ? Math.min(total, draft.cardEndTime) : total
+  return {
+    left: `${(start / total) * 100}%`,
+    width: `${Math.max(1.2, ((end - start) / total) * 100)}%`,
+  }
+})
+
+const wmBlockStyle = computed(() => {
+  const total = Math.max(0.001, durationSec.value > 0 ? durationSec.value : 10)
+  const start = Math.min(total, Math.max(0, draft.wmStartTime || 0))
+  const end = draft.wmEndTime > start ? Math.min(total, draft.wmEndTime) : total
+  return {
+    left: `${(start / total) * 100}%`,
+    width: `${Math.max(1.2, ((end - start) / total) * 100)}%`,
+  }
+})
+
+const textTrackRows = computed(() => {
+  const texts = selectedTextsList.value
+  if (!texts.length) return []
+  
+  const total = Math.max(0.001, durationSec.value > 0 ? durationSec.value : 10)
+  const rows: DraftText[][] = []
+
+  for (const t of texts) {
+    const st = Math.max(0, t.startTime || 0)
+    const et = t.endTime > st ? Math.min(total, t.endTime) : total
+    
+    let placed = false
+    for (const row of rows) {
+      const overlap = row.some(existing => {
+        const est = Math.max(0, existing.startTime || 0)
+        const eet = existing.endTime > est ? Math.min(total, existing.endTime) : total
+        return !(et <= est || st >= eet)
+      })
+      if (!overlap) {
+        row.push(t)
+        placed = true
+        break
+      }
+    }
+    if (!placed) {
+      rows.push([t])
+    }
+  }
+  return rows
+})
 
 // Live Video Controls
 const togglePlay = () => {
@@ -343,51 +482,40 @@ const onMetadataLoaded = () => {
   }
 }
 
-// Tua video theo % vị trí click trên timeline. Đồng bộ lớp nền blur (nếu có) theo cùng mốc.
+// Tua video theo % vị trí click trên timeline. Đồng bộ lớp nền blur (nỗi có) theo cùng mốc.
 // Bề rộng cột nhãn track (🎬 Video V1...) bên trái — vùng KHÔNG tua được. Phải khớp
 // .track-head width trong CSS (84px) để playhead + click quy đổi cùng một mốc gốc.
 const TRACK_HEAD_W = 84
 
 const tracksRef = ref<HTMLElement | null>(null)
-let isVideoSeeking = false
 let pendingSeekTime: number | null = null
+let seekRAF = 0
 
 const performVideoSeek = (t: number) => {
   if (!videoRef.value) return
-  if (isVideoSeeking) {
-    pendingSeekTime = t
-    return
-  }
-  isVideoSeeking = true
-  pendingSeekTime = null
+  pendingSeekTime = t
 
-  const v = videoRef.value
-  const bg = bgVideoRef.value
+  if (seekRAF) return
+  seekRAF = requestAnimationFrame(() => {
+    seekRAF = 0
+    if (pendingSeekTime === null || !videoRef.value) return
+    const targetT = pendingSeekTime
+    pendingSeekTime = null
 
-  const onSeeked = () => {
-    v.removeEventListener('seeked', onSeeked)
-    isVideoSeeking = false
-    if (pendingSeekTime !== null) {
-      const nextTime = pendingSeekTime
-      pendingSeekTime = null
-      performVideoSeek(nextTime)
-    }
-  }
-
-  v.addEventListener('seeked', onSeeked, { once: true })
-  
-  if ('fastSeek' in v && typeof (v as any).fastSeek === 'function') {
     try {
-      (v as any).fastSeek(t)
+      if ('fastSeek' in videoRef.value && typeof (videoRef.value as any).fastSeek === 'function') {
+        (videoRef.value as any).fastSeek(targetT)
+      } else {
+        videoRef.value.currentTime = targetT
+      }
     } catch (e) {
-      v.currentTime = t
+      try { videoRef.value.currentTime = targetT } catch (err) {}
     }
-  } else {
-    v.currentTime = t
-  }
-  if (bg) {
-    try { bg.currentTime = t } catch (e) {}
-  }
+
+    if (bgVideoRef.value) {
+      try { bgVideoRef.value.currentTime = targetT } catch (e) {}
+    }
+  })
 }
 
 const applyTimelineSeek = (clientX: number) => {
@@ -480,13 +608,16 @@ const updateOverlayDrag = (e: PointerEvent) => {
   const frame = playerFrameRef.value.getBoundingClientRect()
   const left = e.clientX - frame.left - dragOffsetX
   const top = e.clientY - frame.top - dragOffsetY
-  if (dragTarget.value === 'watermark' || dragTarget.value.startsWith('text:')) {
+  if (dragTarget.value === 'watermark' || dragTarget.value === 'card' || dragTarget.value.startsWith('text:')) {
     const usableW = Math.max(1, frame.width - dragElementW)
     const usableH = Math.max(1, frame.height - dragElementH)
     const x = left / usableW
     const y = top / usableH
     if (dragTarget.value === 'watermark') setWatermarkPosition(x, y)
-    else {
+    else if (dragTarget.value === 'card') {
+      draft.cardX = clamp01(x)
+      draft.cardY = clamp01(y)
+    } else {
       const text = draft.texts.find(t => t.id === dragTarget.value?.slice(5))
       if (text) setTextPosition(text, x, y)
     }
@@ -513,6 +644,158 @@ const finishOverlayDrag = (e: PointerEvent) => {
   dragPointerId = -1
 }
 
+const selectCardPreset = (id: string) => {
+  draft.cardPreset = id
+  draft.cardEnabled = true
+  draft.cardMode = 'preset'
+
+  if (draft.cardEndTime <= draft.cardStartTime) {
+    draft.cardEndTime = durationSec.value > 0 ? durationSec.value : 0
+  }
+
+  const end = draft.cardEndTime > 0 ? draft.cardEndTime : Number.POSITIVE_INFINITY
+  if (currentSec.value < (draft.cardStartTime || 0) || currentSec.value > end) {
+    currentSec.value = draft.cardStartTime || 0
+    currentTimeStr.value = formatSeconds(currentSec.value)
+    performVideoSeek(currentSec.value)
+  }
+}
+
+const setCardColor = (c1: string, c2: string) => {
+  draft.cardColor = c1
+  draft.cardColor2 = c2
+  draft.cardEnabled = true
+  draft.cardMode = 'color'
+
+  const end = draft.cardEndTime > 0 ? draft.cardEndTime : Number.POSITIVE_INFINITY
+  if (currentSec.value < (draft.cardStartTime || 0) || currentSec.value > end) {
+    currentSec.value = draft.cardStartTime || 0
+    currentTimeStr.value = formatSeconds(currentSec.value)
+    performVideoSeek(currentSec.value)
+  }
+}
+
+let resizeSession: {
+  target: string
+  handle: 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e'
+  pointerId: number
+  startX: number
+  startY: number
+  initialCardWidth: number
+  initialCardHeight: number
+  initialCardX: number
+  initialCardY: number
+  initialWmScale: number
+  initialFontSize: number
+  initialRectWidth: number
+  initialRectHeight: number
+} | null = null
+
+const beginResizeHandle = (target: string, handle: 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e', e: PointerEvent) => {
+  if (!playerFrameRef.value) return
+  e.preventDefault()
+  e.stopPropagation()
+
+  const targetEl = (e.currentTarget as HTMLElement).closest('.draggable-overlay') as HTMLElement
+  const rect = targetEl ? targetEl.getBoundingClientRect() : { width: 100, height: 100 }
+  const text = target.startsWith('text:') ? draft.texts.find(t => t.id === target.slice(5)) : null
+
+  resizeSession = {
+    target,
+    handle,
+    pointerId: e.pointerId,
+    startX: e.clientX,
+    startY: e.clientY,
+    initialCardWidth: draft.cardWidth,
+    initialCardHeight: draft.cardHeight,
+    initialCardX: draft.cardX,
+    initialCardY: draft.cardY,
+    initialWmScale: draft.wmScale || 1.0,
+    initialFontSize: text ? text.fontSize : (target === 'subtitle' ? draft.subFontSize : 24),
+    initialRectWidth: rect.width,
+    initialRectHeight: rect.height,
+  }
+
+  if (target.startsWith('text:')) selectedTextId.value = target.slice(5)
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+}
+
+const updateResizeHandle = (e: PointerEvent) => {
+  if (!resizeSession || e.pointerId !== resizeSession.pointerId || !playerFrameRef.value) return
+  e.preventDefault()
+  e.stopPropagation()
+
+  const frameRect = playerFrameRef.value.getBoundingClientRect()
+  if (frameRect.width <= 0 || frameRect.height <= 0) return
+
+  const deltaX = e.clientX - resizeSession.startX
+  const deltaY = e.clientY - resizeSession.startY
+
+  const deltaPercentW = (deltaX / frameRect.width) * 100
+  const deltaPercentH = (deltaY / frameRect.height) * 100
+
+  const handle = resizeSession.handle
+  const target = resizeSession.target
+
+  if (target === 'card') {
+    let newWidth = resizeSession.initialCardWidth
+    let newHeight = resizeSession.initialCardHeight
+    let newX = resizeSession.initialCardX
+    let newY = resizeSession.initialCardY
+
+    // X axis
+    if (handle.includes('e')) {
+      newWidth = Math.min(100, Math.max(5, resizeSession.initialCardWidth + deltaPercentW))
+    } else if (handle.includes('w')) {
+      const wChange = -deltaPercentW
+      newWidth = Math.min(100, Math.max(5, resizeSession.initialCardWidth + wChange))
+      const xShift = (deltaX / frameRect.width)
+      newX = clamp01(resizeSession.initialCardX + xShift)
+    }
+
+    // Y axis
+    if (handle.includes('s')) {
+      newHeight = Math.min(100, Math.max(5, resizeSession.initialCardHeight + deltaPercentH))
+    } else if (handle.includes('n')) {
+      const hChange = -deltaPercentH
+      newHeight = Math.min(100, Math.max(5, resizeSession.initialCardHeight + hChange))
+      const yShift = (deltaY / frameRect.height)
+      newY = clamp01(resizeSession.initialCardY + yShift)
+    }
+
+    draft.cardWidth = Math.round(newWidth * 10) / 10
+    draft.cardHeight = Math.round(newHeight * 10) / 10
+    draft.cardX = Math.round(newX * 1000) / 1000
+    draft.cardY = Math.round(newY * 1000) / 1000
+  } else if (target === 'watermark') {
+    const dist = handle.includes('w') || handle.includes('n') ? -deltaX : deltaX
+    const scaleFactor = 1 + (dist / Math.max(1, resizeSession.initialRectWidth))
+    const newScale = Math.min(3.0, Math.max(0.1, resizeSession.initialWmScale * scaleFactor))
+    draft.wmScale = Math.round(newScale * 100) / 100
+  } else if (target.startsWith('text:')) {
+    const text = draft.texts.find(t => t.id === target.slice(5))
+    if (text) {
+      const dist = handle.includes('w') || handle.includes('n') ? -deltaX : deltaX
+      const scaleFactor = 1 + (dist / Math.max(1, resizeSession.initialRectWidth))
+      const newFontSize = Math.min(140, Math.max(10, resizeSession.initialFontSize * scaleFactor))
+      text.fontSize = Math.round(newFontSize)
+    }
+  } else if (target === 'subtitle') {
+    const dist = handle.includes('w') || handle.includes('n') ? -deltaX : deltaX
+    const scaleFactor = 1 + (dist / Math.max(1, resizeSession.initialRectWidth))
+    const newFontSize = Math.min(100, Math.max(10, resizeSession.initialFontSize * scaleFactor))
+    draft.subFontSize = Math.round(newFontSize)
+  }
+}
+
+const finishResizeHandle = (e: PointerEvent) => {
+  if (!resizeSession || e.pointerId !== resizeSession.pointerId) return
+  updateResizeHandle(e)
+  const el = e.currentTarget as HTMLElement
+  if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
+  resizeSession = null
+}
+
 const cancelOverlayDrag = () => {
   dragTarget.value = null
   dragPointerId = -1
@@ -534,6 +817,10 @@ const onOverlayWheel = (e: WheelEvent, targetType: string) => {
     const step = 2
     const nextSize = draft.subFontSize + (isZoomIn ? step : -step)
     draft.subFontSize = Math.min(160, Math.max(10, nextSize))
+  } else if (targetType === 'card') {
+    const step = 2
+    draft.cardWidth = Math.min(98, Math.max(15, draft.cardWidth + (isZoomIn ? step : -step)))
+    draft.cardHeight = Math.min(80, Math.max(8, draft.cardHeight + (isZoomIn ? step : -step)))
   } else if (targetType.startsWith('text:')) {
     const textId = targetType.replace('text:', '')
     const targetText = draft.texts.find((t: DraftText) => t.id === textId)
@@ -567,6 +854,127 @@ const onFrameWheel = (e: WheelEvent) => {
     return
   }
 }
+
+// Timeline Card Block Dragging & Resizing Logic
+interface TimelineBlockDragSession {
+  type: 'card' | 'watermark' | 'text'
+  textObj?: DraftText
+  action: 'move' | 'resize-left' | 'resize-right'
+  startPointerX: number
+  initialStartTime: number
+  initialEndTime: number
+  totalDuration: number
+  pointerId: number
+  targetEl: HTMLElement | null
+}
+
+const blockDragSession = ref<TimelineBlockDragSession | null>(null)
+
+const onBlockPointerDown = (
+  type: 'card' | 'watermark' | 'text',
+  action: 'move' | 'resize-left' | 'resize-right',
+  e: PointerEvent,
+  textObj?: DraftText
+) => {
+  e.stopPropagation()
+  e.preventDefault()
+
+  const el = e.currentTarget as HTMLElement
+  el.setPointerCapture(e.pointerId)
+
+  const totalDuration = durationSec.value > 0 ? durationSec.value : 10
+  let initialStartTime = 0
+  let initialEndTime = totalDuration
+
+  if (type === 'card') {
+    initialStartTime = draft.cardStartTime || 0
+    initialEndTime = draft.cardEndTime > 0 ? draft.cardEndTime : totalDuration
+  } else if (type === 'watermark') {
+    initialStartTime = draft.wmStartTime || 0
+    initialEndTime = draft.wmEndTime > 0 ? draft.wmEndTime : totalDuration
+  } else if (type === 'text' && textObj) {
+    selectedTextId.value = textObj.id
+    initialStartTime = textObj.startTime || 0
+    initialEndTime = textObj.endTime > 0 ? textObj.endTime : totalDuration
+  }
+
+  blockDragSession.value = {
+    type,
+    textObj,
+    action,
+    startPointerX: e.clientX,
+    initialStartTime,
+    initialEndTime,
+    totalDuration,
+    pointerId: e.pointerId,
+    targetEl: el,
+  }
+}
+
+const onBlockPointerMove = (e: PointerEvent) => {
+  if (!blockDragSession.value) return
+  const session = blockDragSession.value
+  if (e.pointerId !== session.pointerId) return
+
+  const usableWidth = tracksRef.value ? Math.max(1, tracksRef.value.getBoundingClientRect().width - TRACK_HEAD_W) : 500
+  const dx = e.clientX - session.startPointerX
+  const dt = (dx / usableWidth) * session.totalDuration
+
+  let newStart = session.initialStartTime
+  let newEnd = session.initialEndTime
+
+  if (session.action === 'resize-left') {
+    newStart = Math.max(0, Math.min(session.initialEndTime - 0.2, session.initialStartTime + dt))
+    newStart = Math.round(newStart * 10) / 10
+    newEnd = session.initialEndTime
+  } else if (session.action === 'resize-right') {
+    newEnd = Math.max(session.initialStartTime + 0.2, Math.min(session.totalDuration, session.initialEndTime + dt))
+    if (newEnd >= session.totalDuration - 0.05) {
+      newEnd = 0
+    } else {
+      newEnd = Math.round(newEnd * 10) / 10
+    }
+    newStart = session.initialStartTime
+  } else if (session.action === 'move') {
+    const blockLen = session.initialEndTime - session.initialStartTime
+    newStart = Math.max(0, Math.min(session.totalDuration - blockLen, session.initialStartTime + dt))
+    newStart = Math.round(newStart * 10) / 10
+    if (session.initialEndTime > 0 && session.initialEndTime < session.totalDuration) {
+      newEnd = Math.round((newStart + blockLen) * 10) / 10
+    } else {
+      newEnd = 0
+    }
+  }
+
+  if (session.type === 'card') {
+    draft.cardStartTime = newStart
+    draft.cardEndTime = newEnd
+  } else if (session.type === 'watermark') {
+    draft.wmStartTime = newStart
+    draft.wmEndTime = newEnd
+  } else if (session.type === 'text' && session.textObj) {
+    session.textObj.startTime = newStart
+    session.textObj.endTime = newEnd
+  }
+
+  const seekTime = session.action === 'resize-right' && newEnd > 0 ? newEnd : newStart
+  currentSec.value = seekTime
+  currentTimeStr.value = formatSeconds(seekTime)
+  performVideoSeek(seekTime)
+}
+
+const onBlockPointerUp = (e: PointerEvent) => {
+  if (!blockDragSession.value) return
+  const session = blockDragSession.value
+  if (session.targetEl && session.targetEl.hasPointerCapture(e.pointerId)) {
+    session.targetEl.releasePointerCapture(e.pointerId)
+  }
+  blockDragSession.value = null
+}
+
+const onCardBlockPointerDown = (action: 'move' | 'resize-left' | 'resize-right', e: PointerEvent) => onBlockPointerDown('card', action, e)
+const onCardBlockPointerMove = (e: PointerEvent) => onBlockPointerMove(e)
+const onCardBlockPointerUp = (e: PointerEvent) => onBlockPointerUp(e)
 
 const onGlobalKeyDown = (e: KeyboardEvent) => {
   if (e.key === 'Escape') {
@@ -737,12 +1145,14 @@ const resetDraft = () => {
     rotateEnabled: false, rotateDegrees: 1.5,
     noiseEnabled: false, noiseStrength: 10,
     trimStart: 0, trimEnd: 0, pitch: 0, stripMeta: false,
-    wmEnabled: false, wmPath: '', wmScale: 0.2, wmOpacity: 1.0, wmX: 0.97, wmY: 0.97,
+    wmEnabled: false, wmPath: '', wmScale: 0.2, wmOpacity: 1.0, wmX: 0.97, wmY: 0.97, wmStartTime: 0, wmEndTime: 0,
     muteOriginal: false, musicPath: '', musicVolume: 0.3, musicLoop: false,
     subEnabled: false, subPath: '', subFontSize: 24, subFontColor: '#ffffff', subOutlineColor: '#000000', subMarginV: 40,
     subX: 0.5, subY: 0.9, subHasCustomPosition: false,
     subAutoGen: false, subSourceLang: 'auto', subTargetLang: '', textEnabled: false, texts: [],
-    randomText: false,
+    randomText: false, cardEnabled: false, cardMode: 'preset', cardPreset: 'glass', cardImgPath: '',
+    cardColor: '#0f172a', cardColor2: '#1e293b', cardOpacity: 0.85, cardX: 0.5, cardY: 0.75,
+    cardWidth: 82, cardHeight: 22, cardBorderRadius: 12, cardStartTime: 0, cardEndTime: 0,
   })
   selectedTextId.value = ''
 }
@@ -773,6 +1183,22 @@ const draftToEdit = (): any => ({
     bgBox: !!t.bgBox,
     selected: t.selected !== false,
   })),
+  card: {
+    enabled: draft.cardEnabled,
+    mode: draft.cardMode,
+    preset: draft.cardPreset,
+    imgPath: draft.cardImgPath,
+    color: draft.cardColor,
+    color2: draft.cardColor2,
+    opacity: draft.cardOpacity,
+    x: String(clamp01(draft.cardX)),
+    y: String(clamp01(draft.cardY)),
+    width: draft.cardWidth,
+    height: draft.cardHeight,
+    borderRadius: draft.cardBorderRadius,
+    startTime: Math.max(0, draft.cardStartTime || 0),
+    endTime: draft.cardEndTime > 0 ? Math.max(draft.cardStartTime || 0, draft.cardEndTime) : 0,
+  },
   watermark: {
     enabled: draft.wmEnabled,
     imgPath: draft.wmPath,
@@ -780,6 +1206,8 @@ const draftToEdit = (): any => ({
     y: coordExpr('y', draft.wmY, 'watermark'),
     scale: draft.wmScale,
     opacity: draft.wmOpacity,
+    startTime: Math.max(0, draft.wmStartTime || 0),
+    endTime: draft.wmEndTime > 0 ? Math.max(draft.wmStartTime || 0, draft.wmEndTime) : 0,
   },
   audio: { mute: draft.muteOriginal, musicPath: draft.musicPath, musicVolume: draft.musicVolume, musicLoop: draft.musicLoop, musicTracks: draft.musicPath ? [draft.musicPath] : [], volume: 1, fadeIn: 0, fadeOut: 0 },
   subtitle: {
@@ -820,8 +1248,26 @@ const editToDraft = (e: any) => {
     draft.wmOpacity = e.watermark.opacity ?? 1.0
     draft.wmX = parseNormalizedExpr(e.watermark.x, 'x', 'watermark', 0.97)
     draft.wmY = parseNormalizedExpr(e.watermark.y, 'y', 'watermark', 0.97)
+    draft.wmStartTime = Math.max(0, e.watermark.startTime || 0)
+    draft.wmEndTime = Math.max(0, e.watermark.endTime || 0)
   }
   if (e.audio) { draft.muteOriginal = !!e.audio.mute; draft.musicPath = e.audio.musicPath || (e.audio.musicTracks && e.audio.musicTracks[0]) || ''; draft.musicVolume = e.audio.musicVolume ?? 0.3; draft.musicLoop = !!e.audio.musicLoop }
+  if (e.card) {
+    draft.cardEnabled = !!e.card.enabled
+    draft.cardMode = e.card.mode || 'preset'
+    draft.cardPreset = e.card.preset || 'glass'
+    draft.cardImgPath = e.card.imgPath || ''
+    draft.cardColor = e.card.color || '#0f172a'
+    draft.cardColor2 = e.card.color2 || '#1e293b'
+    draft.cardOpacity = e.card.opacity ?? 0.85
+    draft.cardX = parseNormalizedExpr(e.card.x, 'x', 'watermark', 0.5)
+    draft.cardY = parseNormalizedExpr(e.card.y, 'y', 'watermark', 0.75)
+    draft.cardWidth = e.card.width || 82
+    draft.cardHeight = e.card.height || 22
+    draft.cardBorderRadius = e.card.borderRadius ?? 12
+    draft.cardStartTime = Math.max(0, e.card.startTime || 0)
+    draft.cardEndTime = Math.max(0, e.card.endTime || 0)
+  }
   if (e.subtitle) {
     draft.subEnabled = !!e.subtitle.enabled
     draft.subPath = e.subtitle.path || ''
@@ -853,13 +1299,13 @@ const editToDraft = (e: any) => {
   selectedTextId.value = draft.texts[0]?.id || ''
 }
 
-const openNew = () => {
+function openNew() {
   editingId.value = 'new'
   draftName.value = `Kịch bản ${scenarios.value.length + 1}`
   resetDraft()
 }
 
-const openEdit = (s: RemixScenario) => {
+function openEdit(s: RemixScenario) {
   editingId.value = s.id
   draftName.value = s.name
   editToDraft(s.edit)
@@ -889,9 +1335,18 @@ const onSaveBtnClick = () => {
   saveScenario(false)
 }
 
-const exportCurrentScenario = () => {
+const exportCurrentScenario = async () => {
+  // Bấm xuất -> hiện hộp chọn thư mục lưu video trước, chọn xong mới xuất.
+  let dir = ''
+  try {
+    const mod: any = await import('../../wailsjs/go/main/App')
+    if (mod.SelectFolder) dir = await mod.SelectFolder()
+  } catch (e) { console.error(e) }
+  if (!dir) return // Hủy chọn thư mục -> không xuất.
+  emit('update:outputDir', dir)
   saveScenario(true)
-  emit('export')
+  // Truyền id kịch bản ĐANG MỞ để export áp đúng nó (không phụ thuộc tick ở tab Cắt & Xuất).
+  emit('export', editingId.value)
 }
 
 const duplicateScenario = (s: RemixScenario) => {
@@ -949,7 +1404,14 @@ const onScenarioChange = (event: Event) => {
   if (found) openEdit(found)
 }
 
+const onVideoChange = (event: Event) => {
+  const idx = parseInt((event.target as HTMLSelectElement).value, 10)
+  if (!Number.isNaN(idx)) emit('selectVideo', idx)
+}
+
 const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
+
+onMounted(load)
 </script>
 
 <template>
@@ -966,7 +1428,7 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
             @change="onScenarioChange"
             class="capcut-preset-select"
           >
-            <option v-for="s in scenarios" :key="s.id" :value="s.id">
+            <option v-for="s in scenarios" :key="s.id" :value="s.id" style="background-color: #0f172a; color: #f8fafc;">
               {{ s.name }}
             </option>
           </select>
@@ -978,17 +1440,23 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
 
       <div class="capcut-header-actions">
         <div style="display: flex; align-items: center; gap: 6px; background: rgba(0,0,0,0.3); border: 1px solid var(--wx-border-default); border-radius: 6px; padding: 2px 8px; height: 32px; margin-right: 4px;">
-          <span style="font-size: 11px; color: var(--wx-text-secondary); white-space: nowrap;">Thư mục lưu:</span>
-          <input
-            type="text"
-            :value="outputDir || 'D:\\Output'"
-            @change="emit('update:outputDir', ($event.target as HTMLInputElement).value)"
-            style="background: transparent; border: none; color: var(--wx-text-primary); font-size: 11px; font-family: monospace; width: 140px; outline: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-          />
+          <Video :size="13" style="color: var(--wx-text-secondary); flex-shrink: 0;" />
+          <select
+            v-if="videos && videos.length > 0"
+            :value="activeVideoIndex ?? 0"
+            @change="onVideoChange"
+            title="Chọn video để chỉnh sửa"
+            style="background: transparent; border: none; color: var(--wx-text-primary); font-size: 11px; max-width: 180px; outline: none; cursor: pointer;"
+          >
+            <option v-for="(p, i) in videos" :key="i" :value="i" style="background-color: #0f172a; color: #f8fafc;">
+              {{ fileName(p) }}
+            </option>
+          </select>
+          <span v-else style="font-size: 11px; color: var(--wx-text-secondary); white-space: nowrap;">Chưa có video</span>
           <button
             type="button"
-            @click="pickOutputDir"
-            title="Chọn thư mục lưu xuất video"
+            @click="emit('selectExternalVideo')"
+            title="Chọn video từ máy"
             style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #38bdf8; border-radius: 4px; padding: 3px 6px; cursor: pointer; display: flex; align-items: center; justify-content: center;"
           >
             <Folder :size="13" />
@@ -1281,6 +1749,89 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
               </div>
             </div>
 
+            <div class="text-editor-section" style="margin-bottom: 12px;">
+              <div class="text-section-head">
+                <div class="text-title-with-toggle">
+                  <label class="toggle-switch-lbl inline-toggle" title="Bật / Tắt chèn khung nền card">
+                    <input type="checkbox" v-model="draft.cardEnabled" />
+                    <span class="switch-slider"></span>
+                  </label>
+                  <span class="text-section-title">Chèn Nền Card / Banner đệm chữ</span>
+                </div>
+              </div>
+
+              <div v-if="draft.cardEnabled" class="sub-fields-group">
+                <!-- Chọn Mode: Mẫu hoa văn / Tự chọn màu / Tải ảnh -->
+                <div class="preset-color-chips">
+                  <button class="c-chip" :class="{ active: draft.cardMode === 'preset' }" @click="draft.cardMode = 'preset'">Mẫu Có Sẵn</button>
+                  <button class="c-chip" :class="{ active: draft.cardMode === 'color' }" @click="draft.cardMode = 'color'">Tự Chọn Màu Nền</button>
+                  <button class="c-chip" :class="{ active: draft.cardMode === 'image' }" @click="draft.cardMode = 'image'">Tải Ảnh Nền</button>
+                </div>
+
+                <!-- Mode Presets (Clean Text Chips, No Checkboxes) -->
+                <div v-if="draft.cardMode === 'preset'" class="card-presets-grid">
+                  <button
+                    v-for="p in patternPresets"
+                    :key="p.id"
+                    type="button"
+                    class="card-preset-chip"
+                    :class="{ active: draft.cardPreset === p.id }"
+                    @click="selectCardPreset(p.id)"
+                  >
+                    {{ p.name }}
+                  </button>
+                </div>
+
+                <!-- Mode Color (Color Pickers & Auto-seek Swatches) -->
+                <div v-else-if="draft.cardMode === 'color'" class="card-color-picker-group">
+                  <div class="inline-field-row editor-compact-row">
+                    <label>Màu 1: <input type="color" v-model="draft.cardColor" class="color-picker-input" @input="draft.cardEnabled = true" /></label>
+                    <label>Màu 2 (Gradient): <input type="color" v-model="draft.cardColor2" class="color-picker-input" @input="draft.cardEnabled = true" /></label>
+                  </div>
+                  <div class="quick-swatches">
+                    <button type="button" class="swatch-btn" style="background: #000000" title="Đen" @click="setCardColor('#000000', '#000000')"></button>
+                    <button type="button" class="swatch-btn" style="background: #0f172a" title="Xanh Đen" @click="setCardColor('#0f172a', '#1e293b')"></button>
+                    <button type="button" class="swatch-btn" style="background: #dc2626" title="Đỏ" @click="setCardColor('#dc2626', '#991b1b')"></button>
+                    <button type="button" class="swatch-btn" style="background: #eab308" title="Vàng Gold" @click="setCardColor('#eab308', '#ca8a04')"></button>
+                    <button type="button" class="swatch-btn" style="background: #9333ea" title="Tím Neon" @click="setCardColor('#9333ea', '#7e22ce')"></button>
+                    <button type="button" class="swatch-btn" style="background: #2563eb" title="Xanh Dương" @click="setCardColor('#2563eb', '#1d4ed8')"></button>
+                    <button type="button" class="swatch-btn" style="background: #059669" title="Xanh Lá" @click="setCardColor('#059669', '#047857')"></button>
+                    <button type="button" class="swatch-btn" style="background: #f97316" title="Cam Nắng" @click="setCardColor('#f97316', '#c2410c')"></button>
+                    <button type="button" class="swatch-btn" style="background: #ec4899" title="Hồng Cánh Sen" @click="setCardColor('#ec4899', '#be185d')"></button>
+                    <button type="button" class="swatch-btn" style="background: #ffffff" title="Trắng" @click="setCardColor('#ffffff', '#e2e8f0')"></button>
+                  </div>
+                </div>
+
+                <!-- Mode Image -->
+                <div v-else class="inline-field-row">
+                  <button class="btn-picker" @click="pickCardImage">Chọn File Ảnh Nền</button>
+                  <span class="file-name-hint">{{ fileName(draft.cardImgPath) || 'Chưa chọn ảnh' }}</span>
+                </div>
+
+                <!-- Sliders: Độ mờ & Bo góc -->
+                <div class="slider-field-group">
+                  <div class="slider-info-row"><span>Độ mờ nền: <strong>{{ Math.round(draft.cardOpacity * 100) }}%</strong></span></div>
+                  <input v-model.number="draft.cardOpacity" type="range" min="0.1" max="1" step="0.05" class="custom-range-slider" />
+                </div>
+                <div class="slider-field-group">
+                  <div class="slider-info-row"><span>Bo góc Card: <strong>{{ draft.cardBorderRadius }}px</strong></span></div>
+                  <input v-model.number="draft.cardBorderRadius" type="range" min="0" max="40" step="1" class="custom-range-slider" />
+                </div>
+
+                <!-- Timing & Pos -->
+                <div class="inline-field-row editor-compact-row">
+                  <label>Bắt đầu <input v-model.number="draft.cardStartTime" type="number" min="0" step="0.1" class="scenario-input-num" /></label>
+                  <label>Kết thúc <input v-model.number="draft.cardEndTime" type="number" min="0" step="0.1" class="scenario-input-num" /></label>
+                </div>
+                <div class="pos-grid-3">
+                  <button type="button" class="pos-mini-btn" @click="draft.cardX = 0.5; draft.cardY = 0.12">Trên</button>
+                  <button type="button" class="pos-mini-btn" @click="draft.cardX = 0.5; draft.cardY = 0.5">Giữa</button>
+                  <button type="button" class="pos-mini-btn" @click="draft.cardX = 0.5; draft.cardY = 0.8">Dưới</button>
+                </div>
+                <p class="drag-help">Kéo khung nền Card trực tiếp trên video để chỉnh vị trí chính xác. Giữ Ctrl + Cuộn chuột để đổi kích thước.</p>
+              </div>
+            </div>
+
             <div class="text-editor-section">
               <div class="text-section-head">
                 <div class="text-title-with-toggle">
@@ -1394,47 +1945,101 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
               <span class="sub-hint">(Thêm video ở tab "Cắt &amp; Xuất Video" để phát và xem hiệu ứng lật/màu sắc trực tiếp tại đây!)</span>
             </div>
 
-            <!-- Logo watermark thật — kéo trực tiếp & Ctrl + Cuộn chuột để phóng to/thu nhỏ. -->
-            <img
+            <!-- Card Nền Overlay (nằm phía sau text) -->
+            <div
+              v-if="draft.cardEnabled && isCardVisible"
+              :style="cardStyle"
+              class="draggable-overlay card-preview-overlay"
+              :class="[
+                `preset-${draft.cardPreset}`,
+                { 'active-selected': dragTarget === 'card' }
+              ]"
+              @pointerdown="beginOverlayDrag('card', $event)"
+              @pointermove="updateOverlayDrag"
+              @pointerup="finishOverlayDrag"
+              @pointercancel="cancelOverlayDrag"
+              @lostpointercapture="cancelOverlayDrag"
+              @wheel.prevent="onOverlayWheel($event, 'card')"
+            >
+              <img v-if="draft.cardMode === 'image' && cardStreamUrl" :src="cardStreamUrl" class="card-bg-img" alt="card" />
+
+              <!-- 8 Resize Handles (4 Góc + 4 Cạnh) -->
+              <div class="overlay-resize-handle handle-nw" title="Kéo dài/rộng góc trên-trái" @pointerdown.stop="beginResizeHandle('card', 'nw', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-ne" title="Kéo dài/rộng góc trên-phải" @pointerdown.stop="beginResizeHandle('card', 'ne', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-sw" title="Kéo dài/rộng góc dưới-trái" @pointerdown.stop="beginResizeHandle('card', 'sw', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-se" title="Kéo dài/rộng góc dưới-phải" @pointerdown.stop="beginResizeHandle('card', 'se', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-n" title="Kéo dãn viền trên" @pointerdown.stop="beginResizeHandle('card', 'n', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-s" title="Kéo dãn viền dưới" @pointerdown.stop="beginResizeHandle('card', 's', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-w" title="Kéo dãn viền trái" @pointerdown.stop="beginResizeHandle('card', 'w', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-e" title="Kéo dãn viền phải" @pointerdown.stop="beginResizeHandle('card', 'e', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+            </div>
+
+            <!-- Logo watermark thật -->
+            <div
               v-if="draft.wmEnabled && wmStreamUrl"
-              :src="wmStreamUrl"
               :style="wmStyle"
-              class="draggable-overlay"
-              alt="logo"
+              class="draggable-overlay wm-preview-overlay"
+              :class="{ 'active-selected': dragTarget === 'watermark' }"
               @pointerdown="beginOverlayDrag('watermark', $event)"
               @pointermove="updateOverlayDrag"
               @pointerup="finishOverlayDrag"
               @pointercancel="cancelOverlayDrag"
               @lostpointercapture="cancelOverlayDrag"
               @wheel.prevent="onOverlayWheel($event, 'watermark')"
-            />
+            >
+              <img :src="wmStreamUrl" class="overlay-img-content" alt="logo" />
 
-            <!-- Phụ đề mẫu — kéo & Ctrl + Cuộn chuột để đổi cỡ chữ. -->
+              <!-- 8 Resize Handles (4 Góc + 4 Cạnh) -->
+              <div class="overlay-resize-handle handle-nw" title="Phóng to/thu nhỏ góc trên-trái" @pointerdown.stop="beginResizeHandle('watermark', 'nw', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-ne" title="Phóng to/thu nhỏ góc trên-phải" @pointerdown.stop="beginResizeHandle('watermark', 'ne', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-sw" title="Phóng to/thu nhỏ góc dưới-trái" @pointerdown.stop="beginResizeHandle('watermark', 'sw', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-se" title="Phóng to/thu nhỏ góc dưới-phải" @pointerdown.stop="beginResizeHandle('watermark', 'se', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-n" title="Phóng to/thu nhỏ viền trên" @pointerdown.stop="beginResizeHandle('watermark', 'n', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-s" title="Phóng to/thu nhỏ viền dưới" @pointerdown.stop="beginResizeHandle('watermark', 's', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-w" title="Phóng to/thu nhỏ viền trái" @pointerdown.stop="beginResizeHandle('watermark', 'w', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-e" title="Phóng to/thu nhỏ viền phải" @pointerdown.stop="beginResizeHandle('watermark', 'e', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+            </div>
+
+            <!-- Phụ đề mẫu -->
             <div
               v-if="draft.subEnabled || draft.subAutoGen"
               :style="subStyle"
               class="draggable-overlay subtitle-preview-overlay"
+              :class="{ 'active-selected': dragTarget === 'subtitle' }"
               @pointerdown="beginOverlayDrag('subtitle', $event)"
               @pointermove="updateOverlayDrag"
               @pointerup="finishOverlayDrag"
               @pointercancel="cancelOverlayDrag"
               @lostpointercapture="cancelOverlayDrag"
               @wheel.prevent="onOverlayWheel($event, 'subtitle')"
-            >Phụ đề mẫu xem trước</div>
+            >
+              <span>Phụ đề mẫu xem trước</span>
+              <div class="overlay-resize-handle handle-nw" @pointerdown.stop="beginResizeHandle('subtitle', 'nw', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-ne" @pointerdown.stop="beginResizeHandle('subtitle', 'ne', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-sw" @pointerdown.stop="beginResizeHandle('subtitle', 'sw', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-se" @pointerdown.stop="beginResizeHandle('subtitle', 'se', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+            </div>
 
-            <!-- Text overlay thật — kéo & Ctrl + Cuộn chuột để tăng/giảm cỡ chữ. -->
+            <!-- Text overlay thật -->
             <div
               v-for="text in visibleTexts"
               :key="text.id"
               :style="textStyle(text)"
               class="draggable-overlay text-preview-overlay"
+              :class="{ 'active-selected': selectedTextId === text.id }"
               @pointerdown="beginOverlayDrag(`text:${text.id}`, $event)"
               @pointermove="updateOverlayDrag"
               @pointerup="finishOverlayDrag"
               @pointercancel="cancelOverlayDrag"
               @lostpointercapture="cancelOverlayDrag"
               @wheel.prevent="onOverlayWheel($event, `text:${text.id}`)"
-            >{{ text.content }}</div>
+            >
+              <span>{{ text.content }}</span>
+              <div class="overlay-resize-handle handle-nw" title="Tăng/giảm cỡ chữ" @pointerdown.stop="beginResizeHandle(`text:${text.id}`, 'nw', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-ne" title="Tăng/giảm cỡ chữ" @pointerdown.stop="beginResizeHandle(`text:${text.id}`, 'ne', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-sw" title="Tăng/giảm cỡ chữ" @pointerdown.stop="beginResizeHandle(`text:${text.id}`, 'sw', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+              <div class="overlay-resize-handle handle-se" title="Tăng/giảm cỡ chữ" @pointerdown.stop="beginResizeHandle(`text:${text.id}`, 'se', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
+            </div>
 
 
           </div>
@@ -1558,22 +2163,97 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
           </div>
         </div>
 
-        <!-- Track 4: Text overlays -->
-        <div class="timeline-track text-track" v-if="selectedTextsList.length">
-          <div class="track-head">Text T1</div>
+        <!-- Track 3.2: Logo Watermark -->
+        <div class="timeline-track wm-track" v-if="draft.wmEnabled && draft.wmPath">
+          <div class="track-head">Logo W1</div>
+          <div class="track-content wm-track-content">
+            <div
+              class="track-block wm-block"
+              :style="wmBlockStyle"
+              title="Logo Watermark"
+              @pointerdown.stop="onBlockPointerDown('watermark', 'move', $event)"
+              @pointermove="onBlockPointerMove"
+              @pointerup="onBlockPointerUp"
+              @pointercancel="onBlockPointerUp"
+            >
+              <div
+                class="block-handle left"
+                title="Kéo để chỉnh thời gian Bắt đầu"
+                @pointerdown.stop="onBlockPointerDown('watermark', 'resize-left', $event)"
+              ></div>
+              <span class="block-text-label">{{ fileName(draft.wmPath) || 'Logo Watermark' }}</span>
+              <span class="block-time-range">{{ formatTimelineMark(draft.wmStartTime) }} - {{ draft.wmEndTime > 0 ? formatTimelineMark(draft.wmEndTime) : 'hết' }}</span>
+              <div
+                class="block-handle right"
+                title="Kéo để chỉnh thời gian Kết thúc"
+                @pointerdown.stop="onBlockPointerDown('watermark', 'resize-right', $event)"
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Track 3.5: Card Nền -->
+        <div class="timeline-track card-track" v-if="draft.cardEnabled">
+          <div class="track-head">Nền C1</div>
+          <div class="track-content card-track-content">
+            <div
+              class="track-block card-block"
+              :style="cardBlockStyle"
+              title="Khung Nền Card"
+              @pointerdown.stop="onBlockPointerDown('card', 'move', $event)"
+              @pointermove="onBlockPointerMove"
+              @pointerup="onBlockPointerUp"
+              @pointercancel="onBlockPointerUp"
+            >
+              <div
+                class="block-handle left"
+                title="Kéo để chỉnh thời gian Bắt đầu"
+                @pointerdown.stop="onBlockPointerDown('card', 'resize-left', $event)"
+              ></div>
+              <span class="block-text-label">Khung Nền Card / Banner</span>
+              <span class="block-time-range">{{ formatTimelineMark(draft.cardStartTime) }} - {{ draft.cardEndTime > 0 ? formatTimelineMark(draft.cardEndTime) : 'hết' }}</span>
+              <div
+                class="block-handle right"
+                title="Kéo để chỉnh thời gian Kết thúc"
+                @pointerdown.stop="onBlockPointerDown('card', 'resize-right', $event)"
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Track 4: Text overlays (Merged into Rows T1, T2...) -->
+        <div
+          v-for="(row, rIndex) in textTrackRows"
+          :key="`text-row-${rIndex}`"
+          class="timeline-track text-track"
+        >
+          <div class="track-head">Text T{{ rIndex + 1 }}</div>
           <div class="track-content text-track-content">
-            <button
-              v-for="text in selectedTextsList"
+            <div
+              v-for="text in row"
               :key="text.id"
-              type="button"
               class="track-block text-block"
               :class="{ selected: selectedTextId === text.id }"
               :style="textBlockStyle(text)"
               :title="`${text.content} · ${formatTimelineMark(text.startTime)} → ${text.endTime > 0 ? formatTimelineMark(text.endTime) : 'hết video'}`"
-              @pointerdown="selectedTextId = text.id"
+              @pointerdown.stop="onBlockPointerDown('text', 'move', $event, text)"
+              @pointermove="onBlockPointerMove"
+              @pointerup="onBlockPointerUp"
+              @pointercancel="onBlockPointerUp"
             >
-              <span>{{ text.content || 'Text' }}</span>
-            </button>
+              <div
+                class="block-handle left"
+                title="Kéo để chỉnh thời gian Bắt đầu"
+                @pointerdown.stop="onBlockPointerDown('text', 'resize-left', $event, text)"
+              ></div>
+              <span class="block-text-label">{{ text.content || 'Text' }}</span>
+              <span class="block-time-range">{{ formatTimelineMark(text.startTime) }} - {{ text.endTime > 0 ? formatTimelineMark(text.endTime) : 'hết' }}</span>
+              <div
+                class="block-handle right"
+                title="Kéo để chỉnh thời gian Kết thúc"
+                @pointerdown.stop="onBlockPointerDown('text', 'resize-right', $event, text)"
+              ></div>
+            </div>
           </div>
         </div>
       </div>
@@ -1801,7 +2481,7 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
 
 /* Left Panel */
 .capcut-left-panel {
-  width: 320px;
+  width: 380px;
   background: var(--wx-surface-base, #0f172a);
   border-right: 1px solid var(--wx-border-default, rgba(255, 255, 255, 0.08));
   display: flex;
@@ -2334,7 +3014,7 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
 
 /* Right Panel */
 .capcut-right-panel {
-  width: 240px;
+  width: 300px;
   background: var(--wx-surface-base, #0f172a);
   border-left: 1px solid var(--wx-border-default, rgba(255, 255, 255, 0.08));
   display: flex;
@@ -2342,6 +3022,7 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
   padding: 12px;
   gap: 12px;
   flex-shrink: 0;
+  overflow-y: auto;
 }
 
 .inspector-name-box {
@@ -2708,9 +3389,9 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
 
 /* Timeline */
 .capcut-timeline-bar {
-  min-height: 95px;
-  height: auto;
-  max-height: 155px;
+  min-height: 180px;
+  height: 250px;
+  max-height: 380px;
   background: var(--wx-surface-sunken, #090d16);
   border-top: 1px solid var(--wx-border-default, rgba(255, 255, 255, 0.08));
   display: flex;
@@ -2742,12 +3423,13 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
 .timeline-tracks {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 4px 0;
+  gap: 5px;
+  padding: 6px 0;
   position: relative;
   cursor: grab;
   touch-action: none;
   overflow-y: auto;
+  flex: 1;
 }
 
 .timeline-tracks.dragging {
@@ -2763,10 +3445,6 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
   box-shadow: 0 0 4px rgba(239, 68, 68, 0.8);
   pointer-events: none;
   z-index: 6;
-  transition: left 80ms linear;
-}
-
-.timeline-playhead.dragging {
   transition: none;
 }
 .timeline-playhead::before {
@@ -2783,7 +3461,7 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
 .timeline-track {
   display: flex;
   align-items: center;
-  height: 22px;
+  height: 30px;
 }
 
 .track-head {
@@ -2804,47 +3482,369 @@ const fileName = (p: string) => p ? (p.split('\\').pop() || p) : ''
 }
 
 .track-block {
+  position: absolute;
+  top: 0;
   height: 100%;
   box-sizing: border-box;
   border-radius: var(--wx-radius-sm, 4px);
   display: flex;
   align-items: center;
-  padding: 0 8px;
+  justify-content: space-between;
+  padding: 0 4px;
   font-size: 10px;
   font-weight: 600;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
   overflow: hidden;
+  user-select: none;
+  cursor: grab;
+  touch-action: none;
 }
 
-.track-block span {
+.track-block:active {
+  cursor: grabbing;
+}
+
+.block-handle {
+  width: 6px;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.4);
+  cursor: col-resize;
+  flex: 0 0 6px;
+  border-radius: 2px;
+  transition: background 0.15s ease;
+}
+
+.block-handle:hover {
+  background: #ffffff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.8);
+}
+
+.block-text-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.block-time-range {
+  font-size: 9px;
+  font-weight: 600;
+  opacity: 0.85;
+  white-space: nowrap;
+  padding-right: 4px;
+  font-family: var(--wx-font-mono, monospace);
 }
 
 .text-track-content {
   overflow: hidden;
+  position: relative;
+  height: 100%;
 }
 
 .text-block {
   position: absolute;
   top: 0;
-  min-width: 12px;
-  border: 1px solid rgba(192, 132, 252, 0.65);
+  min-width: 16px;
+  border: 1px solid rgba(192, 132, 252, 0.75);
   background: linear-gradient(90deg, #8b5cf6, #c026d3);
   color: #ffffff;
-  cursor: grab;
 }
 
 .text-block.selected {
   border-color: #ffffff;
-  box-shadow: 0 0 0 1px #38bdf8, 0 2px 8px rgba(139, 92, 246, 0.5);
+  box-shadow: 0 0 0 1.5px #38bdf8, 0 2px 8px rgba(139, 92, 246, 0.6);
 }
 
-.video-block { background: linear-gradient(90deg, var(--wx-brand-primary, #2563eb), var(--wx-brand-accent, #06b6d4)); color: #ffffff; width: 92%; }
-.audio-block { background: linear-gradient(90deg, #10b981, #059669); color: #ffffff; width: 80%; }
-.sub-block { background: linear-gradient(90deg, #f59e0b, #d97706); color: #ffffff; width: 70%; }
+.video-block { position: relative; background: linear-gradient(90deg, var(--wx-brand-primary, #2563eb), var(--wx-brand-accent, #06b6d4)); color: #ffffff; width: 100%; }
+.audio-block { position: relative; background: linear-gradient(90deg, #10b981, #059669); color: #ffffff; width: 100%; }
+.sub-block { position: relative; background: linear-gradient(90deg, #f59e0b, #d97706); color: #ffffff; width: 100%; }
+.wm-block { background: linear-gradient(90deg, #0d9488, #059669); border-color: #2dd4bf; color: #ffffff; }
+.card-block { background: linear-gradient(90deg, #0284c7, #0369a1); border-color: #38bdf8; color: #ffffff; }
+
+.card-presets-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.card-color-picker-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.color-picker-input {
+  width: 32px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--wx-border-default, rgba(255, 255, 255, 0.2));
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.quick-swatches {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.swatch-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.swatch-btn:hover {
+  transform: scale(1.15);
+  border-color: #ffffff;
+}
+
+.card-preset-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: var(--wx-surface-sunken, #0e1626);
+  border: 1px solid var(--wx-border-default, rgba(255, 255, 255, 0.12));
+  border-radius: var(--wx-radius-md, 6px);
+  color: var(--wx-text-secondary, #94a3b8);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+/* Card preset CSS */
+
+.card-preset-chip:hover {
+  border-color: var(--wx-brand-accent, #06b6d4);
+  color: var(--wx-text-primary, #ffffff);
+}
+
+.card-preset-chip.active {
+  background: var(--wx-brand-primary, #2563eb);
+  border-color: var(--wx-brand-primary, #2563eb);
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+}
+
+.overlay-img-content {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  display: block;
+}
+
+.draggable-overlay {
+  position: absolute;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.draggable-overlay:hover,
+.draggable-overlay.active-selected {
+  outline: 1.5px dashed #38bdf8;
+  outline-offset: 2px;
+}
+
+.overlay-resize-handle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  background: #ffffff;
+  border: 1.5px solid #0284c7;
+  border-radius: 50%;
+  z-index: 20;
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.6);
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+  pointer-events: auto;
+}
+
+.draggable-overlay:hover .overlay-resize-handle,
+.draggable-overlay.active-selected .overlay-resize-handle {
+  opacity: 1;
+}
+
+.overlay-resize-handle:hover {
+  transform: scale(1.4);
+  background: #38bdf8;
+  border-color: #ffffff;
+}
+
+.handle-nw { top: -5px; left: -5px; cursor: nwse-resize; }
+.handle-ne { top: -5px; right: -5px; cursor: nesw-resize; }
+.handle-sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
+.handle-se { bottom: -5px; right: -5px; cursor: nwse-resize; }
+
+.handle-n { top: -5px; left: calc(50% - 4.5px); cursor: ns-resize; }
+.handle-s { bottom: -5px; left: calc(50% - 4.5px); cursor: ns-resize; }
+.handle-w { top: calc(50% - 4.5px); left: -5px; cursor: ew-resize; }
+.handle-e { top: calc(50% - 4.5px); right: -5px; cursor: ew-resize; }
+
+.card-preview-overlay.preset-glass {
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1.5px solid rgba(56, 189, 248, 0.6);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.card-preview-overlay.preset-carbon {
+  background: radial-gradient(black 15%, transparent 16%) 0 0, radial-gradient(black 15%, transparent 16%) 8px 8px, radial-gradient(rgba(255,255,255,.1) 15%, transparent 20%) 0 1px, radial-gradient(rgba(255,255,255,.1) 15%, transparent 20%) 8px 9px;
+  background-color: #121212;
+  background-size: 16px 16px;
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+}
+
+.card-preview-overlay.preset-grid {
+  background-image: linear-gradient(rgba(6, 182, 212, 0.4) 1px, transparent 1px), linear-gradient(90deg, rgba(6, 182, 212, 0.4) 1px, transparent 1px);
+  background-size: 16px 16px;
+  background-color: #080e1a;
+  border: 1.5px solid #06b6d4;
+  box-shadow: inset 0 0 12px rgba(6, 182, 212, 0.3);
+}
+
+.card-preview-overlay.preset-manga {
+  background: radial-gradient(#ffffff 25%, transparent 25%);
+  background-size: 10px 10px;
+  background-color: #e11d48;
+  border: 2px solid #ffffff;
+  box-shadow: 0 4px 16px rgba(225, 29, 72, 0.5);
+}
+
+.card-preview-overlay.preset-galaxy {
+  background: radial-gradient(white, rgba(255,255,255,.3) 2px, transparent 40%), radial-gradient(white, rgba(255,255,255,.2) 1px, transparent 30%);
+  background-size: 40px 40px, 20px 20px;
+  background-position: 0 0, 10px 10px;
+  background-color: #1e1b4b;
+  border: 1.5px solid #c084fc;
+  box-shadow: 0 0 18px rgba(192, 132, 252, 0.4);
+}
+
+.card-preview-overlay.preset-honeycomb {
+  background: radial-gradient(circle, rgba(234,179,8,0.25) 0%, transparent 70%), repeating-linear-gradient(60deg, rgba(234,179,8,0.25) 0, rgba(234,179,8,0.25) 1px, transparent 0, transparent 12px);
+  background-color: #0f172a;
+  border: 1.5px solid #eab308;
+  box-shadow: 0 0 12px rgba(234, 179, 8, 0.35);
+}
+
+.card-preview-overlay.preset-dots {
+  background: radial-gradient(#06b6d4 20%, transparent 20%), radial-gradient(#ec4899 20%, transparent 20%);
+  background-position: 0 0, 10px 10px;
+  background-size: 20px 20px;
+  background-color: #0f172a;
+  border: 1.5px solid #06b6d4;
+  box-shadow: 0 4px 16px rgba(6, 182, 212, 0.4);
+}
+
+.card-preview-overlay.preset-waves {
+  background: repeating-linear-gradient(45deg, #1e1b4b, #1e1b4b 10px, #312e81 10px, #312e81 20px);
+  border: 1.5px solid #818cf8;
+  box-shadow: 0 4px 16px rgba(49, 46, 129, 0.5);
+}
+
+.card-preview-overlay.preset-zigzag {
+  background: linear-gradient(135deg, #0284c7 25%, transparent 25%) -12px 0, linear-gradient(225deg, #0284c7 25%, transparent 25%) -12px 0, linear-gradient(315deg, #0284c7 25%, transparent 25%), linear-gradient(45deg, #0284c7 25%, transparent 25%);
+  background-size: 24px 24px;
+  background-color: #0f172a;
+  border: 1.5px solid #38bdf8;
+  box-shadow: 0 4px 16px rgba(2, 132, 199, 0.4);
+}
+
+.card-preview-overlay.preset-marble {
+  background: linear-gradient(120deg, #1e293b 0%, #0f172a 40%, #334155 70%, #1e293b 100%);
+  border: 1.5px solid rgba(255, 255, 255, 0.4);
+  box-shadow: inset 0 0 15px rgba(255, 255, 255, 0.2), 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.card-preview-overlay.preset-diamond {
+  background: linear-gradient(45deg, rgba(245, 158, 11, 0.25) 25%, transparent 25%, transparent 75%, rgba(245, 158, 11, 0.25) 75%), linear-gradient(45deg, rgba(245, 158, 11, 0.25) 25%, transparent 25%, transparent 75%, rgba(245, 158, 11, 0.25) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+  background-color: #1e1b4b;
+  border: 1.5px solid #f59e0b;
+}
+
+.card-preview-overlay.preset-bricks {
+  background-color: #7f1d1d;
+  background-image: linear-gradient(335deg, rgba(255,255,255,0.2) 23px, transparent 23px), linear-gradient(155deg, rgba(255,255,255,0.2) 23px, transparent 23px);
+  background-size: 58px 58px;
+  border: 1.5px solid #fca5a5;
+}
+
+.card-preview-overlay.preset-matrix {
+  background-image: linear-gradient(rgba(16, 185, 129, 0.35) 1px, transparent 1px), linear-gradient(90deg, rgba(16, 185, 129, 0.35) 1px, transparent 1px);
+  background-size: 12px 12px;
+  background-color: #022c22;
+  border: 1.5px solid #10b981;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+}
+
+.card-preview-overlay.preset-smoke {
+  background: radial-gradient(circle at 30% 30%, rgba(168, 85, 247, 0.5), transparent 60%), radial-gradient(circle at 70% 70%, rgba(59, 130, 246, 0.5), transparent 60%);
+  background-color: #0f172a;
+  border: 1.5px solid #a855f7;
+  box-shadow: inset 0 0 20px rgba(168, 85, 247, 0.4);
+}
+
+.card-preview-overlay.preset-lines {
+  background: repeating-linear-gradient(-45deg, rgba(255,255,255,0.12), rgba(255,255,255,0.12) 2px, transparent 2px, transparent 8px);
+  background-color: #0f172a;
+  border: 1px solid rgba(255,255,255,0.3);
+}
+
+.card-preview-overlay.preset-plaid {
+  background-color: #1e1b4b;
+  background-image: linear-gradient(90deg, rgba(236,72,153,0.35) 50%, transparent 50%), linear-gradient(rgba(236,72,153,0.35) 50%, transparent 50%);
+  background-size: 20px 20px;
+  border: 1.5px solid #ec4899;
+}
+
+.card-preview-overlay.preset-stripes-horiz {
+  background: repeating-linear-gradient(0deg, rgba(30, 41, 59, 0.95), rgba(30, 41, 59, 0.95) 8px, rgba(15, 23, 42, 0.95) 8px, rgba(15, 23, 42, 0.95) 16px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.card-preview-overlay.preset-vortex {
+  background: repeating-radial-gradient(circle at 50% 50%, rgba(6, 182, 212, 0.35), rgba(6, 182, 212, 0.35) 6px, transparent 6px, transparent 18px);
+  background-color: #0e1626;
+  border: 1.5px solid #06b6d4;
+}
+
+.card-preview-overlay.preset-led {
+  background: radial-gradient(#eab308 35%, transparent 35%);
+  background-size: 8px 8px;
+  background-color: #1c1917;
+  border: 1.5px solid #eab308;
+  box-shadow: 0 0 10px rgba(234, 179, 8, 0.4);
+}
+
+.card-preview-overlay.preset-wood {
+  background: linear-gradient(90deg, #451a03 0%, #78350f 25%, #451a03 50%, #92400e 75%, #451a03 100%);
+  border: 1.5px solid #d97706;
+  box-shadow: inset 0 0 12px rgba(0,0,0,0.6);
+}
+
+.card-bg-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
 
 .capcut-export-now-btn {
   background: linear-gradient(135deg, #10b981, #059669);

@@ -4,6 +4,7 @@ import {project} from '../models';
 import {main} from '../models';
 import {imagedownloader} from '../models';
 import {downloader} from '../models';
+import {googlesheet} from '../models';
 import {sysmonitor} from '../models';
 import {storage} from '../models';
 
@@ -35,7 +36,11 @@ export function ExportClips(arg1:string,arg2:string,arg3:Array<project.Clip>,arg
 
 export function ExtractClipFrames(arg1:string,arg2:number,arg3:number):Promise<Array<string>>;
 
+export function FetchGoogleSheetStructure(arg1:string,arg2:string):Promise<Array<googlesheet.SheetTabInfo>>;
+
 export function FetchImageAsBase64(arg1:string):Promise<string>;
+
+export function GenerateAIContentText(arg1:string,arg2:string):Promise<string>;
 
 export function GenerateAIThumbnail(arg1:string,arg2:string,arg3:Array<string>,arg4:string,arg5:number,arg6:string,arg7:string):Promise<string>;
 
@@ -51,6 +56,8 @@ export function GetDefaultImageDownloadDir():Promise<string>;
 
 export function GetGlobalSettings():Promise<string>;
 
+export function GetGoogleAppsScriptTemplate():Promise<string>;
+
 export function GetStreamURL(arg1:string):Promise<string>;
 
 export function GetSystemStats():Promise<sysmonitor.SystemStats>;
@@ -65,7 +72,13 @@ export function MergeClips(arg1:string,arg2:Array<project.Clip>,arg3:string,arg4
 
 export function OpenWebURL(arg1:string):Promise<void>;
 
+export function ParseGoogleSheetLink(arg1:string):Promise<main.ParsedSheetResult>;
+
 export function ProbeOnlineURL(arg1:string,arg2:string,arg3:number,arg4:string,arg5:string):Promise<downloader.URLProbeResult>;
+
+export function PushGoogleSheetBatch(arg1:string,arg2:string,arg3:string,arg4:Array<any>):Promise<void>;
+
+export function PushGoogleSheetRow(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
 
 export function SaveGlobalSettings(arg1:string):Promise<void>;
 

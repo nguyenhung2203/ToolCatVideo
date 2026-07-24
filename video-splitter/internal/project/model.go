@@ -58,6 +58,7 @@ type EditOps struct {
 	HFlip      bool         `json:"hflip"`      // lật ngang video (tránh bản quyền)
 	Texts      []TextOp     `json:"texts"`      // overlay chữ / phụ đề
 	Watermark  WatermarkOp  `json:"watermark"`  // overlay logo / watermark ảnh
+	Card       CardOp       `json:"card"`       // overlay khung nền card / banner
 	Audio      AudioOp      `json:"audio"`      // âm lượng, nhạc nền, fade
 	Transition TransitionOp `json:"transition"` // hiệu ứng chuyển vào đầu clip (khi ghép)
 
@@ -152,12 +153,32 @@ type TextOp struct {
 
 // WatermarkOp overlay một ảnh logo / watermark.
 type WatermarkOp struct {
-	Enabled bool    `json:"enabled"`
-	ImgPath string  `json:"imgPath"`
-	X       string  `json:"x"`
-	Y       string  `json:"y"`
-	Opacity float64 `json:"opacity"` // 0..1
-	Scale   float64 `json:"scale"`   // hệ số scale so với gốc (1 = giữ nguyên)
+	Enabled   bool    `json:"enabled"`
+	ImgPath   string  `json:"imgPath"`
+	X         string  `json:"x"`
+	Y         string  `json:"y"`
+	Opacity   float64 `json:"opacity"`   // 0..1
+	Scale     float64 `json:"scale"`     // hệ số scale so với gốc (1 = giữ nguyên)
+	StartTime float64 `json:"startTime"` // thời điểm bắt đầu hiện watermark (giây, trong clip); 0 = từ đầu
+	EndTime   float64 `json:"endTime"`   // thời điểm ẩn watermark; 0 = tới cuối clip
+}
+
+// CardOp overlay một khung nền card / banner đệm cho text.
+type CardOp struct {
+	Enabled      bool    `json:"enabled"`
+	Mode         string  `json:"mode"`   // "preset" / "image"
+	Preset       string  `json:"preset"` // "glass" / "gradient-purple" / "gold" / "ribbon" / "vintage" / "neon" / "stripes"
+	ImgPath      string  `json:"imgPath"`
+	Color        string  `json:"color"`
+	Color2       string  `json:"color2"`
+	Opacity      float64 `json:"opacity"`
+	X            string  `json:"x"`
+	Y            string  `json:"y"`
+	Width        float64 `json:"width"`
+	Height       float64 `json:"height"`
+	BorderRadius int     `json:"borderRadius"`
+	StartTime    float64 `json:"startTime"`
+	EndTime      float64 `json:"endTime"`
 }
 
 // AudioOp điều chỉnh âm thanh clip.

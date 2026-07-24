@@ -10,6 +10,7 @@ import ImageDownloader from './ImageDownloader.vue'
 import BrowserAIImagePage from './BrowserAIImagePage.vue'
 import BrowserAIVideoPage from './BrowserAIVideoPage.vue'
 import RemixScenarioPage from './RemixScenarioPage.vue'
+import GoogleSheetSyncPage from './GoogleSheetSyncPage.vue'
 import {
   Video, Scissors, Download, Settings, Sun, Moon, History,
   Plus, Trash2, Trash, RefreshCw, X, Check, Key, ChevronDown, ChevronUp,
@@ -18,7 +19,7 @@ import {
   Clock, Film, Monitor, Loader2, ArrowRight, Upload, BarChart2,
   Sparkles, Tag, FileVideo, ListVideo, LayoutGrid, SlidersHorizontal,
   Cpu, FlipHorizontal2, Timer, Volume2, VolumeX, Repeat,
-  Star, Pencil, Move, Chrome, FileText
+  Star, Pencil, Move, Chrome, FileText, FileSpreadsheet
 } from 'lucide-vue-next'
 
 const { isDark, toggleColorScheme } = useTheme()
@@ -636,6 +637,13 @@ const selectedScenarioIds = ref<Set<string>>(new Set())
 const scenarioMode = ref<'random' | 'roundrobin'>('random')
 // Con trỏ xoay vòng (dùng cho roundrobin, reset mỗi đợt xuất).
 let scenarioRRCursor = 0
+// Kịch bản bị ÉP áp cho đợt xuất này (bấm "Lưu và Xuất Video" ngay trong tab Chỉnh sửa):
+// khi có, mọi clip áp đúng kịch bản đang mở đó, bỏ qua tick ở tab Cắt & Xuất. Reset sau
+// mỗi đợt xuất để lần xuất thường (từ tab Cắt & Xuất) quay lại dùng tick như cũ.
+let forcedScenarioId = ''
+// Bật khi bấm "Lưu và Xuất Video" ở tab Chỉnh sửa: xuất NGUYÊN video đang xem thành 1
+// file (bỏ qua các clip đã cắt, không xuất thumbnail). Reset ở cuối exportClips.
+let forceFullVideoExport = false
 
 const loadRemixScenarios = () => {
   const data = localStorage.getItem('remix_scenarios_list')
@@ -655,8 +663,13 @@ const saveRemixScenarios = () => {
   localStorage.setItem('remix_scenario_mode', scenarioMode.value)
 }
 
-const handleExportFromScenario = () => {
+// Xuất ngay từ tab Chỉnh sửa: áp ĐÚNG kịch bản đang mở (scenarioId) cho các clip của
+// video hiện tại, bất kể tab Cắt & Xuất đang tick gì. forcedScenarioId được reset ở cuối
+// exportClips để lần xuất sau (từ tab Cắt & Xuất) quay lại dùng tick như cũ.
+const handleExportFromScenario = (scenarioId?: string) => {
   loadRemixScenarios()
+  forcedScenarioId = scenarioId || ''
+  forceFullVideoExport = true
   exportClips()
 }
 
@@ -716,8 +729,18 @@ const applyScenarioToClip = (clip: project.Clip, scenario: RemixScenario) => {
 }
 
 // Áp kịch bản cho một danh sách clip (gọi ngay trước ExportClips). Trả về true nếu
-// có áp (tức người dùng đã tick ≥1 kịch bản), false nếu không tick gì.
+// có áp, false nếu không.
+// Ưu tiên forcedScenarioId (khi bấm "Lưu và Xuất Video" ở tab Chỉnh sửa): áp ĐÚNG
+// kịch bản đang mở cho mọi clip, bỏ qua tick ở tab Cắt & Xuất. Nếu không có forced thì
+// dùng các kịch bản đã tick như cũ (random/xoay vòng).
 const applyScenariosToList = (list: project.Clip[]): boolean => {
+  if (forcedScenarioId) {
+    const sc = remixScenarios.value.find(s => s.id === forcedScenarioId)
+    if (sc) {
+      list.forEach(c => applyScenarioToClip(c, sc))
+      return true
+    }
+  }
   if (selectedScenarioIds.value.size === 0) return false
   scenarioRRCursor = 0
   list.forEach((c, i) => {
@@ -732,7 +755,7 @@ const showSettings = ref(false)
 
 const globalSettingsConfig = ref<any>(null)
 
-const activeView = ref<'split' | 'download-video' | 'download-image' | 'ai-image' | 'ai-video' | 'scenarios'>('split')
+const activeView = ref<'split' | 'download-video' | 'download-image' | 'ai-image' | 'ai-video' | 'scenarios' | 'google-sheet'>('split')
 
 watch(activeView, (newVal) => {
   if (newVal === 'split' || newVal === 'scenarios') {
@@ -1763,6 +1786,24 @@ const selectVideo = async (index: number) => {
   await loadVideoInfo(path)
 }
 
+// Chọn video từ máy ngay trong tab Chỉnh sửa: nạp vào danh sách (nếu chưa có) rồi set
+// làm video đang chỉnh sửa. Chỉ chọn 1 file (tab này sửa/xuất từng video riêng).
+const handleSelectVideoForEdit = async () => {
+  try {
+    const selected = await SelectFiles()
+    if (!selected || selected.length === 0) return
+    const path = selected[0]
+    let idx = videoPaths.value.indexOf(path)
+    if (idx === -1) {
+      videoPaths.value = [...videoPaths.value, path]
+      idx = videoPaths.value.length - 1
+    }
+    await selectVideo(idx)
+  } catch (err) {
+    showToast('Lỗi khi mở hộp thoại: ' + err, 'error')
+  }
+}
+
 const loadVideoInfo = async (path: string) => {
   try {
     videoInfo.value = await GetVideoInfo(path)
@@ -2288,10 +2329,35 @@ const activeSelectedCount = computed(() => {
 })
 
 const exportClips = async () => {
-  let clipsToExportMap = getSelectedClipsGroupedByVideo()
+  let clipsToExportMap: Record<string, any[]> = {}
+
+  // Xuất từ tab Chỉnh sửa: bỏ qua clip đã cắt, xuất NGUYÊN video đang xem thành 1 file.
+  if (forceFullVideoExport) {
+    const path = activeVideoPath.value
+    if (!path) {
+      showToast('Chưa có video nào đang mở để xuất!', 'warning')
+      forceFullVideoExport = false
+      forcedScenarioId = ''
+      return
+    }
+    const dur = videoInfo.value?.Duration || videoDurationMap.value[path] || 0
+    clipsToExportMap[path] = [{
+      id: `full_video_${Date.now()}`,
+      index: 1,
+      startTime: 0,
+      endTime: dur > 0 ? dur : 0,
+      duration: dur > 0 ? dur : 0,
+      status: 'pending',
+      edit: {}
+    }]
+  }
+
+  if (!forceFullVideoExport) {
+    clipsToExportMap = getSelectedClipsGroupedByVideo()
+  }
   let totalClipsToExport = Object.values(clipsToExportMap).reduce((acc, list) => acc + list.length, 0)
-  
-  if (totalClipsToExport === 0) {
+
+  if (!forceFullVideoExport && totalClipsToExport === 0) {
     if (activeVideoPath.value) {
       const existingClips = clipsMap.value[activeVideoPath.value] || []
       if (existingClips.length > 0) {
@@ -2384,7 +2450,8 @@ const exportClips = async () => {
       })
 
       const exportDestDir = outDir.value
-      const imageDestDir = exportWithThumbnails.value ? outImageDir.value : ''
+      // Xuất nguyên video từ tab Chỉnh sửa: chỉ ra 1 file video, không kèm thumbnail.
+      const imageDestDir = forceFullVideoExport ? '' : (exportWithThumbnails.value ? outImageDir.value : '')
       // Nếu có ≥2 preset được chọn: random prompt cho từng video
       if (selectedPresetIds.value.size > 1) {
         analyzerConfig.prompt = getRandomPresetPrompt()
@@ -2439,6 +2506,9 @@ const exportClips = async () => {
       isMultiExportRunning.value = false
     }
     exportStartTime.value = null
+    // Reset: lần xuất sau (từ tab Cắt & Xuất) quay lại dùng kịch bản tick như cũ.
+    forcedScenarioId = ''
+    forceFullVideoExport = false
   }
 }
 
@@ -3137,7 +3207,8 @@ const defaultEdit = (): project.EditOps => project.EditOps.createFrom({
   trimEnd: 0,
   pitch: 0,
   subtitle: { enabled: false, path: '', fontSize: 24, fontColor: '', outlineCol: '', marginV: 40 },
-  stripMeta: false
+  stripMeta: false,
+  card: { enabled: false, mode: 'preset', preset: 'glass', imgPath: '', color: '#0f172a', color2: '#1e293b', opacity: 0.85, x: '0.5', y: '0.75', width: 82, height: 22, borderRadius: 12, startTime: 0, endTime: 0 }
 })
 
 // Đảm bảo clip có đối tượng edit hợp lệ (clip cũ từ phân tích/khôi phục có thể thiếu field mới).
@@ -3174,6 +3245,8 @@ const ensureEdit = (clip: project.Clip) => {
   if (clip.edit.pitch === undefined) clip.edit.pitch = 0
   if (!clip.edit.subtitle) clip.edit.subtitle = d.subtitle
   if (clip.edit.stripMeta === undefined) clip.edit.stripMeta = false
+  // Card/banner (clip cũ khôi phục có thể thiếu field mới)
+  if (!clip.edit.card) clip.edit.card = d.card
 }
 
 // Áp nhạc nền hàng loạt cho một clip (các phép chỉnh sửa video giờ nằm ở
@@ -3564,6 +3637,9 @@ const formatSize = (bytes: number) => {
           </button>
           <button class="nav-segment-btn" :class="{ active: activeView === 'ai-video' }" @click="activeView = 'ai-video'">
             <Sparkles :size="13" style="color: var(--wx-brand-accent);" /> Tạo Video AI
+          </button>
+          <button class="nav-segment-btn" :class="{ active: activeView === 'google-sheet' }" @click="activeView = 'google-sheet'">
+            <FileSpreadsheet :size="13" style="color: #22c55e;" /> Đồng Bộ Sheet AI
           </button>
         </div>
 
@@ -4260,7 +4336,10 @@ const formatSize = (bytes: number) => {
       <KeepAlive><BrowserAIVideoPage v-if="activeView === 'ai-video'" :default-output-dir="outDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-video="handleApplyAIVideo" @show-toast="showToast" /></KeepAlive>
 
       <!-- TRANG KỊCH BẢN XÀO NẤU: tạo/sửa/xóa combo EditOps. Reload lại danh sách khi quay về. -->
-      <KeepAlive><RemixScenarioPage v-if="activeView === 'scenarios'" :active-video-src="activeVideoSrc" :output-dir="outDir" :show-toast="showToast" :is-exporting="isExporting" :export-progress="exportProgress" :export-status-text="exportStatusText" :eta-text="getExportETA()" @back="activeView = 'split'; loadRemixScenarios()" @export="handleExportFromScenario" @update:outputDir="outDir = $event" /></KeepAlive>
+      <KeepAlive><RemixScenarioPage v-if="activeView === 'scenarios'" :active-video-src="activeVideoSrc" :output-dir="outDir" :videos="videoPaths" :active-video-index="activeVideoIndex" :show-toast="showToast" :is-exporting="isExporting" :export-progress="exportProgress" :export-status-text="exportStatusText" :eta-text="getExportETA()" @back="activeView = 'split'; loadRemixScenarios()" @export="handleExportFromScenario" @select-video="selectVideo" @select-external-video="handleSelectVideoForEdit" @update:outputDir="outDir = $event" /></KeepAlive>
+
+      <!-- TRANG ĐỒNG BỘ GOOGLE SHEET & AI CONTENT -->
+      <KeepAlive><GoogleSheetSyncPage v-if="activeView === 'google-sheet'" :show-toast="showToast" /></KeepAlive>
 
     </div>
 

@@ -217,6 +217,7 @@ select.custom-select:focus {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--wx-brand-primary, #3b82f6) 20%, transparent) !important;
   outline: none;
 }
+select option,
 .setting-item select option,
 .settings-modal select option,
 .settings-group select option,
