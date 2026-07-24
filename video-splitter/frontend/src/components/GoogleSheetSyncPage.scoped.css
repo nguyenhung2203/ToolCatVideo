@@ -179,8 +179,14 @@
 }
 
 .column-chip-card.selected {
-  background: color-mix(in srgb, var(--wx-brand-accent) 14%, transparent);
+  background: color-mix(in srgb, var(--wx-brand-accent) 20%, transparent);
   border-color: var(--wx-brand-accent);
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
+}
+
+.column-chip-card.selected .chip-title {
+  color: var(--wx-brand-accent);
+  font-weight: 700;
 }
 
 .chip-checkbox {
@@ -356,7 +362,7 @@
   background: #090d16;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
-  padding: 8px 10px;
+  padding: 8px 24px 8px 10px;
   color: #f8fafc;
   font-size: 12px;
   line-height: 1.5;
@@ -366,6 +372,29 @@
   min-height: 54px;
   box-sizing: border-box;
   transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.cell-card-checkbox {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--wx-brand-accent);
+  cursor: pointer;
+  z-index: 10;
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
+}
+
+.cell-card-checkbox:hover {
+  opacity: 1;
+}
+
+.clean-cell-textarea.selected {
+  border-color: var(--wx-brand-accent) !important;
+  background: color-mix(in srgb, var(--wx-brand-accent) 6%, #090d16) !important;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.2) !important;
 }
 
 .clean-cell-textarea:focus {

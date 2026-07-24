@@ -285,6 +285,20 @@
                     <span>{{ group.isGeneratingMore ? 'Đang tạo...' : 'Sinh Thêm 1 Mẫu' }}</span>
                   </button>
 
+                  <!-- Nút Tạo Lại Các Ô Đã Chọn -->
+                  <button
+                    v-if="hasSelectedCellsInGroup(group)"
+                    @click="regenerateSelectedCellsInGroup(group)"
+                    :disabled="group.isGeneratingMore"
+                    class="img-dir-btn"
+                    style="height: 32px; padding: 0 10px; font-size: 11.5px; color: #f59e0b; border-color: rgba(245, 158, 11, 0.4);"
+                    title="Tạo lại tất cả các ô nội dung (card) đang tích chọn trong nhóm này"
+                  >
+                    <Loader2 v-if="group.isGeneratingMore" :size="12" class="spin-icon" />
+                    <RefreshCw v-else :size="12" />
+                    <span>Tạo Lại Đã Chọn</span>
+                  </button>
+
                   <button @click="clearResults" class="img-dir-btn" style="height: 32px; font-size: 11.5px; color: #f87171; border-color: rgba(239, 68, 68, 0.3);" title="Xóa tất cả mẫu">
                     <Trash2 :size="13" /> Xóa tất cả
                   </button>
@@ -292,10 +306,10 @@
                   <!-- Nút Đẩy Sheet -->
                   <button
                     @click="pushSelectedRowsToSheet"
-                    :disabled="isPushing"
+                    :disabled="totalSelectedCount === 0 || isPushing"
                     class="img-action-btn start-generate-btn"
                     style="height: 32px; padding: 0 14px; font-size: 12px; background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);"
-                    :style="isPushing ? 'opacity: 0.5; cursor: not-allowed; pointer-events: none;' : ''"
+                    :style="(totalSelectedCount === 0 || isPushing) ? 'opacity: 0.5; cursor: not-allowed; pointer-events: none; background: #4b5563; box-shadow: none;' : ''"
                   >
                     <Upload v-if="!isPushing" :size="13" />
                     <Loader2 v-else :size="13" class="spin-icon" />
@@ -324,16 +338,30 @@
                   <tbody>
                     <tr v-for="(item, idx) in visibleGroupItems(group)" :key="item.id" :class="{ row_active: item.selected }">
                       <td style="text-align: center; padding: 8px 4px; width: 42px; min-width: 42px;">
-                        <input type="checkbox" v-model="item.selected" style="width: 15px; height: 15px; cursor: pointer; accent-color: var(--wx-brand-primary);" />
+                        <input
+                          type="checkbox"
+                          :checked="isRowAllCellsSelected(item)"
+                          @change="toggleRowCellsSelection(item)"
+                          style="width: 15px; height: 15px; cursor: pointer; accent-color: var(--wx-brand-primary);"
+                        />
                       </td>
                       <td style="font-weight: 700; color: #c084fc; padding: 8px 4px; width: 55px; min-width: 55px;">#{{ idx + 1 }}</td>
 
                       <!-- Render ô sửa chữ CHỈ theo các Cột được tích chọn -->
                       <td v-for="headerName in displayHeaders" :key="headerName" style="padding: 6px; position: relative; min-width: 260px;">
                         <div class="cell-textarea-wrap" style="position: relative;">
+                          <!-- Checkbox chọn ô/card ở góc trên bên phải -->
+                          <input
+                            type="checkbox"
+                            :checked="isCellSelected(item.id, headerName)"
+                            @change="toggleCellSelection(item, headerName)"
+                            class="cell-card-checkbox"
+                          />
+
                           <textarea
                             v-model="item.columnData[headerName]"
                             class="clean-cell-textarea"
+                            :class="{ selected: isCellSelected(item.id, headerName) }"
                             rows="2"
                             placeholder="Trống..."
                           ></textarea>
@@ -361,7 +389,8 @@
                       </td>
 
                       <td style="padding: 8px 4px; text-align: center;">
-                        <button @click="deleteItemFromGroup(group, idx)" class="row-del-btn" title="Xóa mẫu này">
+                        <Loader2 v-if="item.pushStatus === 'pushing'" :size="13" class="spin-icon" style="color: var(--wx-brand-accent);" />
+                        <button v-else @click="deleteItemFromGroup(group, idx)" class="row-del-btn" title="Xóa mẫu này">
                           <Trash2 :size="13" />
                         </button>
                       </td>
@@ -509,6 +538,48 @@ const cancelGenerationFlag = ref(false)
 const isPushing = ref(false)
 const topicGroups = ref<TopicGroup[]>([])
 
+// Bộ chọn ô/card lẻ để tạo lại
+const selectedCells = ref<Set<string>>(new Set())
+
+const isCellSelected = (itemId: string, colName: string): boolean => {
+  return selectedCells.value.has(`${itemId}::${colName}`)
+}
+
+const toggleCellSelection = (item: GeneratedRowItem, colName: string) => {
+  const key = `${item.id}::${colName}`
+  if (selectedCells.value.has(key)) {
+    selectedCells.value.delete(key)
+  } else {
+    selectedCells.value.add(key)
+  }
+  // Đồng bộ item.selected nếu có ít nhất 1 ô của hàng này được chọn
+  item.selected = activeHeaders.value.some(h => selectedCells.value.has(`${item.id}::${h}`))
+}
+
+const isRowAllCellsSelected = (item: GeneratedRowItem): boolean => {
+  return activeHeaders.value.every(h => isCellSelected(item.id, h))
+}
+
+const toggleRowCellsSelection = (item: GeneratedRowItem) => {
+  const allSelected = isRowAllCellsSelected(item)
+  item.selected = !allSelected
+  activeHeaders.value.forEach(h => {
+    const key = `${item.id}::${h}`
+    if (allSelected) {
+      selectedCells.value.delete(key)
+    } else {
+      selectedCells.value.add(key)
+    }
+  })
+}
+
+const hasSelectedCellsInGroup = (group: TopicGroup): boolean => {
+  if (!group || !group.items) return false
+  return group.items.some(item => {
+    return activeHeaders.value.some(h => isCellSelected(item.id, h))
+  })
+}
+
 const showScriptModal = ref(false)
 const appsScriptCode = ref('')
 const copied = ref(false)
@@ -592,7 +663,7 @@ const fetchSheetStructure = async (isManual: boolean = false) => {
   // của anh (mọi tab, mọi cột). Không còn data mẫu cứng như trước.
   if (!webAppUrl.value.trim()) {
     if (isManual) {
-      props.showToast('Chưa có Web App URL. Bấm "Lấy mã Apps Script (1-Click)" để cài rồi dán URL vào!', 'warning')
+      props.showToast('Chưa có Web App URL. Bấm "Lấy mã Apps Script" để cài rồi dán URL vào!', 'warning')
       showScriptModal.value = true
     }
     availableTabs.value = []
@@ -641,13 +712,26 @@ const toggleSelectAllGlobal = () => {
   })
 }
 
-const isGroupAllSelected = (group: TopicGroup) => {
-  return group.items.length > 0 && group.items.every(i => i.selected)
+const isGroupAllSelected = (group: TopicGroup): boolean => {
+  if (!group || group.items.length === 0) return false
+  return group.items.every(item => {
+    return activeHeaders.value.every(h => isCellSelected(item.id, h))
+  })
 }
 
 const toggleGroupSelection = (group: TopicGroup) => {
-  const nextVal = !isGroupAllSelected(group)
-  group.items.forEach(i => i.selected = nextVal)
+  const allSelected = isGroupAllSelected(group)
+  group.items.forEach(item => {
+    item.selected = !allSelected
+    activeHeaders.value.forEach(h => {
+      const key = `${item.id}::${h}`
+      if (allSelected) {
+        selectedCells.value.delete(key)
+      } else {
+        selectedCells.value.add(key)
+      }
+    })
+  })
 }
 
 const deleteGroup = (gIdx: number) => {
@@ -778,7 +862,8 @@ const generateColumnsForTopic = async (
   topic: string,
   variantLabel: string,
   cols: string[],
-  historyList: Record<string, string>[] = []
+  historyList: Record<string, string>[] = [],
+  selfContextText = ''
 ): Promise<{ columnData: Record<string, string>, columnTranslations: Record<string, string> }> => {
   const columnData: Record<string, string> = {}
   const columnTranslations: Record<string, string> = {}
@@ -806,7 +891,7 @@ const generateColumnsForTopic = async (
   }
 
   const prompt = `Bạn là trợ lý viết nội dung chuyên nghiệp. ${topicContext}Hãy viết nội dung cho ĐÚNG các cột sau, TUÂN THỦ yêu cầu riêng của mỗi cột (phần sau dấu hai chấm):
-${colLines}${emojiGlobalRule}${historyContext}
+${colLines}${emojiGlobalRule}${selfContextText}${historyContext}
 
 CHỈ trả về đúng một object JSON hợp lệ với cấu trúc key:
 - "tên_cột": "nội dung của cột đó"
@@ -849,12 +934,13 @@ const generateColumnsForTopicWithRetry = async (
   variantLabel: string,
   cols: string[],
   historyList: Record<string, string>[] = [],
+  selfContextText = '',
   retries = 3,
   delay = 1000
 ): Promise<{ columnData: Record<string, string>, columnTranslations: Record<string, string> }> => {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const res = await generateColumnsForTopic(topic, variantLabel, cols, historyList)
+      const res = await generateColumnsForTopic(topic, variantLabel, cols, historyList, selfContextText)
       if (res && Object.keys(res.columnData).length > 0) {
         return res
       }
@@ -1061,6 +1147,94 @@ const pushSelectedRowsToSheet = async () => {
   }
 }
 
+const regenerateSelectedCellsInGroup = async (group: TopicGroup) => {
+  const colsToGen = getColumnsToGenerate()
+  if (colsToGen.length === 0) {
+    props.showToast('Vui lòng tích chọn ít nhất 1 cột để AI sinh nội dung!', 'warning')
+    return
+  }
+
+  // Lọc lấy các hàng có ô được chọn
+  const itemsToProcess = group.items.filter(item => {
+    return activeHeaders.value.some(h => isCellSelected(item.id, h))
+  })
+
+  if (itemsToProcess.length === 0) {
+    props.showToast('Vui lòng tích chọn ít nhất 1 ô nội dung (card) để tạo lại!', 'warning')
+    return
+  }
+
+  group.isGeneratingMore = true
+  let successCount = 0
+
+  try {
+    for (let i = 0; i < group.items.length; i++) {
+      const item = group.items[i]
+      
+      // Lấy danh sách các cột cần tạo lại của mẫu này
+      const itemColsToRegen = activeHeaders.value.filter(h => isCellSelected(item.id, h))
+      if (itemColsToRegen.length === 0) continue
+
+      item.pushStatus = 'pushing'
+
+      // Thu thập các cột đã có của mẫu này làm ngữ cảnh (nếu có)
+      const existingContextParts: string[] = []
+      activeHeaders.value.forEach(h => {
+        if (!isCellSelected(item.id, h) && item.columnData[h]) {
+          existingContextParts.push(`- Cột ${h} đã có sẵn nội dung: "${item.columnData[h]}"`)
+        }
+      })
+      const selfContextText = existingContextParts.length > 0
+        ? `\nLƯU Ý: Mẫu này đã có sẵn các thông tin sau, hãy viết nội dung mới cho phù hợp và ăn khớp logic với các cột này:\n${existingContextParts.join('\n')}`
+        : ''
+
+      // Lấy lịch sử các mẫu khác trong nhóm làm bộ nhớ đệm
+      const otherItems = group.items.filter(it => it.id !== item.id)
+      const historyList = otherItems.map(it => it.columnData)
+
+      try {
+        const { columnData: genData, columnTranslations: genTrans } = await generateColumnsForTopic(
+          group.topicName,
+          `Tạo lại Mẫu #${i + 1}`,
+          itemColsToRegen,
+          historyList,
+          selfContextText
+        )
+
+        if (!item.columnTranslations) {
+          item.columnTranslations = {}
+        }
+
+        // Cập nhật các cột được sinh lại
+        for (const col of itemColsToRegen) {
+          if (genData[col] != null) {
+            item.columnData[col] = genData[col]
+          }
+          if (genTrans[col] != null) {
+            item.columnTranslations[col] = genTrans[col]
+          }
+          // Bỏ chọn ô này sau khi sinh thành công
+          selectedCells.value.delete(`${item.id}::${col}`)
+        }
+
+        item.pushStatus = 'waiting'
+        successCount++
+      } catch (err) {
+        item.pushStatus = 'error'
+        console.error(`Lỗi tạo lại mẫu #${i + 1}:`, err)
+      }
+    }
+
+    if (successCount > 0) {
+      props.showToast(`Đã tạo lại thành công các ô đã chọn trong nhóm "${group.topicName}"!`, 'success')
+    } else {
+      props.showToast('Không có ô nào được tạo lại thành công.', 'error')
+    }
+  } finally {
+    group.isGeneratingMore = false
+  }
+}
+
 const openScriptModal = async () => {
   try {
     appsScriptCode.value = await GetGoogleAppsScriptTemplate()
@@ -1072,7 +1246,6 @@ const openScriptModal = async () => {
 
 onMounted(async () => {
   await loadSavedConfig()
-  openScriptModal()
   await fetchSheetStructure(false)
 })
 </script>
