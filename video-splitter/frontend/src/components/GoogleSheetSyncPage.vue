@@ -51,7 +51,7 @@
                 style="flex: 1;"
               />
               <button @click="openScriptModal" class="img-dir-btn" style="white-space: nowrap;" title="Xem hướng dẫn cài đặt Apps Script 1-Click">
-                <Code :size="13" /> Lấy mã Apps Script (1-Click)
+                <Code :size="13" /> Lấy mã Apps Script
               </button>
             </div>
           </div>
@@ -180,16 +180,25 @@
 
 
         <!-- Nút Hành Động Bước 1 -->
-        <div class="config-footer-row" style="padding-top: 6px;">
+        <div class="config-footer-row" style="padding-top: 6px; display: flex; gap: 8px;">
           <button
+            v-if="!isGeneratingAI"
             @click="generateAllTopicGroups"
-            :disabled="isGeneratingAI || selectedHeaderNames.size === 0"
+            :disabled="selectedHeaderNames.size === 0"
             class="img-action-btn start-generate-btn"
             style="width: 100%; height: 44px; font-size: 13.5px; background: linear-gradient(135deg, #8b5cf6, #6366f1); box-shadow: 0 4px 15px rgba(139, 92, 246, 0.4);"
           >
-            <Sparkles v-if="!isGeneratingAI" :size="16" />
-            <Loader2 v-else :size="16" class="spin-icon" />
-            <span>{{ isGeneratingAI ? 'AI Đang Sinh Content...' : '1. Sinh Content AI (Theo Cột Đã Chọn)' }}</span>
+            <Sparkles :size="16" />
+            <span>1. Sinh Content AI (Theo Cột Đã Chọn)</span>
+          </button>
+          <button
+            v-else
+            @click="cancelGenerationFlag = true"
+            class="img-action-btn"
+            style="width: 100%; height: 44px; font-size: 13.5px; background: linear-gradient(135deg, #ef4444, #dc2626); box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4); color: white;"
+          >
+            <Loader2 :size="16" class="spin-icon" />
+            <span>Dừng Sinh Content (Hủy)</span>
           </button>
         </div>
 
@@ -283,9 +292,10 @@
                   <!-- Nút Đẩy Sheet -->
                   <button
                     @click="pushSelectedRowsToSheet"
-                    :disabled="isPushing || totalSelectedCount === 0"
+                    :disabled="isPushing"
                     class="img-action-btn start-generate-btn"
                     style="height: 32px; padding: 0 14px; font-size: 12px; background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);"
+                    :style="isPushing ? 'opacity: 0.5; cursor: not-allowed; pointer-events: none;' : ''"
                   >
                     <Upload v-if="!isPushing" :size="13" />
                     <Loader2 v-else :size="13" class="spin-icon" />
@@ -411,10 +421,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { FileSpreadsheet, Sparkles, RefreshCw, Play, Loader2, Check, Trash2, Code, Copy, Folder, Plus, Sliders, PanelLeftOpen, PanelLeftClose, Upload } from 'lucide-vue-next'
-import { FetchGoogleSheetStructure, PushGoogleSheetRow, GetGoogleAppsScriptTemplate, GenerateAIContentText, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
+import { FetchGoogleSheetStructure, PushGoogleSheetRow, PushGoogleSheetBatch, GetGoogleAppsScriptTemplate, GenerateAIContentText, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
 
 const props = defineProps<{
-  showToast: (msg: string, type: 'success' | 'error' | 'info' | 'warning') => void
+  showToast: (msg: string, type: 'success' | 'error' | 'info' | 'warning', duration?: number) => void
 }>()
 
 const STORAGE_KEY = 'traffictool_google_sheet_sync_config'
@@ -495,6 +505,7 @@ interface TopicGroup {
 }
 
 const isGeneratingAI = ref(false)
+const cancelGenerationFlag = ref(false)
 const isPushing = ref(false)
 const topicGroups = ref<TopicGroup[]>([])
 
@@ -691,31 +702,35 @@ const loadSavedConfig = async () => {
   } catch (e) {}
 }
 
+let saveTimeout: any = null
 const saveConfig = async () => {
-  const cfgObj = {
-    sheetUrl: sheetUrl.value,
-    webAppUrl: webAppUrl.value,
-    tabName: tabName.value,
-    tabGid: tabGid.value,
-    variantCount: variantCount.value,
-    inputTopics: inputTopics.value,
-    tabColumnSelections: tabColumnSelections.value,
-    columnPrompts: columnPrompts.value
-  }
-
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(cfgObj))
-
-  try {
-    const settingsStr = await GetGlobalSettings()
-    let parsed: Record<string, any> = {}
-    if (settingsStr) {
-      try {
-        parsed = JSON.parse(settingsStr)
-      } catch (e) {}
+  if (saveTimeout) clearTimeout(saveTimeout)
+  saveTimeout = setTimeout(async () => {
+    const cfgObj = {
+      sheetUrl: sheetUrl.value,
+      webAppUrl: webAppUrl.value,
+      tabName: tabName.value,
+      tabGid: tabGid.value,
+      variantCount: variantCount.value,
+      inputTopics: inputTopics.value,
+      tabColumnSelections: tabColumnSelections.value,
+      columnPrompts: columnPrompts.value
     }
-    parsed.googleSheetConfig = cfgObj
-    await SaveGlobalSettings(JSON.stringify(parsed, null, 2))
-  } catch (e) {}
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cfgObj))
+
+    try {
+      const settingsStr = await GetGlobalSettings()
+      let parsed: Record<string, any> = {}
+      if (settingsStr) {
+        try {
+          parsed = JSON.parse(settingsStr)
+        } catch (e) {}
+      }
+      parsed.googleSheetConfig = cfgObj
+      await SaveGlobalSettings(JSON.stringify(parsed, null, 2))
+    } catch (e) {}
+  }, 500)
 }
 
 watch([sheetUrl, webAppUrl, tabName, tabGid, variantCount, inputTopics, tabColumnSelections, columnPrompts], () => {
@@ -809,6 +824,32 @@ Không thêm bất kỳ chữ giải thích nào khác, không bọc trong markd
   }
 
   return { columnData, columnTranslations }
+}
+
+// Hàm bọc tự động thử lại (retry) khi gọi AI sinh nội dung nếu gặp lỗi rate limit hoặc lỗi mạng
+const generateColumnsForTopicWithRetry = async (
+  topic: string,
+  variantLabel: string,
+  cols: string[],
+  retries = 3,
+  delay = 1000
+): Promise<{ columnData: Record<string, string>, columnTranslations: Record<string, string> }> => {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const res = await generateColumnsForTopic(topic, variantLabel, cols)
+      if (res && Object.keys(res.columnData).length > 0) {
+        return res
+      }
+      throw new Error("Không lấy được dữ liệu hợp lệ từ AI")
+    } catch (e) {
+      if (attempt === retries || cancelGenerationFlag.value) {
+        throw e
+      }
+      console.warn(`[GoogleSheetSync] Thử lại sinh content lần ${attempt + 1}/${retries} sau lỗi:`, e)
+      await new Promise(resolve => setTimeout(resolve, delay * attempt))
+    }
+  }
+  return { columnData: {}, columnTranslations: {} }
 }
 
 // BƯỚC 1: Sinh nội dung cho các Cột được tick của Tab đang chọn
@@ -960,22 +1001,29 @@ const pushSelectedRowsToSheet = async () => {
 
   try {
     const headerListToUse = activeRawHeaders.value.length > 0 ? activeRawHeaders.value : activeHeaders.value
-    for (let i = 0; i < selectedItemsToPush.length; i++) {
-      const item = selectedItemsToPush[i]
+    
+    // Đánh dấu 'pushing' cho tất cả hàng được chọn
+    selectedItemsToPush.forEach(item => {
       item.pushStatus = 'pushing'
+    })
 
-      // Map dữ liệu theo đúng danh sách vị trí cột gốc (kể cả cột trống) để đẩy chính xác vào cột N, P...
-      const rowData: string[] = headerListToUse.map(h => (h ? (item.columnData[h] || '') : ''))
+    // Xây dựng mảng dữ liệu 2 chiều cho batch
+    const rowsData = selectedItemsToPush.map(item => {
+      return headerListToUse.map(h => (h ? (item.columnData[h] || '') : ''))
+    })
 
-      try {
-        await PushGoogleSheetRow(webAppUrl.value, tabGid.value, tabName.value, rowData, headerListToUse)
+    try {
+      await PushGoogleSheetBatch(webAppUrl.value, tabGid.value, tabName.value, rowsData, headerListToUse)
+      selectedItemsToPush.forEach(item => {
         item.pushStatus = 'success'
-        successCount++
-      } catch (err) {
-        console.error('Lỗi đẩy dòng:', err)
-        props.showToast(`Lỗi đẩy dòng #${i+1}: ${String(err)}`, 'error')
+      })
+      successCount = selectedItemsToPush.length
+    } catch (err) {
+      console.error('Lỗi đẩy batch:', err)
+      props.showToast(`Lỗi đẩy dữ liệu: ${String(err)}`, 'error')
+      selectedItemsToPush.forEach(item => {
         item.pushStatus = 'error'
-      }
+      })
     }
 
     if (successCount > 0) {

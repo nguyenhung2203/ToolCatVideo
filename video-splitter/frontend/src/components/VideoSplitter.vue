@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive, watch, onUnmounted } from 'vue'
+import { ref, computed, onMounted, reactive, watch, onUnmounted, nextTick } from 'vue'
 import { GetVideoInfo, Analyze, ExportClips, SelectFiles, CancelAnalysis, GetStreamURL, GetDefaultConfig, GenerateThumbnail, SaveProject, LoadProjectBySource, ListProjects, DeleteProject, SelectImageFile, SelectAudioFile, SelectFolder, CancelExport, SaveGlobalSettings, GetGlobalSettings, ExtractClipFrames, GenerateAIThumbnail, CheckForUpdates, GetAppVersion, OpenWebURL, ApplyManifestUpdate, MergeClips, SelectSubtitleFile, TranscribeSingleClip, AutoGenSubtitlesForClips } from '../../wailsjs/go/main/App'
 import { project, storage, main } from '../../wailsjs/go/models'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
@@ -555,12 +555,40 @@ watch(namingConfig, () => {
 // Trạng thái hiển thị ở thanh đáy workspace.
 const statusText = ref('Sẵn sàng')
 
+const showLogPanel = ref(false)
+const logs = ref<Array<{ time: string, msg: string, type: string }>>([])
+const logContainerRef = ref<HTMLElement | null>(null)
+
 let statusResetTimer: ReturnType<typeof setTimeout> | null = null
 
 // Cập nhật thanh trạng thái ở đáy workspace.
 // Tự động ẩn thông báo sau 8 giây để trở về 'Sẵn sàng', không đọng mãi trên màn hình.
 const addLog = (text: string) => {
   statusText.value = text
+  
+  const time = new Date().toLocaleTimeString('vi-VN', { hour12: false })
+  let type = 'info'
+  const lowerText = text.toLowerCase()
+  if (lowerText.includes('lỗi') || lowerText.includes('thất bại') || lowerText.includes('hủy') || lowerText.includes('error') || lowerText.includes('failed')) {
+    type = 'error'
+  } else if (lowerText.includes('hoàn thành') || lowerText.includes('thành công') || lowerText.includes('ok') || lowerText.includes('sẵn sàng') || lowerText.includes('xong') || lowerText.includes('✓') || lowerText.includes('success')) {
+    type = 'success'
+  } else if (lowerText.includes('cảnh báo') || lowerText.includes('chưa') || lowerText.includes('warning')) {
+    type = 'warning'
+  }
+
+  logs.value.push({ time, msg: text, type })
+  if (logs.value.length > 200) {
+    logs.value.shift()
+  }
+
+  // Cuộn xuống cuối panel nhật ký
+  nextTick(() => {
+    if (logContainerRef.value) {
+      logContainerRef.value.scrollTop = logContainerRef.value.scrollHeight
+    }
+  })
+
   if (statusResetTimer) {
     clearTimeout(statusResetTimer)
     statusResetTimer = null
@@ -1447,7 +1475,7 @@ onMounted(async () => {
 
   // Clip KHÔNG tạo được thumbnail AI → đánh dấu lỗi ngay trên card để người dùng biết
   // clip nào cần tạo lại (đã bỏ frame gốc dự phòng nên clip này hiện chưa có ảnh bìa).
-  EventsOn('clip_ai_thumb_failed', (task: any) => {
+  EventsOn('clip_ai_thumb_failed', async (task: any) => {
     if (!task) return
     for (const path of Object.keys(clipsMap.value)) {
       const clips = clipsMap.value[path] || []
@@ -1459,6 +1487,10 @@ onMounted(async () => {
       if (found) {
         (found as any).aiThumbFailed = true;
         (found as any).aiThumbError = task.errorMessage || 'Không tạo được ảnh bìa AI'
+        if (task.prependToVideo) {
+          found.status = 'failed';
+        }
+        await saveProject();
         break
       }
     }
@@ -4421,11 +4453,43 @@ const formatSize = (bytes: number) => {
 
     </div>
 
+    <!-- Bảng Nhật ký hoạt động collapsible (giống terminal) -->
+    <div v-if="showLogPanel" class="terminal-log-panel" style="background: #0f172a; border-top: 1px solid var(--border-color); height: 180px; display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box; flex-shrink: 0; z-index: 99;">
+      <div class="terminal-header" style="display: flex; justify-content: space-between; align-items: center; padding: 6px 16px; background: #1e293b; border-bottom: 1px solid rgba(255,255,255,0.06); flex-shrink: 0; user-select: none;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><line x1="6" y1="8" x2="10" y2="8"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="6" y1="16" x2="14" y2="16"/></svg>
+          <span style="font-size: 11px; font-weight: 700; color: #94a3b8; letter-spacing: 0.5px;">NHẬT KÝ HOẠT ĐỘNG CHI TIẾT</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <button @click="logs = []" style="background: none; border: none; color: #ef4444; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 4px; transition: background 0.2s;" onmouseover="this.style.background='rgba(239,68,68,0.1)'" onmouseout="this.style.background='none'">
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+            Xóa
+          </button>
+          <button @click="showLogPanel = false" style="background: none; border: none; color: #94a3b8; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.06)'" onmouseout="this.style.background='none'">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div ref="logContainerRef" class="terminal-body custom-scroll" style="flex: 1; overflow-y: auto; padding: 10px 16px; font-family: monospace; font-size: 11.5px; line-height: 1.5; color: #cbd5e1; display: flex; flex-direction: column; gap: 4px;">
+        <div v-if="logs.length === 0" style="color: #64748b; font-style: italic;">
+          Chưa có hoạt động nào được ghi nhận.
+        </div>
+        <div v-for="(log, idx) in logs" :key="idx" style="white-space: pre-wrap; word-break: break-all; display: flex; gap: 8px;">
+          <span style="color: #64748b; flex-shrink: 0;">[{{ log.time }}]</span>
+          <span :style="{ color: log.type === 'error' ? '#f87171' : log.type === 'success' ? '#34d399' : log.type === 'warning' ? '#facc15' : '#cbd5e1' }">{{ log.msg }}</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Thanh trạng thái CapCut-style dưới đáy (Đo tài nguyên Real-time) -->
     <footer class="system-status-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 4px 16px;">
       <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;">
         <div class="status-indicator-dot" :class="{ active: isAnalyzing || isExporting }"></div>
         <span class="status-msg-text" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ statusText }}</span>
+        <button @click="showLogPanel = !showLogPanel" class="status-log-toggle-btn" style="background: none; border: none; color: #38bdf8; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; font-size: 11px; font-weight: 700; margin-left: 8px; padding: 2px 6px; border-radius: 4px; transition: background 0.2s;" :style="{ background: showLogPanel ? 'rgba(56,189,248,0.15)' : 'transparent' }">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-top: 1px;"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          <span>{{ showLogPanel ? 'Ẩn Nhật Ký' : 'Xem Nhật Ký' }}</span>
+        </button>
       </div>
 
       <!-- Hiển thị tài nguyên CPU, RAM, GPU bên phải với Vector SVG icons -->

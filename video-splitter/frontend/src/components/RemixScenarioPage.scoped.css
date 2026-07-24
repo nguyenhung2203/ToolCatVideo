@@ -833,6 +833,15 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.summary-checklist li:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--wx-brand-accent, #06b6d4) !important;
 }
 
 .summary-checklist li.active {

@@ -136,6 +136,16 @@ func (s *Service) FetchSheetStructure(ctx context.Context, webAppURL string, spr
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	if u, uerr := url.Parse(webAppURL); uerr == nil {
+		if apiKey := u.Query().Get("key"); apiKey != "" {
+			req.Header.Set("X-API-Key", apiKey)
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		} else if token := u.Query().Get("token"); token != "" {
+			req.Header.Set("X-API-Key", token)
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
+
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("không kết nối được Web App: %v", err)
@@ -392,6 +402,16 @@ func (s *Service) sendRequest(ctx context.Context, webAppURL string, payload Web
 		return fmt.Errorf("lỗi tạo request HTTP: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+
+	if u, uerr := url.Parse(webAppURL); uerr == nil {
+		if apiKey := u.Query().Get("key"); apiKey != "" {
+			req.Header.Set("X-API-Key", apiKey)
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		} else if token := u.Query().Get("token"); token != "" {
+			req.Header.Set("X-API-Key", token)
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
 
 	resp, err := s.client.Do(req)
 	if err != nil {

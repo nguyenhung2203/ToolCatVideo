@@ -1304,11 +1304,11 @@ func PrependThumbnailIntro(ctx context.Context, clipPath, imagePath, outputPath 
 		}
 		_ = os.Remove(outputPath)
 	}
-
 	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), buildArgs("libx264", []string{"-preset", preset, "-crf", strconv.Itoa(crf)})...)
 	utils.HideCmdWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		_ = os.Remove(outputPath)
 		return fmt.Errorf("ffmpeg prepend intro error: %v, output: %s", err, string(out))
 	}
 	return nil

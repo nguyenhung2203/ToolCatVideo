@@ -377,31 +377,60 @@
   gap: var(--wx-space-3);
 }
 
-/* Select Bar */
-.dl-select-bar {
+/* Results Header */
+.dl-results-header {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  padding: var(--wx-space-2) var(--wx-space-3);
-  background: var(--wx-surface-sunken);
-  border: 1.5px solid var(--wx-border-default);
-  border-radius: var(--wx-radius-md);
+  align-items: center;
+  margin-bottom: var(--wx-space-3);
 }
 
-.dl-select-all-label {
+.dl-results-count {
+  font-size: var(--wx-fs-13);
+  color: var(--wx-text-muted);
   display: flex;
   align-items: center;
   gap: var(--wx-space-2);
-  font-size: var(--wx-fs-13);
-  color: var(--wx-text-primary);
-  cursor: pointer;
-  user-select: none;
 }
 
-.dl-selected-count {
+.dl-results-count strong {
+  color: var(--wx-text-primary);
+  font-size: var(--wx-fs-18);
+}
+
+.dl-source-tag {
+  font-size: 10px;
+  font-weight: var(--wx-fw-bold);
+  padding: 2px var(--wx-space-2);
+  border-radius: var(--wx-radius-full);
+  background: color-mix(in srgb, var(--wx-brand-accent) 12%, transparent);
+  color: var(--wx-brand-accent);
+  text-transform: capitalize;
+}
+
+.dl-toggle-all-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--wx-space-1);
   font-size: var(--wx-fs-12);
+  padding: 4px var(--wx-space-3);
+  border-radius: var(--wx-radius-md);
+  border: 1px solid var(--wx-border-default);
+  background: color-mix(in srgb, var(--wx-surface-base) 4%, transparent);
   color: var(--wx-text-muted);
   font-weight: var(--wx-fw-semibold);
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.dl-toggle-all-btn:hover {
+  border-color: var(--wx-brand-accent);
+  color: var(--wx-brand-accent);
+}
+
+.dl-count-badge {
+  font-weight: var(--wx-fw-bold);
+  color: var(--wx-text-primary);
 }
 
 /* Entry Cards List */

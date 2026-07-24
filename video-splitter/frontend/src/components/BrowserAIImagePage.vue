@@ -1015,10 +1015,6 @@ const chooseImageFile = async () => {
     if (paths && paths.length > 0) {
       let added = 0
       for (const path of paths) {
-        if (inputImages.value.length >= 3) {
-          showToast("Chỉ chọn được tối đa 3 ảnh, các ảnh thừa đã bị bỏ qua.", "warning")
-          break
-        }
         if (inputImages.value.some(img => img.path === path)) continue
         const url = await GetStreamURL(path)
         inputImages.value.push({

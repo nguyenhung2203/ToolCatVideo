@@ -277,13 +277,16 @@ const failedThumbs = ref<Set<string>>(new Set())
 
     <!-- ── Results area ────────────────────────────── -->
     <div class="dl-results-area" v-if="probeResult && !isProbing">
-      <!-- ── Select all bar ──────────────────────────── -->
-      <div class="dl-select-bar" v-if="filteredDlEntries.length > 0">
-        <label class="dl-select-all-label" @click="dlToggleAll">
-          <input type="checkbox" :checked="dlSelectedCount === filteredDlEntries.length && filteredDlEntries.length > 0" @click.stop="dlToggleAll" />
-          Chọn tất cả
-        </label>
-        <span class="dl-selected-count">Đã chọn: {{ dlSelectedCount }}/{{ filteredDlEntries.length }}</span>
+      <!-- Results header -->
+      <div class="dl-results-header" v-if="filteredDlEntries.length > 0">
+        <span class="dl-results-count">
+          <strong>{{ filteredDlEntries.length }}</strong> video tìm thấy
+          <span v-if="probeResult && probeResult.platform" class="dl-source-tag">{{ probeResult.platform }}</span>
+        </span>
+        <button type="button" @click="dlToggleAll" class="dl-toggle-all-btn">
+          {{ dlSelectedCount === filteredDlEntries.length ? 'Bỏ tất cả' : 'Chọn tất cả' }}
+          <span class="dl-count-badge">({{ dlSelectedCount }}/{{ filteredDlEntries.length }})</span>
+        </button>
       </div>
 
       <!-- ── Entry list ──────────────────────────────── -->

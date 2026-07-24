@@ -2245,22 +2245,23 @@ onMounted(load)
         <div class="inspector-summary-card">
           <h4 class="summary-heading">Các hiệu ứng đang bật:</h4>
           <ul class="summary-checklist">
-            <li :class="{ active: draft.hflip }">Lật ngang video (Mirror)</li>
-            <li :class="{ active: draft.speed !== 1.0 }">Tốc độ phát: {{ draft.speed }}x</li>
-            <li :class="{ active: draft.zoomEnabled }">Zoom Ken Burns: {{ draft.zoomFactor }}x</li>
-            <li :class="{ active: draft.cropEnabled }">Cắt rìa Crop: {{ Math.round(draft.cropPercent * 100) }}%</li>
-            <li :class="{ active: draft.rotateEnabled }">Xoay nghiêng: {{ draft.rotateDegrees }}°</li>
-            <li :class="{ active: draft.trimStart > 0 || draft.trimEnd > 0 }">Cắt đầu {{ draft.trimStart }}s / đuôi {{ draft.trimEnd }}s</li>
-            <li :class="{ active: draft.aspectEnabled }">Khung {{ draft.aspectRatio }} ({{ draft.aspectMode }})</li>
-            <li :class="{ active: draft.colorEnabled }">Màu sắc: {{ draft.colorPreset ? draft.colorPreset.toUpperCase() : 'Chỉnh màu' }}</li>
-            <li :class="{ active: draft.noiseEnabled }">Hạt nhiễu Noise (Mức {{ draft.noiseStrength }})</li>
-            <li :class="{ active: draft.wmEnabled && !!draft.wmPath }">Logo Watermark (Cỡ {{ Math.round(draft.wmScale * 100) }}%)</li>
-            <li :class="{ active: !!draft.musicPath }">Nhạc nền MP3</li>
-            <li :class="{ active: draft.muteOriginal }">Tắt tiếng video gốc</li>
-            <li :class="{ active: draft.subEnabled && !!draft.subPath }">Ghép phụ đề file (.SRT / .ASS)</li>
-            <li :class="{ active: draft.subAutoGen }">Whisper AI tự tạo phụ đề</li>
-            <li :class="{ active: selectedTextsCount > 0 }">Chèn chữ tùy chọn (Đã tích {{ selectedTextsCount }}/{{ draft.texts.length }} câu — hiện tất cả khi xuất)</li>
-            <li :class="{ active: draft.stripMeta }">Xóa Metadata chống quét</li>
+            <li :class="{ active: draft.hflip }" @click="activeCategoryTab = 'video'">Lật ngang video (Mirror)</li>
+            <li :class="{ active: draft.speed !== 1.0 }" @click="activeCategoryTab = 'video'">Tốc độ phát: {{ draft.speed }}x</li>
+            <li :class="{ active: draft.zoomEnabled }" @click="activeCategoryTab = 'video'">Zoom Ken Burns: {{ draft.zoomFactor }}x</li>
+            <li :class="{ active: draft.cropEnabled }" @click="activeCategoryTab = 'video'">Cắt rìa Crop: {{ Math.round(draft.cropPercent * 100) }}%</li>
+            <li :class="{ active: draft.rotateEnabled }" @click="activeCategoryTab = 'video'">Xoay nghiêng: {{ draft.rotateDegrees }}°</li>
+            <li :class="{ active: draft.trimStart > 0 || draft.trimEnd > 0 }" @click="activeCategoryTab = 'video'">Cắt đầu {{ draft.trimStart }}s / đuôi {{ draft.trimEnd }}s</li>
+            <li :class="{ active: draft.aspectEnabled }" @click="activeCategoryTab = 'color'">Khung {{ draft.aspectRatio }} ({{ draft.aspectMode }})</li>
+            <li :class="{ active: draft.colorEnabled }" @click="activeCategoryTab = 'color'">Màu sắc: {{ draft.colorPreset ? draft.colorPreset.toUpperCase() : 'Chỉnh màu' }}</li>
+            <li :class="{ active: draft.noiseEnabled }" @click="activeCategoryTab = 'video'">Hạt nhiễu Noise (Mức {{ draft.noiseStrength }})</li>
+            <li :class="{ active: draft.wmEnabled && !!draft.wmPath }" @click="activeCategoryTab = 'audio'">Logo Watermark (Cỡ {{ Math.round(draft.wmScale * 100) }}%)</li>
+            <li :class="{ active: !!draft.musicPath }" @click="activeCategoryTab = 'audio'">Nhạc nền MP3</li>
+            <li :class="{ active: draft.muteOriginal }" @click="activeCategoryTab = 'audio'">Tắt tiếng video gốc</li>
+            <li :class="{ active: draft.subEnabled && !!draft.subPath }" @click="activeCategoryTab = 'subtitle'">Ghép phụ đề file (.SRT / .ASS)</li>
+            <li :class="{ active: draft.subAutoGen }" @click="activeCategoryTab = 'subtitle'">Whisper AI tự tạo phụ đề</li>
+            <li :class="{ active: selectedTextsCount > 0 }" @click="activeCategoryTab = 'subtitle'">Chèn chữ</li>
+            <li :class="{ active: draft.cardEnabled }" @click="activeCategoryTab = 'subtitle'">Chèn nền Card / Banner đệm chữ</li>
+            <li :class="{ active: draft.stripMeta }" @click="activeCategoryTab = 'audio'">Xóa Metadata chống quét</li>
           </ul>
         </div>
       </div>
