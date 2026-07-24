@@ -166,10 +166,17 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 	// Xử lý nhạc nền (đơn hoặc ghép nhiều bài)
 	musicPathToUse := e.Audio.MusicPath
 	if len(e.Audio.MusicTracks) > 0 {
-		if len(e.Audio.MusicTracks) == 1 {
-			musicPathToUse = e.Audio.MusicTracks[0]
-		} else {
-			mergedMusic, err := mergeMusicTracks(ctx, e.Audio.MusicTracks)
+		// Lọc chỉ giữ các file nhạc thực sự tồn tại tránh ffmpeg lỗi
+		validTracks := make([]string, 0, len(e.Audio.MusicTracks))
+		for _, t := range e.Audio.MusicTracks {
+			if _, err := os.Stat(t); err == nil {
+				validTracks = append(validTracks, t)
+			}
+		}
+		if len(validTracks) == 1 {
+			musicPathToUse = validTracks[0]
+		} else if len(validTracks) > 1 {
+			mergedMusic, err := mergeMusicTracks(ctx, validTracks)
 			if err != nil {
 				return err
 			}
@@ -177,12 +184,23 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 				musicPathToUse = mergedMusic
 				tmpFiles = append(tmpFiles, mergedMusic) // tự động xóa khi chạy xong
 			}
+		} else {
+			musicPathToUse = "" // Không có bài nhạc hợp lệ
+		}
+	}
+	// Kiểm tra file nhạc đơn có tồn tại không
+	if musicPathToUse != "" {
+		if _, err := os.Stat(musicPathToUse); err != nil {
+			musicPathToUse = "" // Bỏ qua nhạc nền nếu file không tồn tại
 		}
 	}
 
 	wmIdx := -1
 	if e.Watermark.Enabled && e.Watermark.ImgPath != "" {
-		wmIdx = 1
+		// Chỉ dùng watermark nếu file thực sự tồn tại
+		if _, statErr := os.Stat(e.Watermark.ImgPath); statErr == nil {
+			wmIdx = 1
+		}
 	}
 	musicIdx := -1
 	if musicPathToUse != "" {
@@ -199,7 +217,14 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 	// Đặt làm input CUỐI cùng để KHÔNG lệch wmIdx/musicIdx đã gán ở trên.
 	cardIdx := -1
 	cardPath := ""
-	if cardEnabled(e.Card) {
+	canUseCard := cardEnabled(e.Card)
+	// Nếu mode="image" kiểm tra file ảnh có tồn tại không trước khi render
+	if canUseCard && strings.ToLower(strings.TrimSpace(e.Card.Mode)) == "image" {
+		if _, statErr := os.Stat(strings.TrimSpace(e.Card.ImgPath)); statErr != nil {
+			canUseCard = false // Bỏ qua card nếu file ảnh không tồn tại
+		}
+	}
+	if canUseCard {
 		p, cerr := renderCardPNG(e.Card, frameW, frameH)
 		if cerr != nil {
 			return cerr
@@ -519,20 +544,25 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, cardIdx, frameW
 	}
 	curLabel := preLabel
 
-	// Overlay Card/banner (NỀN, nằm dưới chữ). Card đã render sẵn thành PNG (cardIdx).
-	// Card.X/Card.Y là phân số 0..1 (fx=0 mép trái, fx=1 mép phải, 0.5 giữa) — khớp cách
-	// preview đặt card theo % không gian trống. Thời gian hiện qua enable=between(...).
-	if cardIdx >= 0 {
-		fx := parseFrac(e.Card.X, 0.5)
-		fy := parseFrac(e.Card.Y, 0.5)
-		parts = append(parts, fmt.Sprintf("[%d:v]format=rgba[cardimg]", cardIdx))
-		parts = append(parts, fmt.Sprintf(
-			"%s[cardimg]overlay=(main_w-overlay_w)*%s:(main_h-overlay_h)*%s%s[vcard]",
-			curLabel, trimFloat(fx), trimFloat(fy), betweenEnable(e.Card.StartTime, e.Card.EndTime)))
-		curLabel = "[vcard]"
+	// Hàm helper dựng filter overlay Card
+	applyCardOverlay := func() {
+		if cardIdx >= 0 {
+			fx := parseFrac(e.Card.X, 0.5)
+			fy := parseFrac(e.Card.Y, 0.5)
+			parts = append(parts, fmt.Sprintf("[%d:v]format=rgba[cardimg]", cardIdx))
+			parts = append(parts, fmt.Sprintf(
+				"%s[cardimg]overlay=(main_w-overlay_w)*%s:(main_h-overlay_h)*%s%s[vcard]",
+				curLabel, trimFloat(fx), trimFloat(fy), betweenEnable(e.Card.StartTime, e.Card.EndTime)))
+			curLabel = "[vcard]"
+		}
 	}
 
-	// Chữ + phụ đề (nằm TRÊN card). Áp tuyến tính lên nhánh hiện tại → [vtext].
+	// Card.CardAboveText = false (mặc định): Nền Card nằm DƯỚI chữ -> render Card trước
+	if !e.Card.CardAboveText {
+		applyCardOverlay()
+	}
+
+	// Chữ + phụ đề. Áp tuyến tính lên nhánh hiện tại → [vtext].
 	var textSteps []string
 	fontPath := utils.GetFontPath()
 	for i, t := range e.Texts {
@@ -547,21 +577,29 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, cardIdx, frameW
 		textSteps = append(textSteps, drawText(t, fontPath, txtFile))
 	}
 	// Phụ đề burn-in (hardsub) — render sau drawtext để nằm trên khung kích thước cuối.
+	// Chỉ dùng phụ đề nếu file .srt thực sự tồn tại trên đĩa — tránh ffmpeg lỗi khi kịch bản có đường dẫn cũ.
 	if e.Subtitle.Enabled && strings.TrimSpace(e.Subtitle.Path) != "" {
-		sub := e.Subtitle
-		if sub.HasCustomPosition {
-			positionedPath, perr := writePositionedSubtitle(sub, frameW, frameH)
-			if perr != nil {
-				return "", "", nil, textFiles, perr
+		if _, subStatErr := os.Stat(strings.TrimSpace(e.Subtitle.Path)); subStatErr == nil {
+			sub := e.Subtitle
+			if sub.HasCustomPosition {
+				positionedPath, perr := writePositionedSubtitle(sub, frameW, frameH)
+				if perr != nil {
+					return "", "", nil, textFiles, perr
+				}
+				textFiles = append(textFiles, positionedPath)
+				sub.Path = positionedPath
 			}
-			textFiles = append(textFiles, positionedPath)
-			sub.Path = positionedPath
+			textSteps = append(textSteps, subtitleFilter(sub))
 		}
-		textSteps = append(textSteps, subtitleFilter(sub))
 	}
 	if len(textSteps) > 0 {
 		parts = append(parts, fmt.Sprintf("%s%s[vtext]", curLabel, strings.Join(textSteps, ",")))
 		curLabel = "[vtext]"
+	}
+
+	// Card.CardAboveText = true: Nền Card đè LÊN chữ -> render Card sau chữ
+	if e.Card.CardAboveText {
+		applyCardOverlay()
 	}
 
 	vLabel := curLabel
@@ -666,6 +704,9 @@ func drawText(t project.TextOp, fontPath, txtFile string) string {
 	if color == "" {
 		color = "white"
 	}
+	if strings.HasPrefix(color, "#") {
+		color = fmt.Sprintf("'%s'", color)
+	}
 	size := t.FontSize
 	if size <= 0 {
 		size = 48
@@ -679,7 +720,7 @@ func drawText(t project.TextOp, fontPath, txtFile string) string {
 		y = "h-text_h-80"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "drawtext=fontfile=%s:textfile=%s:fontcolor=%s:fontsize=%d:x=%s:y=%s",
+	fmt.Fprintf(&b, "drawtext=fontfile='%s':textfile='%s':fontcolor=%s:fontsize=%d:x=%s:y=%s",
 		ffFilterPath(fontPath), ffFilterPath(txtFile), color, size, x, y)
 	if t.BgBox {
 		b.WriteString(":box=1:boxcolor=black@0.5:boxborderw=10")

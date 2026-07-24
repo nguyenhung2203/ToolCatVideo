@@ -650,6 +650,7 @@ export namespace project {
 	    borderRadius: number;
 	    startTime: number;
 	    endTime: number;
+	    cardAboveText: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new CardOp(source);
@@ -671,6 +672,7 @@ export namespace project {
 	        this.borderRadius = source["borderRadius"];
 	        this.startTime = source["startTime"];
 	        this.endTime = source["endTime"];
+	        this.cardAboveText = source["cardAboveText"];
 	    }
 	}
 	export class SubtitleOp {

@@ -276,7 +276,11 @@ def scan_proxy_unified(proxy_path, scene_threshold=20.0, k_detect=3.0):
     mad_thr    = robust_threshold(mad_arr,    k_eff, floor=0.12)
     # Black: tương đối theo độ sáng tổng thể → video tối tuyệt đối vẫn phát hiện được
     # cú "sụt sáng" (dip), video sáng đều không báo nhầm.
-    black_thr  = min(16.0, 0.25 * _median(bri_arr))
+    # Base thấp hơn (0.18 thay 0.25, cap 12 thay 16) để cảnh ĐÊM/FADE không bị bắt nhầm
+    # là ranh giới — chỉ frame TỐI THẬT SỰ mới tính. Chia cho k_scale để knob "Độ nhạy
+    # cắt" điều tiết luôn điểm tối (knob cao → ngưỡng thấp → ÍT điểm đen); trước đây
+    # black miễn nhiễm với knob nên chỉnh knob không giảm được cắt nhầm do frame tối.
+    black_thr  = min(12.0, 0.18 * _median(bri_arr)) / k_scale
 
     # p99 để chuẩn hoá cường độ (khoảng cách trên ngưỡng, kẹp tại phân vị 99)
     scene_p99  = _percentile(scene_arr,  99.0)

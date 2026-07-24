@@ -99,22 +99,47 @@ func TestSmartKeepsVeryStrongHardCut(t *testing.T) {
 	}
 }
 
-// TestPreciseKeepsStrongAudioOnlyBoundary: ranh giới CHỈ có thay đổi âm thanh mạnh
-// (đổi môi trường/nhạc nền) phải được Kỹ giữ — quan trọng cho video nói liên tục.
-func TestPreciseKeepsStrongAudioOnlyBoundary(t *testing.T) {
+// TestAudioSoloDoesNotCut: âm thanh đứng MỘT MÌNH (nhịp/drop nhạc nền giữa clip)
+// KHÔNG được tạo ranh giới ở BẤT KỲ chế độ nào — kể cả Kỹ. Đây là fix trị gốc hiện
+// tượng cắt quá nhạy: nhạc TikTok beat mạnh từng băm một clip thành nhiều mảnh.
+func TestAudioSoloDoesNotCut(t *testing.T) {
+	for _, mode := range []string{project.ModeFast, project.ModeSmart, project.ModePrecise} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := project.DefaultConfig()
+			cfg.Mode = mode
+			cfg.MaxClipDuration = 0
+
+			candidate := Candidate{
+				Timestamp: 12.5,
+				Signals:   CandidateSignals{AudioChange: 100},
+				Reason:    "Đổi nhạc nền (audio đơn độc)",
+			}
+
+			clips := CalculateBoundaries([]Candidate{candidate}, cfg, 30, "")
+			if len(clips) != 1 {
+				t.Fatalf("%s: audio đơn độc tạo %d clip, muốn 1 (không cắt)", mode, len(clips))
+			}
+		})
+	}
+}
+
+// TestAudioWithCorroborationCuts: âm thanh KÈM một tín hiệu khác (đổi hình / im lặng)
+// vẫn tạo ranh giới bình thường — ranh giới thật trong video nói liên tục luôn có
+// khoảng lặng giọng nói hoặc đổi cảnh đi kèm, nên không bị chặn nhầm.
+func TestAudioWithCorroborationCuts(t *testing.T) {
 	cfg := project.DefaultConfig()
 	cfg.Mode = project.ModePrecise
 	cfg.MaxClipDuration = 0
 
 	candidate := Candidate{
 		Timestamp: 12.5,
-		Signals:   CandidateSignals{AudioChange: 100},
-		Reason:    "Đổi môi trường âm thanh",
+		Signals:   CandidateSignals{AudioChange: 100, Silence: 80},
+		Reason:    "Đổi âm thanh + khoảng lặng",
 	}
 
 	clips := CalculateBoundaries([]Candidate{candidate}, cfg, 30, "")
 	if len(clips) != 2 {
-		t.Fatalf("Kỹ có %d clip, muốn 2", len(clips))
+		t.Fatalf("Kỹ (audio+silence) có %d clip, muốn 2", len(clips))
 	}
 	if clips[0].EndTime != candidate.Timestamp {
 		t.Fatalf("điểm cắt = %.3f, muốn %.3f", clips[0].EndTime, candidate.Timestamp)

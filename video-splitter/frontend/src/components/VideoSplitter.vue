@@ -554,10 +554,22 @@ watch(namingConfig, () => {
 // Trạng thái hiển thị ở thanh đáy workspace.
 const statusText = ref('Sẵn sàng')
 
-// Chỉ cập nhật thanh trạng thái ở đáy workspace — không hiện toast popup nữa
-// (người dùng thấy phiền vì các thông báo tiến trình nhảy lên liên tục).
+let statusResetTimer: ReturnType<typeof setTimeout> | null = null
+
+// Cập nhật thanh trạng thái ở đáy workspace.
+// Tự động ẩn thông báo sau 8 giây để trở về 'Sẵn sàng', không đọng mãi trên màn hình.
 const addLog = (text: string) => {
   statusText.value = text
+  if (statusResetTimer) {
+    clearTimeout(statusResetTimer)
+    statusResetTimer = null
+  }
+
+  statusResetTimer = setTimeout(() => {
+    if (!isExporting.value && !isMultiExportRunning.value && !isScenarioExporting.value) {
+      statusText.value = 'Sẵn sàng'
+    }
+  }, 8000)
 }
 
 
@@ -683,10 +695,13 @@ const saveRemixScenarios = () => {
 // Xuất ngay từ tab Chỉnh sửa: áp ĐÚNG kịch bản đang mở (scenarioId) cho các clip của
 // video hiện tại, bất kể tab Cắt & Xuất đang tick gì. forcedScenarioId được reset ở cuối
 // exportClips để lần xuất sau (từ tab Cắt & Xuất) quay lại dùng tick như cũ.
+const isScenarioExporting = ref(false)
+
 const handleExportFromScenario = (scenarioId?: string) => {
   loadRemixScenarios()
   forcedScenarioId = scenarioId || ''
   forceFullVideoExport = true
+  isScenarioExporting.value = true
   exportClips()
 }
 
@@ -709,6 +724,25 @@ const toggleScenarioSelect = (id: string) => {
   if (ids.has(id)) ids.delete(id)
   else ids.add(id)
   selectedScenarioIds.value = ids
+  localStorage.setItem('remix_selected_scenario_ids', JSON.stringify(Array.from(ids)))
+
+  if (ids.size > 0) {
+    const activeScenarios = remixScenarios.value.filter(s => ids.has(s.id))
+    if (activeScenarios.length > 0 && activeScenarios[0].edit) {
+      for (const p of Object.keys(clipsMap.value)) {
+        const list = clipsMap.value[p] || []
+        list.forEach(c => {
+          c.edit = JSON.parse(JSON.stringify(activeScenarios[0].edit))
+        })
+      }
+    }
+  } else {
+    // Nếu bỏ chọn hoàn toàn (không kịch bản nào được chọn), reset clip.edit của mọi clip về mặc định
+    for (const p of Object.keys(clipsMap.value)) {
+      const list = clipsMap.value[p] || []
+      list.forEach(c => { c.edit = defaultEdit() })
+    }
+  }
 }
 
 // Chọn 1 kịch bản cho clip thứ idx theo chế độ phân bổ.
@@ -2315,6 +2349,7 @@ const stopExport = async () => {
   try {
     await CancelExport()
     isExporting.value = false
+    isScenarioExporting.value = false
     // Nút Dừng chỉ hủy task thumbnail của LUỒNG CẮT VIDEO (nguồn "video-cut"),
     // KHÔNG đụng task tạo ảnh AI riêng ("ai-image") đang chạy song song ở trang kia.
     if (aiQueueState.isRunning) {
@@ -2498,6 +2533,10 @@ const exportClips = async () => {
 
       okCount += results.filter(r => r.ok).length
       results.filter(r => !r.ok).forEach(f => {
+        const errMsg = (f as any).error || 'Lỗi không xác định'
+        // In log lỗi chi tiết ra console + status bar để debug
+        console.error(`[Xuất Lỗi] Clip #${f.index} - ${videoPath.split('\\').pop()}: ${errMsg}`)
+        addLog(`[Lỗi Xuất] Clip #${f.index}: ${errMsg}`)
         failedList.push({ index: f.index, video: videoPath.split('\\').pop() || 'Video' })
       })
     }
@@ -2519,6 +2558,7 @@ const exportClips = async () => {
     showToast('Lỗi xuất video: ' + err, 'error')
   } finally {
     isExporting.value = false
+    isScenarioExporting.value = false
     if (!exportWithThumbnails.value && !aiQueueState.isRunning) {
       isMultiExportRunning.value = false
     }
@@ -2526,6 +2566,7 @@ const exportClips = async () => {
     // Reset: lần xuất sau (từ tab Cắt & Xuất) quay lại dùng kịch bản tick như cũ.
     forcedScenarioId = ''
     forceFullVideoExport = false
+    addLog(statusText.value)
   }
 }
 
@@ -3415,6 +3456,34 @@ const editSummary = computed<string[]>(() => {
 // Chip tóm tắt hiệu ứng cho MỘT clip bất kỳ (hiển thị ở thẻ clip danh sách).
 const clipEditChips = (clip: project.Clip): string[] => {
   const tags: string[] = []
+
+  // 1. Nếu có kịch bản được tích chọn ở CẤU HÌNH XUẤT, hiển thị nhãn Kịch bản + các hiệu ứng trong kịch bản đó
+  const activeScenarios = remixScenarios.value.filter(s => selectedScenarioIds.value.has(s.id))
+  if (activeScenarios.length > 0) {
+    if (activeScenarios.length === 1) {
+      tags.push(`🎬 ${activeScenarios[0].name}`)
+    } else {
+      tags.push(`🎬 ${activeScenarios.length} Kịch bản`)
+    }
+
+    const scEdit = activeScenarios[0].edit
+    const e = clip.edit || scEdit
+    if (e) {
+      if (e.hflip) tags.push('lật')
+      if (e.aspect?.enabled) tags.push(e.aspect.ratio)
+      if (e.color?.enabled || e.color?.preset) tags.push('màu')
+      if (e.speed && e.speed !== 1) tags.push(e.speed + '×')
+      if (e.texts?.length) tags.push('chữ ' + e.texts.length)
+      if (e.card?.enabled || e.cardAboveText) tags.push('nền card')
+      if (e.watermark?.enabled && e.watermark?.imgPath) tags.push('logo')
+      if (e.audio?.musicPath) tags.push('nhạc')
+      if ((e.audio?.fadeIn || 0) > 0 || (e.audio?.fadeOut || 0) > 0) tags.push('fade')
+      if (e.transition?.type && (e.transition?.duration || 0) > 0) tags.push('trans')
+    }
+    return tags
+  }
+
+  // 2. Nếu không tick kịch bản, hiển thị cấu hình edit riêng của clip nếu có
   const e = clip.edit
   if (!e) return tags
   if (e.hflip) tags.push('lật')
@@ -3422,10 +3491,11 @@ const clipEditChips = (clip: project.Clip): string[] => {
   if (e.color?.enabled || e.color?.preset) tags.push('màu')
   if (e.speed && e.speed !== 1) tags.push(e.speed + '×')
   if (e.texts?.length) tags.push('chữ ' + e.texts.length)
+  if (e.card?.enabled || e.cardAboveText) tags.push('nền card')
   if (e.watermark?.enabled && e.watermark?.imgPath) tags.push('logo')
   if (e.audio?.musicPath) tags.push('nhạc')
   if ((e.audio?.fadeIn || 0) > 0 || (e.audio?.fadeOut || 0) > 0) tags.push('fade')
-  if (e.transition?.type && e.transition?.duration > 0) tags.push('trans')
+  if (e.transition?.type && (e.transition?.duration || 0) > 0) tags.push('trans')
   return tags
 }
 
@@ -3546,19 +3616,7 @@ const playClip = async (clip: any) => {
 }
 
 const togglePlayCardClip = async (clip: any) => {
-  // 1. Khi CHƯA XUẤT CLIP: bấm vào card → tự động tua trình phát video gốc ở trên đến mốc startTime
-  if (!clip.exportedPath) {
-    if (clip._videoPath && clip._videoPath !== activeVideoPath.value) {
-      const idx = videoPaths.value.indexOf(clip._videoPath)
-      if (idx !== -1) {
-        await selectVideo(idx)
-      }
-    }
-    jumpToTime(clip.startTime)
-    return
-  }
-
-  // 2. Khi ĐÃ XUẤT CLIP: bấm vào card → phát trực tiếp file clip đã xuất ngay trên card
+  // Nếu đang phát clip này -> bấm lần nữa để đóng/dừng phát
   if (playingCardClipId.value === clip.id) {
     playingCardClipId.value = ''
     playingCardVideoSrc.value = ''
@@ -3566,12 +3624,23 @@ const togglePlayCardClip = async (clip: any) => {
   }
 
   try {
-    const url = await GetStreamURL(clip.exportedPath)
+    const videoPathToStream = clip.exportedPath || clip._videoPath || activeVideoPath.value
+    if (!videoPathToStream) {
+      showToast('Không tìm thấy video để xem thử', 'warning')
+      return
+    }
+
+    const url = await GetStreamURL(videoPathToStream)
     playingCardVideoSrc.value = url
     playingCardClipId.value = clip.id
-    addLog(`Phát trực tiếp clip thành phẩm đã xuất: Clip #${clip.index}`)
+
+    if (clip.exportedPath) {
+      addLog(`Phát trực tiếp clip thành phẩm đã xuất: Clip #${clip.index}`)
+    } else {
+      addLog(`Xem thử đoạn cắt: Clip #${clip.index} (${formatTime(clip.startTime)} ➔ ${formatTime(clip.endTime)})`)
+    }
   } catch (e) {
-    showToast('Lỗi phát clip: ' + String(e), 'error')
+    showToast('Lỗi phát clip xem thử: ' + String(e), 'error')
   }
 }
 
@@ -3582,6 +3651,7 @@ const onCardVideoLoaded = (e: Event, clip: any) => {
   if (!clip.exportedPath && clip.startTime > 0) {
     video.currentTime = clip.startTime
   }
+  video.play().catch(() => {})
 }
 
 const onCardVideoTimeUpdate = (e: Event, clip: any) => {
@@ -3598,6 +3668,11 @@ const onCardVideoTimeUpdate = (e: Event, clip: any) => {
     }
     const relSec = Math.max(0, video.currentTime - start)
     const totalSec = Math.max(1, end - start)
+    cardRelTimeStr.value = `${formatTime(relSec)} / ${formatTime(totalSec)}`
+  } else {
+    cardRelTimeStr.value = `${formatTime(video.currentTime)} / ${formatTime(video.duration || 0)}`
+  }
+}
     cardRelTimeStr.value = `${formatTime(relSec)} / ${formatTime(totalSec)}`
   }
 }
@@ -4138,8 +4213,8 @@ const formatSize = (bytes: number) => {
                     @loadedmetadata="onCardVideoLoaded($event, clip)"
                     @timeupdate="onCardVideoTimeUpdate($event, clip)"
                   ></video>
-                  <div v-if="!clip.exportedPath && cardRelTimeStr" style="position: absolute; top: 6px; left: 6px; background: rgba(15, 23, 42, 0.85); color: #38bdf8; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(56,189,248,0.4); pointer-events: none; z-index: 9; backdrop-filter: blur(4px);">
-                    ⏱️ Xem thử: {{ cardRelTimeStr }}
+                  <div v-if="cardRelTimeStr" style="position: absolute; top: 6px; left: 6px; background: rgba(15, 23, 42, 0.85); color: #38bdf8; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(56,189,248,0.4); pointer-events: none; z-index: 9; backdrop-filter: blur(4px);">
+                    ⏱️ {{ clip.exportedPath ? 'Thành phẩm' : 'Xem thử' }}: {{ cardRelTimeStr }}
                   </div>
                   <button @click.stop="playingCardClipId = ''; playingCardVideoSrc = ''" style="position: absolute; top: 6px; right: 6px; background: rgba(0,0,0,0.75); color: white; border: none; border-radius: 50%; width: 22px; height: 22px; cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 10;" title="Đóng trình phát">
                     <X :size="12" />
@@ -4352,7 +4427,7 @@ const formatSize = (bytes: number) => {
       <KeepAlive><BrowserAIVideoPage v-if="activeView === 'ai-video'" :default-output-dir="outDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-video="handleApplyAIVideo" @show-toast="showToast" /></KeepAlive>
 
       <!-- TRANG KỊCH BẢN XÀO NẤU: tạo/sửa/xóa combo EditOps. Reload lại danh sách khi quay về. -->
-      <KeepAlive><RemixScenarioPage v-if="activeView === 'scenarios'" :active-video-src="activeVideoSrc" :output-dir="outDir" :videos="videoPaths" :active-video-index="activeVideoIndex" :show-toast="showToast" :is-exporting="isExporting" :export-progress="exportProgress" :export-status-text="exportStatusText" :eta-text="getExportETA()" @back="activeView = 'split'; loadRemixScenarios()" @export="handleExportFromScenario" @select-video="selectVideo" @select-external-video="handleSelectVideoForEdit" @update:outputDir="outDir = $event" /></KeepAlive>
+      <KeepAlive><RemixScenarioPage v-if="activeView === 'scenarios'" :active-video-src="activeVideoSrc" :output-dir="outDir" :videos="videoPaths" :active-video-index="activeVideoIndex" :show-toast="showToast" :is-exporting="isScenarioExporting" :export-progress="exportProgress" :export-status-text="exportStatusText" :eta-text="getExportETA()" @back="activeView = 'split'; loadRemixScenarios()" @export="handleExportFromScenario" @stop-export="stopExport" @select-video="selectVideo" @select-external-video="handleSelectVideoForEdit" @update:outputDir="outDir = $event" /></KeepAlive>
 
       <!-- TRANG ĐỒNG BỘ GOOGLE SHEET & AI CONTENT -->
       <KeepAlive><GoogleSheetSyncPage v-if="activeView === 'google-sheet'" :show-toast="showToast" /></KeepAlive>

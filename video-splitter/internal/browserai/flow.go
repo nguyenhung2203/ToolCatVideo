@@ -1678,7 +1678,11 @@ func GenerateFlowVideo(
 				elapsedSec := time.Since(submittedAt).Seconds()
 
 				// Phát hiện video đã hoàn thành: KHÔNG còn spinner/phần trăm (!isGen) VÀ % đã mất hoàn toàn
-				isFinishedGenerating := !isGen && (stableFinishedPolls >= 1 || hasNewDlBtn || (elapsedSec > 20 && hasNewTile))
+				// QUAN TRỌNG: loại trừ isErr — thẻ báo lỗi ("hoạt động bất thường"/vi phạm) cũng làm
+				// !isGen=true và tạo tile mới, nên nếu không chặn thì nhánh này (chỉ cần 1 poll) sẽ THẮNG
+				// nhánh retry (cần 2 poll liên tiếp) → nhận nhầm thẻ lỗi là video xong, báo "đã sinh video"
+				// rồi cố mở chi tiết một card lỗi. Có lỗi → để luồng rơi xuống nhánh retry bên trên.
+				isFinishedGenerating := !isGen && !isErr && (stableFinishedPolls >= 1 || hasNewDlBtn || (elapsedSec > 20 && hasNewTile))
 
 				if isFinishedGenerating {
 					logDebug("Phát hiện video mới đã tạo xong sau %.0fs (hasNewTile=%v, hasNewDlBtn=%v, everWasGenerating=%v, tileCount=%d)! Bắt đầu mở chi tiết video...", elapsedSec, hasNewTile, hasNewDlBtn, everWasGenerating, currentTileCount)

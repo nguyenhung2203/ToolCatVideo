@@ -1229,7 +1229,7 @@ func (a *App) translateSegments(segments []subtitle.Segment, targetLang, apiKey 
 	}
 
 	client := &http.Client{Timeout: 60 * time.Second}
-	modelsToTry := []string{"gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"}
+	modelsToTry := []string{"gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"}
 	var respText string
 	var lastErr error
 	for _, modelName := range modelsToTry {
@@ -1655,6 +1655,7 @@ Return only the final English image prompt without headings, explanations, markd
 	client := &http.Client{Timeout: 30 * time.Second}
 	apiVersions := []string{"v1beta"}
 	modelsToTry := []string{
+		"gemini-3.5-flash-lite",
 		"gemini-3.5-flash",
 		"gemini-2.5-flash",
 		"gemini-2.0-flash",
@@ -2223,7 +2224,14 @@ func (a *App) GenerateAIContentText(apiKey string, prompt string) (string, error
 	}
 
 	if apiKey != "" {
-		url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=%s", apiKey)
+		modelsToTry := []string{
+			"gemini-3.5-flash-lite",
+			"gemini-3.5-flash",
+			"gemini-2.5-flash",
+			"gemini-2.0-flash",
+			"gemini-2.0-flash-lite",
+			"gemini-1.5-flash",
+		}
 		reqBody := map[string]interface{}{
 			"contents": []map[string]interface{}{
 				{
@@ -2235,26 +2243,30 @@ func (a *App) GenerateAIContentText(apiKey string, prompt string) (string, error
 		}
 		jsonBytes, err := json.Marshal(reqBody)
 		if err == nil {
-			req, err := http.NewRequestWithContext(a.ctx, "POST", url, bytes.NewBuffer(jsonBytes))
-			if err == nil {
-				req.Header.Set("Content-Type", "application/json")
-				client := &http.Client{Timeout: 15 * time.Second}
-				resp, err := client.Do(req)
+			client := &http.Client{Timeout: 15 * time.Second}
+			for _, modelName := range modelsToTry {
+				url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", modelName, apiKey)
+				req, err := http.NewRequestWithContext(a.ctx, "POST", url, bytes.NewBuffer(jsonBytes))
 				if err == nil {
-					defer resp.Body.Close()
-					if resp.StatusCode == http.StatusOK {
-						var res struct {
-							Candidates []struct {
-								Content struct {
-									Parts []struct {
-										Text string `json:"text"`
-									} `json:"parts"`
-								} `json:"content"`
-							} `json:"candidates"`
+					req.Header.Set("Content-Type", "application/json")
+					resp, err := client.Do(req)
+					if err == nil {
+						if resp.StatusCode == http.StatusOK {
+							var res struct {
+								Candidates []struct {
+									Content struct {
+										Parts []struct {
+											Text string `json:"text"`
+										} `json:"parts"`
+									} `json:"content"`
+								} `json:"candidates"`
+							}
+							if err := json.NewDecoder(resp.Body).Decode(&res); err == nil && len(res.Candidates) > 0 && len(res.Candidates[0].Content.Parts) > 0 {
+								resp.Body.Close()
+								return strings.TrimSpace(res.Candidates[0].Content.Parts[0].Text), nil
+							}
 						}
-						if err := json.NewDecoder(resp.Body).Decode(&res); err == nil && len(res.Candidates) > 0 && len(res.Candidates[0].Content.Parts) > 0 {
-							return strings.TrimSpace(res.Candidates[0].Content.Parts[0].Text), nil
-						}
+						resp.Body.Close()
 					}
 				}
 			}

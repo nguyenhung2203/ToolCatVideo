@@ -165,20 +165,21 @@ type WatermarkOp struct {
 
 // CardOp overlay một khung nền card / banner đệm cho text.
 type CardOp struct {
-	Enabled      bool    `json:"enabled"`
-	Mode         string  `json:"mode"`   // "preset" / "image"
-	Preset       string  `json:"preset"` // "glass" / "gradient-purple" / "gold" / "ribbon" / "vintage" / "neon" / "stripes"
-	ImgPath      string  `json:"imgPath"`
-	Color        string  `json:"color"`
-	Color2       string  `json:"color2"`
-	Opacity      float64 `json:"opacity"`
-	X            string  `json:"x"`
-	Y            string  `json:"y"`
-	Width        float64 `json:"width"`
-	Height       float64 `json:"height"`
-	BorderRadius int     `json:"borderRadius"`
-	StartTime    float64 `json:"startTime"`
-	EndTime      float64 `json:"endTime"`
+	Enabled       bool    `json:"enabled"`
+	Mode          string  `json:"mode"`   // "preset" / "image"
+	Preset        string  `json:"preset"` // "glass" / "gradient-purple" / "gold" / "ribbon" / "vintage" / "neon" / "stripes"
+	ImgPath       string  `json:"imgPath"`
+	Color         string  `json:"color"`
+	Color2        string  `json:"color2"`
+	Opacity       float64 `json:"opacity"`
+	X             string  `json:"x"`
+	Y             string  `json:"y"`
+	Width         float64 `json:"width"`
+	Height        float64 `json:"height"`
+	BorderRadius  int     `json:"borderRadius"`
+	StartTime     float64 `json:"startTime"`
+	EndTime       float64 `json:"endTime"`
+	CardAboveText bool    `json:"cardAboveText"` // true = đè lên chữ; false = chữ đè lên card (mặc định)
 }
 
 // AudioOp điều chỉnh âm thanh clip.

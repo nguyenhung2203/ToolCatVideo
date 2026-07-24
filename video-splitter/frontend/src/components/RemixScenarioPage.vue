@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, reactive, computed, watch } from 'vue'
-import { Plus, Trash2, Save, Copy, Music, Image as ImageIcon, FileText, Layers, SlidersHorizontal, Film, Check, Wand2, Palette, Volume2, Type, Sparkles, Play, Pause, RotateCcw, Video, Folder, X } from 'lucide-vue-next'
+import { Plus, Trash2, Save, Copy, Music, Image as ImageIcon, FileText, Layers, SlidersHorizontal, Film, Check, Wand2, Palette, Volume2, Type, Sparkles, Play, Pause, RotateCcw, Video, Folder, X, Square, Loader2, ArrowUp, ArrowDown, GripVertical } from 'lucide-vue-next'
 import { SelectImageFile, SelectAudioFile, SelectFolder, GetStreamURL } from '../../wailsjs/go/main/App'
 
 const props = defineProps<{
@@ -15,9 +15,16 @@ const props = defineProps<{
   activeVideoIndex?: number
 }>()
 
+interface RemixScenario {
+  id: string
+  name: string
+  edit: any
+}
+
 const emit = defineEmits<{
   (e: 'back'): void
   (e: 'export', scenarioId: string): void
+  (e: 'stop-export'): void
   (e: 'update:outputDir', dir: string): void
   (e: 'selectVideo', index: number): void
   (e: 'selectExternalVideo'): void
@@ -145,6 +152,7 @@ const draft = reactive({
   texts: [] as DraftText[],
   randomText: false,
   cardEnabled: false,
+  cardAboveText: false, // false = Text nằm trên Card (mặc định); true = Card nằm trên Text
   cardMode: 'preset' as 'preset' | 'color' | 'image',
   cardPreset: 'glass',
   cardImgPath: '',
@@ -243,6 +251,66 @@ const duplicateText = (text: DraftText) => {
   selectedTextId.value = copy.id
 }
 
+const moveTextUp = (text: DraftText) => {
+  const idx = draft.texts.findIndex(t => t.id === text.id)
+  if (idx < draft.texts.length - 1) {
+    const temp = draft.texts[idx]
+    draft.texts[idx] = draft.texts[idx + 1]
+    draft.texts[idx + 1] = temp
+  }
+}
+
+const moveTextDown = (text: DraftText) => {
+  const idx = draft.texts.findIndex(t => t.id === text.id)
+  if (idx > 0) {
+    const temp = draft.texts[idx]
+    draft.texts[idx] = draft.texts[idx - 1]
+    draft.texts[idx - 1] = temp
+  }
+}
+
+// Xử lý Nắm Kéo Thả (Drag & Drop) Hoán Đổi Vị Trí Track Lớp Hiển Thị Trên Timeline
+const draggedTrackType = ref<string | null>(null)
+
+const onTrackDragStart = (e: DragEvent, type: string) => {
+  draggedTrackType.value = type
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', type)
+  }
+}
+
+const onTrackDragOver = (e: DragEvent) => {
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+}
+
+const onTrackDrop = (e: DragEvent, targetType: string) => {
+  e.preventDefault()
+  const sourceType = draggedTrackType.value || e.dataTransfer?.getData('text/plain')
+  draggedTrackType.value = null
+  if (!sourceType || sourceType === targetType) return
+
+  // 1. Kéo hoán đổi giữa Nền Card và Text
+  if ((sourceType === 'card' && targetType.startsWith('text')) || (sourceType.startsWith('text') && targetType === 'card')) {
+    draft.cardAboveText = !draft.cardAboveText
+    return
+  }
+
+  // 2. Kéo hoán đổi vị trí giữa các dòng Text với nhau
+  if (sourceType.startsWith('text:') && targetType.startsWith('text:')) {
+    const srcId = sourceType.replace('text:', '')
+    const tgtId = targetType.replace('text:', '')
+    const srcIdx = draft.texts.findIndex(t => t.id === srcId)
+    const tgtIdx = draft.texts.findIndex(t => t.id === tgtId)
+    if (srcIdx >= 0 && tgtIdx >= 0 && srcIdx !== tgtIdx) {
+      const temp = draft.texts[srcIdx]
+      draft.texts[srcIdx] = draft.texts[tgtIdx]
+      draft.texts[tgtIdx] = temp
+    }
+  }
+}
+
 // Chỉ giữ các mẫu THỰC SỰ render được (có style CSS .card-preview-overlay.preset-* và
 // khớp bộ render PNG ở exporter/card.go). Bỏ các mẫu hoa văn cũ chưa có style/render để
 // preview luôn == video xuất.
@@ -337,7 +405,7 @@ const cardStyle = computed(() => {
     pointerEvents: 'auto',
     cursor: dragTarget.value === 'card' ? 'grabbing' : 'grab',
     touchAction: 'none',
-    zIndex: '3',
+    zIndex: draft.cardAboveText ? '15' : '3',
   }
   if (draft.cardMode === 'color') {
     if (draft.cardColor2 && draft.cardColor2 !== draft.cardColor) {
@@ -924,11 +992,11 @@ const onBlockPointerMove = (e: PointerEvent) => {
   let newEnd = session.initialEndTime
 
   if (session.action === 'resize-left') {
-    newStart = Math.max(0, Math.min(session.initialEndTime - 0.2, session.initialStartTime + dt))
+    newStart = Math.max(0, Math.min((session.initialEndTime > 0 ? session.initialEndTime : session.totalDuration) - 0.1, session.initialStartTime + dt))
     newStart = Math.round(newStart * 10) / 10
     newEnd = session.initialEndTime
   } else if (session.action === 'resize-right') {
-    newEnd = Math.max(session.initialStartTime + 0.2, Math.min(session.totalDuration, session.initialEndTime + dt))
+    newEnd = Math.max(session.initialStartTime + 0.1, Math.min(session.totalDuration, session.initialEndTime + dt))
     if (newEnd >= session.totalDuration - 0.05) {
       newEnd = 0
     } else {
@@ -1118,7 +1186,7 @@ const textStyle = (text: DraftText) => ({
   borderRadius: '4px',
   cursor: dragTarget.value === `text:${text.id}` ? 'grabbing' : 'grab',
   touchAction: 'none',
-  zIndex: '7',
+  zIndex: String(10 + Math.max(0, draft.texts.findIndex(t => t.id === text.id))),
 } as Record<string, string>)
 
 const cssToASSColor = (value: string, fallback: string) => {
@@ -1471,53 +1539,42 @@ onMounted(load)
         <button class="btn capcut-save-btn" @click="onSaveBtnClick">
           <Save :size="14" /> {{ editingId === 'new' ? 'Lưu Kịch Bản Mới' : 'Lưu Thay Đổi' }}
         </button>
+        <!-- Widget xuất video gọn đẹp ngay trên thanh header -->
+        <div v-if="isExporting" style="display: flex; align-items: center; gap: 10px; background: rgba(99, 102, 241, 0.15); border: 1.5px solid var(--wx-brand-primary, #6366f1); border-radius: 8px; padding: 4px 10px; height: 34px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <Loader2 :size="14" class="spin-hourglass" style="color: #c084fc; flex-shrink: 0;" />
+            <div style="display: flex; flex-direction: column; justify-content: center; gap: 2px;">
+              <div style="font-size: 11px; font-weight: 700; color: #ffffff; line-height: 1; white-space: nowrap;">
+                Đang xuất {{ Math.round(((exportProgress?.done || 0) / (exportProgress?.total || 1)) * 100) }}% ({{ exportProgress?.done || 0 }}/{{ exportProgress?.total || 1 }})
+              </div>
+              <div style="width: 110px; height: 4px; background: rgba(255,255,255,0.2); border-radius: 2px; overflow: hidden;">
+                <div :style="{ width: Math.max(8, Math.round(((exportProgress?.done || 0) / (exportProgress?.total || 1)) * 100)) + '%' }" style="height: 100%; background: linear-gradient(90deg, #6366f1, #a855f7); transition: width 0.3s ease;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Nút DỪNG XUẤT (FE & BE) -->
+          <button
+            type="button"
+            @click="emit('stop-export')"
+            title="Dừng tiến trình xuất video ngay lập tức (Dừng cả FE và BE)"
+            style="background: #ef4444; color: #fff; border: none; border-radius: 6px; padding: 3px 10px; font-size: 11.5px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; transition: all 0.2s; height: 26px;"
+          >
+            <Square :size="11" fill="currentColor" /> Dừng
+          </button>
+        </div>
+
         <button
+          v-else
           class="btn capcut-export-now-btn"
-          :disabled="isExporting"
           @click="exportCurrentScenario"
-          :title="isExporting ? 'Đang tiến hành xuất video...' : 'Lưu kịch bản và tiến hành xuất video ngay'"
-          :style="isExporting ? 'opacity: 0.9; cursor: not-allowed; background: linear-gradient(135deg, #6366f1, #a855f7);' : ''"
+          title="Lưu kịch bản và tiến hành xuất video ngay"
         >
-          <template v-if="isExporting">
-            <div style="width: 14px; height: 14px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 6px; display: inline-block; vertical-align: middle;"></div>
-            <span>Đang xuất {{ Math.round(((exportProgress?.done || 0) / (exportProgress?.total || 1)) * 100) }}%</span>
-          </template>
-          <template v-else>
-            <Video :size="14" />
-            <span>Lưu và Xuất Video</span>
-          </template>
+          <Video :size="14" />
+          <span>Lưu và Xuất Video</span>
         </button>
       </div>
     </header>
-
-    <!-- REAL-TIME EXPORT PROGRESS BANNER (Hiển thị nổi bật ngay trên tab Chỉnh Sửa khi đang xuất video) -->
-    <div
-      v-if="isExporting"
-      style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(168, 85, 247, 0.25)); border-bottom: 1.5px solid var(--wx-brand-primary); padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; box-shadow: 0 4px 16px rgba(0,0,0,0.3); z-index: 100;"
-    >
-      <div style="display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0;">
-        <div style="width: 22px; height: 22px; border: 3px solid #6366f1; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0;"></div>
-        <div style="display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0;">
-          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 700; color: #ffffff;">
-            <span>🚀 Đang tiến hành xuất video: {{ exportProgress?.done || 0 }}/{{ exportProgress?.total || 1 }} clip</span>
-            <span style="color: #a855f7; font-size: 15px; font-weight: 800;">
-              {{ Math.round(((exportProgress?.done || 0) / (exportProgress?.total || 1)) * 100) }}%
-            </span>
-          </div>
-          <!-- Progress Bar Track -->
-          <div style="width: 100%; height: 8px; background: rgba(0,0,0,0.4); border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,0.15);">
-            <div
-              :style="{ width: Math.round(((exportProgress?.done || 0) / (exportProgress?.total || 1)) * 100) + '%' }"
-              style="height: 100%; background: linear-gradient(90deg, #6366f1, #a855f7); transition: width 0.3s ease; box-shadow: 0 0 10px #6366f1;"
-            ></div>
-          </div>
-        </div>
-      </div>
-      <div style="display: flex; flex-direction: column; align-items: flex-end; font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.9); flex-shrink: 0;">
-        <span>⏱ Dự kiến xong: {{ etaText || 'Đang tính...' }}</span>
-        <span style="font-size: 11px; opacity: 0.75; margin-top: 2px;">{{ exportStatusText || 'Đang xử lý...' }}</span>
-      </div>
-    </div>
 
     <!-- ── 2. CAPCUT 3-PANEL WORKSPACE ─────────────────────────────── -->
     <div class="capcut-workspace">
@@ -1887,6 +1944,10 @@ onMounted(load)
                       <button type="button" class="pos-mini-btn" @click="duplicateText(selectedText)"><Copy :size="12" /> Nhân bản</button>
                       <button type="button" class="pos-mini-btn danger" @click="removeText(selectedText.id)"><Trash2 :size="12" /> Xóa</button>
                     </div>
+                    <div class="pos-grid-2" style="margin-top: 5px;">
+                      <button type="button" class="pos-mini-btn" @click="moveTextUp(selectedText)" title="Đưa câu chữ này đè lên trên chữ khác"><ArrowUp :size="12" /> Lên lớp trên</button>
+                      <button type="button" class="pos-mini-btn" @click="moveTextDown(selectedText)" title="Đưa câu chữ này xuống dưới chữ khác"><ArrowDown :size="12" /> Xuống lớp dưới</button>
+                    </div>
                   </div>
                   <div class="text-detail-footer">
                     <span class="drag-help-inline">Kéo text trực tiếp trên video. End=0 là hiện tới hết.</span>
@@ -2192,70 +2253,170 @@ onMounted(load)
           </div>
         </div>
 
-        <!-- Track 3.5: Card Nền -->
-        <div class="timeline-track card-track" v-if="draft.cardEnabled">
-          <div class="track-head">Nền C1</div>
-          <div class="track-content card-track-content">
-            <div
-              class="track-block card-block"
-              :style="cardBlockStyle"
-              title="Khung Nền Card"
-              @pointerdown.stop="onBlockPointerDown('card', 'move', $event)"
-              @pointermove="onBlockPointerMove"
-              @pointerup="onBlockPointerUp"
-              @pointercancel="onBlockPointerUp"
-            >
+        <!-- Danh sách Track linh hoạt hỗ trợ kéo thả hoán đổi vị trí (Nền C1 vs Text T1, T2...) -->
+        <template v-if="draft.cardAboveText">
+          <!-- Card Track nằm TRÊN Text -->
+          <div
+            class="timeline-track card-track"
+            v-if="draft.cardEnabled"
+            draggable="true"
+            @dragstart="onTrackDragStart($event, 'card')"
+            @dragover="onTrackDragOver"
+            @drop="onTrackDrop($event, 'card')"
+          >
+            <div class="track-head draggable-head" title="Nắm giữ và kéo lên/xuống để hoán đổi thứ tự lớp với Text">
+              <GripVertical :size="13" class="drag-grip-icon" /> Nền C1
+            </div>
+            <div class="track-content card-track-content">
               <div
-                class="block-handle left"
-                title="Kéo để chỉnh thời gian Bắt đầu"
-                @pointerdown.stop="onBlockPointerDown('card', 'resize-left', $event)"
-              ></div>
-              <span class="block-text-label">Khung Nền Card / Banner</span>
-              <span class="block-time-range">{{ formatTimelineMark(draft.cardStartTime) }} - {{ draft.cardEndTime > 0 ? formatTimelineMark(draft.cardEndTime) : 'hết' }}</span>
-              <div
-                class="block-handle right"
-                title="Kéo để chỉnh thời gian Kết thúc"
-                @pointerdown.stop="onBlockPointerDown('card', 'resize-right', $event)"
-              ></div>
+                class="track-block card-block"
+                :style="cardBlockStyle"
+                title="Khung Nền Card"
+                @pointerdown.stop="onBlockPointerDown('card', 'move', $event)"
+                @pointermove="onBlockPointerMove"
+                @pointerup="onBlockPointerUp"
+                @pointercancel="onBlockPointerUp"
+              >
+                <div
+                  class="block-handle left"
+                  title="Kéo để chỉnh thời gian Bắt đầu"
+                  @pointerdown.stop="onBlockPointerDown('card', 'resize-left', $event)"
+                ></div>
+                <span class="block-text-label">Khung Nền Card / Banner</span>
+                <span class="block-time-range">{{ formatTimelineMark(draft.cardStartTime) }} - {{ draft.cardEndTime > 0 ? formatTimelineMark(draft.cardEndTime) : 'hết' }}</span>
+                <div
+                  class="block-handle right"
+                  title="Kéo để chỉnh thời gian Kết thúc"
+                  @pointerdown.stop="onBlockPointerDown('card', 'resize-right', $event)"
+                ></div>
+              </div>
             </div>
           </div>
-        </div>
 
-        <!-- Track 4: Text overlays (Merged into Rows T1, T2...) -->
-        <div
-          v-for="(row, rIndex) in textTrackRows"
-          :key="`text-row-${rIndex}`"
-          class="timeline-track text-track"
-        >
-          <div class="track-head">Text T{{ rIndex + 1 }}</div>
-          <div class="track-content text-track-content">
-            <div
-              v-for="text in row"
-              :key="text.id"
-              class="track-block text-block"
-              :class="{ selected: selectedTextId === text.id }"
-              :style="textBlockStyle(text)"
-              :title="`${text.content} · ${formatTimelineMark(text.startTime)} → ${text.endTime > 0 ? formatTimelineMark(text.endTime) : 'hết video'}`"
-              @pointerdown.stop="onBlockPointerDown('text', 'move', $event, text)"
-              @pointermove="onBlockPointerMove"
-              @pointerup="onBlockPointerUp"
-              @pointercancel="onBlockPointerUp"
-            >
+          <!-- Text Tracks nằm DƯỚI Card -->
+          <div
+            v-for="(row, rIndex) in textTrackRows"
+            :key="`text-row-${rIndex}`"
+            class="timeline-track text-track"
+            draggable="true"
+            @dragstart="onTrackDragStart($event, `text:${row[0]?.id}`)"
+            @dragover="onTrackDragOver"
+            @drop="onTrackDrop($event, `text:${row[0]?.id}`)"
+          >
+            <div class="track-head draggable-head" title="Nắm giữ và kéo lên/xuống để hoán đổi thứ tự lớp với Nền Card hoặc Text khác">
+              <GripVertical :size="13" class="drag-grip-icon" /> Text T{{ rIndex + 1 }}
+            </div>
+            <div class="track-content text-track-content">
               <div
-                class="block-handle left"
-                title="Kéo để chỉnh thời gian Bắt đầu"
-                @pointerdown.stop="onBlockPointerDown('text', 'resize-left', $event, text)"
-              ></div>
-              <span class="block-text-label">{{ text.content || 'Text' }}</span>
-              <span class="block-time-range">{{ formatTimelineMark(text.startTime) }} - {{ text.endTime > 0 ? formatTimelineMark(text.endTime) : 'hết' }}</span>
-              <div
-                class="block-handle right"
-                title="Kéo để chỉnh thời gian Kết thúc"
-                @pointerdown.stop="onBlockPointerDown('text', 'resize-right', $event, text)"
-              ></div>
+                v-for="text in row"
+                :key="text.id"
+                class="track-block text-block"
+                :class="{ selected: selectedTextId === text.id }"
+                :style="textBlockStyle(text)"
+                :title="`${text.content} · ${formatTimelineMark(text.startTime)} → ${text.endTime > 0 ? formatTimelineMark(text.endTime) : 'hết video'}`"
+                @pointerdown.stop="onBlockPointerDown('text', 'move', $event, text)"
+                @pointermove="onBlockPointerMove"
+                @pointerup="onBlockPointerUp"
+                @pointercancel="onBlockPointerUp"
+              >
+                <div
+                  class="block-handle left"
+                  title="Kéo để chỉnh thời gian Bắt đầu"
+                  @pointerdown.stop="onBlockPointerDown('text', 'resize-left', $event, text)"
+                ></div>
+                <span class="block-text-label">{{ text.content || 'Text' }}</span>
+                <span class="block-time-range">{{ formatTimelineMark(text.startTime) }} - {{ text.endTime > 0 ? formatTimelineMark(text.endTime) : 'hết' }}</span>
+                <div
+                  class="block-handle right"
+                  title="Kéo để chỉnh thời gian Kết thúc"
+                  @pointerdown.stop="onBlockPointerDown('text', 'resize-right', $event, text)"
+                ></div>
+              </div>
             </div>
           </div>
-        </div>
+        </template>
+
+        <template v-else>
+          <!-- Text Tracks nằm TRÊN Card (Mặc định) -->
+          <div
+            v-for="(row, rIndex) in textTrackRows"
+            :key="`text-row-${rIndex}`"
+            class="timeline-track text-track"
+            draggable="true"
+            @dragstart="onTrackDragStart($event, `text:${row[0]?.id}`)"
+            @dragover="onTrackDragOver"
+            @drop="onTrackDrop($event, `text:${row[0]?.id}`)"
+          >
+            <div class="track-head draggable-head" title="Nắm giữ và kéo lên/xuống để hoán đổi thứ tự lớp với Nền Card hoặc Text khác">
+              <GripVertical :size="13" class="drag-grip-icon" /> Text T{{ rIndex + 1 }}
+            </div>
+            <div class="track-content text-track-content">
+              <div
+                v-for="text in row"
+                :key="text.id"
+                class="track-block text-block"
+                :class="{ selected: selectedTextId === text.id }"
+                :style="textBlockStyle(text)"
+                :title="`${text.content} · ${formatTimelineMark(text.startTime)} → ${text.endTime > 0 ? formatTimelineMark(text.endTime) : 'hết video'}`"
+                @pointerdown.stop="onBlockPointerDown('text', 'move', $event, text)"
+                @pointermove="onBlockPointerMove"
+                @pointerup="onBlockPointerUp"
+                @pointercancel="onBlockPointerUp"
+              >
+                <div
+                  class="block-handle left"
+                  title="Kéo để chỉnh thời gian Bắt đầu"
+                  @pointerdown.stop="onBlockPointerDown('text', 'resize-left', $event, text)"
+                ></div>
+                <span class="block-text-label">{{ text.content || 'Text' }}</span>
+                <span class="block-time-range">{{ formatTimelineMark(text.startTime) }} - {{ text.endTime > 0 ? formatTimelineMark(text.endTime) : 'hết' }}</span>
+                <div
+                  class="block-handle right"
+                  title="Kéo để chỉnh thời gian Kết thúc"
+                  @pointerdown.stop="onBlockPointerDown('text', 'resize-right', $event, text)"
+                ></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card Track nằm DƯỚI Text -->
+          <div
+            class="timeline-track card-track"
+            v-if="draft.cardEnabled"
+            draggable="true"
+            @dragstart="onTrackDragStart($event, 'card')"
+            @dragover="onTrackDragOver"
+            @drop="onTrackDrop($event, 'card')"
+          >
+            <div class="track-head draggable-head" title="Nắm giữ và kéo lên/xuống để hoán đổi thứ tự lớp với Text">
+              <GripVertical :size="13" class="drag-grip-icon" /> Nền C1
+            </div>
+            <div class="track-content card-track-content">
+              <div
+                class="track-block card-block"
+                :style="cardBlockStyle"
+                title="Khung Nền Card"
+                @pointerdown.stop="onBlockPointerDown('card', 'move', $event)"
+                @pointermove="onBlockPointerMove"
+                @pointerup="onBlockPointerUp"
+                @pointercancel="onBlockPointerUp"
+              >
+                <div
+                  class="block-handle left"
+                  title="Kéo để chỉnh thời gian Bắt đầu"
+                  @pointerdown.stop="onBlockPointerDown('card', 'resize-left', $event)"
+                ></div>
+                <span class="block-text-label">Khung Nền Card / Banner</span>
+                <span class="block-time-range">{{ formatTimelineMark(draft.cardStartTime) }} - {{ draft.cardEndTime > 0 ? formatTimelineMark(draft.cardEndTime) : 'hết' }}</span>
+                <div
+                  class="block-handle right"
+                  title="Kéo để chỉnh thời gian Kết thúc"
+                  @pointerdown.stop="onBlockPointerDown('card', 'resize-right', $event)"
+                ></div>
+              </div>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
   </div>
@@ -3490,15 +3651,16 @@ onMounted(load)
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 4px;
+  padding: 0 8px;
   font-size: 10px;
   font-weight: 600;
   border: 1px solid rgba(255, 255, 255, 0.2);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-  overflow: hidden;
+  overflow: visible;
   user-select: none;
   cursor: grab;
   touch-action: none;
+  min-width: 28px;
 }
 
 .track-block:active {
@@ -3506,18 +3668,42 @@ onMounted(load)
 }
 
 .block-handle {
-  width: 6px;
-  height: 100%;
-  background: rgba(255, 255, 255, 0.4);
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: rgba(255, 255, 255, 0.5);
   cursor: col-resize;
-  flex: 0 0 6px;
-  border-radius: 2px;
-  transition: background 0.15s ease;
+  border-radius: 1.5px;
+  transition: all 0.15s ease;
+  z-index: 10;
+}
+
+.block-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+
+.block-handle.left {
+  left: 0;
+  border-top-left-radius: 3px;
+  border-bottom-left-radius: 3px;
+}
+
+.block-handle.right {
+  right: 0;
+  border-top-right-radius: 3px;
+  border-bottom-right-radius: 3px;
 }
 
 .block-handle:hover {
   background: #ffffff;
-  box-shadow: 0 0 6px rgba(255, 255, 255, 0.8);
+  width: 4.5px;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.9);
 }
 
 .block-text-label {
@@ -3866,5 +4052,32 @@ onMounted(load)
   background: linear-gradient(135deg, #059669, #047857);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(16, 185, 129, 0.5);
+}
+
+.draggable-head {
+  cursor: grab;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.draggable-head:active {
+  cursor: grabbing;
+}
+.drag-grip-icon {
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+.draggable-head:hover .drag-grip-icon {
+  opacity: 1;
+  color: var(--wx-brand-primary, #38bdf8);
+}
+
+.spin-hourglass {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 </style>

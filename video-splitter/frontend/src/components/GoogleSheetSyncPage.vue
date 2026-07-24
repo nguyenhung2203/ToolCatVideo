@@ -1,26 +1,11 @@
 <template>
-  <div class="browser-ai-page">
-    
-    <!-- Header trên cùng chuẩn CapCut/TrafficTool -->
-    <div class="dl-page-header">
-      <h2 class="dl-page-title">
-        <FileSpreadsheet :size="22" class="dl-title-icon" style="color: #22c55e;" />
-        <span>Đồng Bộ Google Sheet & Sinh Content AI</span>
-        <span class="dl-title-sub">Tự động đọc cấu trúc Tab & Cột trên Google Sheet của anh để chọn lọc sinh AI</span>
-      </h2>
+  <div class="browser-ai-page" style="padding: 6px 10px; gap: 8px;">
 
-      <div style="display: flex; gap: 8px;">
-        <button @click="showScriptModal = true" class="img-dir-btn" title="Xem hướng dẫn cài đặt Apps Script 1-Click">
-          <Code :size="14" /> Lấy mã Apps Script (1-Click)
-        </button>
-      </div>
-    </div>
+    <!-- Workspace Grid 2 Cột chuẩn - thu gọn cột trái để tập trung bảng phải rộng như Excel -->
+    <div class="workspace-grid" :style="{ gridTemplateColumns: isLeftPanelCollapsed ? '1fr' : '3.4fr 6.6fr' }">
 
-    <!-- Workspace Grid 2 Cột chuẩn (3.6fr / 6.4fr) -->
-    <div class="workspace-grid" style="grid-template-columns: 3.6fr 6.4fr;">
-      
       <!-- Cột Trái: Cấu Hình Yêu Cầu & Tham Số -->
-      <div class="config-panel" style="gap: 14px;">
+      <div class="config-panel" style="gap: 14px;" v-if="!isLeftPanelCollapsed">
         
         <!-- BƯỚC 1: KẾT NỐI SHEET & CHỌN TAB -->
         <div class="step-card">
@@ -88,14 +73,24 @@
 
         <!-- BƯỚC 2: CHỌN CỘT AI SINH & SỐ MẪU -->
         <div class="step-card">
-          <h4 class="panel-section-title" style="display: flex; align-items: center; justify-content: space-between;">
+          <h4 class="panel-section-title" style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
             <span style="display: flex; align-items: center; gap: 6px;">
               <span class="step-num">2</span>
               <span>CHỌN CỘT AI SINH NỘI DUNG</span>
             </span>
-            <span style="font-size: 11px; color: #34d399; text-transform: none; font-weight: normal;">
-              ({{ selectedHeaderNames.size }}/{{ activeHeaders.length }} cột chọn)
-            </span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 11px; color: #34d399; text-transform: none; font-weight: normal;">
+                ({{ selectedHeaderNames.size }}/{{ activeHeaders.length }})
+              </span>
+              <button
+                @click="toggleSelectAllHeaders"
+                class="header-text-act-btn"
+                :style="{ color: hasAnyHeaderSelected ? '#f87171' : '#38bdf8' }"
+                :title="hasAnyHeaderSelected ? 'Bỏ chọn tất cả các cột' : 'Chọn tất cả các cột'"
+              >
+                {{ hasAnyHeaderSelected ? 'Bỏ chọn tất cả' : 'Chọn tất cả' }}
+              </button>
+            </div>
           </h4>
 
           <div v-if="activeHeaders.length === 0" style="font-size: 11.5px; color: var(--wx-text-muted); font-style: italic; padding: 6px 0;">
@@ -121,12 +116,45 @@
             </div>
           </div>
 
-          <!-- Chọn Số Mẫu Biến Thể -->
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--wx-border-default);">
-            <span style="font-size: 11.5px; font-weight: 600; color: var(--wx-text-secondary);">Số mẫu biến thể AI / chủ đề:</span>
-            <div class="img-source-pills" style="gap: 4px;">
-              <button v-for="v in [1, 2, 3, 5]" :key="v" :class="{ active: variantCount === v }" @click="variantCount = v" class="img-source-pill" style="height: 26px; padding: 0 10px; font-size: 11px;">
-                {{ v }} mẫu
+          <!-- Prompt riêng cho từng cột được tick -->
+          <div v-if="getColumnsToGenerate().length > 0" class="col-prompts-box">
+            <div class="col-prompts-title">
+              <Sliders :size="12" />
+              <span>Yêu cầu AI riêng cho từng cột (để trống = viết tự do theo tên cột)</span>
+            </div>
+            <div v-for="col in getColumnsToGenerate()" :key="col" class="col-prompt-item">
+              <label class="col-prompt-label">{{ col }}</label>
+              <textarea
+                :value="getColumnPrompt(col)"
+                @input="setColumnPrompt(col, ($event.target as HTMLTextAreaElement).value)"
+                :placeholder="`VD: Viết ${col} ngắn 1-2 câu, giọng hài hước, có emoji...`"
+                class="img-text-input"
+                rows="2"
+                style="font-size: 11.5px; padding: 6px 8px; resize: vertical; min-height: 34px;"
+              ></textarea>
+            </div>
+          </div>
+
+          <!-- Chọn Số Mẫu Biến Thể (mỗi chủ đề sinh bao nhiêu dòng nội dung) -->
+          <div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--wx-border-default);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 11.5px; font-weight: 600; color: var(--wx-text-secondary);">Số mẫu / chủ đề:</span>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <input
+                  type="number"
+                  min="1"
+                  max="500"
+                  :value="variantCount"
+                  @input="onVariantCountInput"
+                  class="img-text-input"
+                  style="width: 70px; height: 26px; text-align: center; font-size: 12px; font-weight: 700;"
+                />
+                <span style="font-size: 11px; color: var(--wx-text-muted);">mẫu</span>
+              </div>
+            </div>
+            <div class="img-source-pills" style="gap: 4px; flex-wrap: wrap;">
+              <button v-for="v in [1, 3, 5, 10, 20, 30, 40, 50]" :key="v" :class="{ active: variantCount === v }" @click="variantCount = v" class="img-source-pill" style="height: 26px; padding: 0 10px; font-size: 11px;">
+                {{ v }}
               </button>
             </div>
           </div>
@@ -139,20 +167,14 @@
               <span class="step-num">3</span>
               <span>NHẬP CHỦ ĐỀ / TỪ KHÓA</span>
             </span>
-            <label style="font-size: 11px; text-transform: none; color: #38bdf8; font-weight: normal; cursor: pointer;">
-              <input type="checkbox" v-model="useAI" style="accent-color: var(--wx-brand-primary);" /> Bật AI
-            </label>
+            <span style="font-size: 11px; color: #34d399; font-weight: normal;">(Không bắt buộc - Có thể để trống)</span>
           </h4>
           
           <textarea
             v-model="inputTopics"
-            placeholder="Nhập danh sách các chủ đề (mỗi câu 1 dòng)...
-Ví dụ:
-The Baby Who Would Not Stop Laughing
-The Locked Attic Mystery
-A Stranger Bought the Entire Shop"
+            placeholder="Nhập danh sách chủ đề (mỗi câu 1 dòng). Có thể để trống nếu đã điền yêu cầu riêng ở từng Cột ở trên."
             class="img-text-input prompt-auto-textarea"
-            style="flex: 1; min-height: 100px;"
+            style="flex: 1; min-height: 80px;"
           ></textarea>
         </div>
 
@@ -160,30 +182,63 @@ A Stranger Bought the Entire Shop"
         <div class="config-footer-row" style="padding-top: 6px;">
           <button
             @click="generateAllTopicGroups"
-            :disabled="isGeneratingAI || !inputTopics.trim()"
+            :disabled="isGeneratingAI || selectedHeaderNames.size === 0"
             class="img-action-btn start-generate-btn"
             style="width: 100%; height: 44px; font-size: 13.5px; background: linear-gradient(135deg, #8b5cf6, #6366f1); box-shadow: 0 4px 15px rgba(139, 92, 246, 0.4);"
           >
-            <Sparkles v-if="!isGeneratingAI" :size="17" />
-            <Loader2 v-else :size="17" class="spin-icon" />
-            <span>{{ isGeneratingAI ? 'AI Đang Sinh Nội Dung Nhanh...' : '🤖 1. Sinh Content AI (Theo Tab & Cột Đã Chọn)' }}</span>
+            <Sparkles v-if="!isGeneratingAI" :size="16" />
+            <Loader2 v-else :size="16" class="spin-icon" />
+            <span>{{ isGeneratingAI ? 'AI Đang Sinh Content...' : '1. Sinh Content AI (Theo Cột Đã Chọn)' }}</span>
           </button>
         </div>
 
       </div>
 
       <!-- Cột Phải: Workspace Bảng Xem Trước, Chọn Lọc & Đẩy Sheet -->
-      <div class="preview-panel" style="justify-content: flex-start; align-items: stretch; padding: var(--wx-space-4);">
-        
+      <div class="preview-panel" style="justify-content: flex-start; align-items: stretch; padding: 4px; width: 100%;">
+
+        <!-- Thanh Công Cụ Điều Khiển Top Toolbar Tinh Gọn -->
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button
+              @click="isLeftPanelCollapsed = !isLeftPanelCollapsed"
+              class="img-dir-btn btn-accent-blue"
+              style="height: 30px; padding: 0 12px; font-weight: 700; font-size: 12px;"
+              :title="isLeftPanelCollapsed ? 'Hiện lại bảng cấu hình bên trái' : 'Ẩn bảng cấu hình, mở rộng bảng kết quả'"
+            >
+              <PanelLeftOpen v-if="isLeftPanelCollapsed" :size="14" />
+              <PanelLeftClose v-else :size="14" />
+              <span>{{ isLeftPanelCollapsed ? 'Hiện cấu hình' : 'Mở rộng bảng Excel' }}</span>
+            </button>
+            
+            <span style="font-size: 12.5px; font-weight: 700; color: #22c55e; display: flex; align-items: center; gap: 6px;">
+              <FileSpreadsheet :size="16" />
+              <span>Bảng xem trước & đẩy Sheet</span>
+            </span>
+          </div>
+
+            <button @click="showScriptModal = true" class="img-dir-btn" style="height: 30px; font-size: 11.5px; padding: 0 10px;" title="Xem hướng dẫn cài đặt Apps Script 1-Click">
+              <Code :size="13" /> Mã Apps Script (1-Click)
+            </button>
+        </div>
+
         <!-- Màn hình chờ (Placeholder) khi chưa có kết quả -->
         <div v-if="topicGroups.length === 0" class="state-placeholder" style="margin: auto;">
           <div class="placeholder-decor">
             <FileSpreadsheet :size="60" style="color: #22c55e;" />
           </div>
-          <h3 class="state-title">Tab đang chọn: {{ activeTabName || 'Chưa chọn' }}</h3>
-          <p class="state-description">
-            Đã sẵn sàng tạo nội dung cho {{ activeHeaders.length }} cột trên Tab <strong>{{ activeTabName }}</strong>. Điền danh sách chủ đề bên trái và nhấn "Sinh Content AI" để bắt đầu.
-          </p>
+          <template v-if="activeHeaders.length > 0">
+            <h3 class="state-title">Tab đang chọn: {{ activeTabName || 'Chưa chọn' }}</h3>
+            <p class="state-description">
+              Đã đọc được {{ activeHeaders.length }} cột trên Tab <strong>{{ activeTabName }}</strong>. Tích chọn cột cần sinh, điền danh sách chủ đề bên trái rồi nhấn "Sinh Content AI".
+            </p>
+          </template>
+          <template v-else>
+            <h3 class="state-title">Chưa kết nối Google Sheet</h3>
+            <p class="state-description">
+              Dán Web App URL (từ Apps Script) vào ô bên trái và bấm "Kiểm Tra Link" để đọc Tab & Cột thật từ Sheet. Chưa có URL thì bấm "Lấy mã Apps Script (1-Click)" để cài đặt.
+            </p>
+          </template>
         </div>
 
         <!-- Màn hình Kết Quả Gom Nhóm & Chọn Lọc -->
@@ -211,11 +266,11 @@ A Stranger Bought the Entire Shop"
                 @click="pushSelectedRowsToSheet"
                 :disabled="isPushing || totalSelectedCount === 0"
                 class="img-action-btn start-generate-btn"
-                style="height: 36px; padding: 0 18px; font-size: 13px; background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);"
+                style="height: 34px; padding: 0 16px; font-size: 12.5px; background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);"
               >
-                <Play v-if="!isPushing" :size="15" />
-                <Loader2 v-else :size="15" class="spin-icon" />
-                <span>{{ isPushing ? 'Đang Đẩy Lên Sheet...' : `🚀 2. Đẩy (${totalSelectedCount}) Mẫu Đã Chọn Vào Tab "${activeTabName}"` }}</span>
+                <Upload v-if="!isPushing" :size="14" />
+                <Loader2 v-else :size="14" class="spin-icon" />
+                <span>{{ isPushing ? 'Đang Đẩy Lên Sheet...' : `2. Đẩy (${totalSelectedCount}) Mẫu Đã Chọn Lên Sheet` }}</span>
               </button>
             </div>
           </div>
@@ -264,16 +319,16 @@ A Stranger Bought the Entire Shop"
                 </div>
               </div>
 
-              <!-- Bảng Chi Tiết Mẫu CỘT ĐỘNG 100% của Nhóm -->
-              <div v-if="!group.isCollapsed" style="overflow-x: auto;">
+              <!-- Bảng Chi Tiết Mẫu CỘT ĐỘNG (Có khung cuộn nội bộ max-height: 420px) -->
+              <div v-if="!group.isCollapsed" class="topic-group-table-wrap">
                 <table class="clean-data-table">
                   <thead>
                     <tr>
                       <th style="width: 42px; text-align: center;">Chọn</th>
                       <th style="width: 55px;">Mẫu</th>
                       
-                      <!-- Render tiêu đề Cột Động -->
-                      <th v-for="headerName in activeHeaders" :key="headerName" style="min-width: 140px;">
+                      <!-- Render tiêu đề Cột Động CHỈ cho các Cột được tích chọn -->
+                      <th v-for="headerName in displayHeaders" :key="headerName" style="min-width: 140px;">
                         {{ headerName }}
                       </th>
 
@@ -282,19 +337,19 @@ A Stranger Bought the Entire Shop"
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="(item, idx) in group.items" :key="item.id" :class="{ row_active: item.selected }">
+                    <tr v-for="(item, idx) in visibleGroupItems(group)" :key="item.id" :class="{ row_active: item.selected }">
                       <td style="text-align: center; padding: 8px 4px;">
                         <input type="checkbox" v-model="item.selected" style="width: 15px; height: 15px; cursor: pointer; accent-color: var(--wx-brand-primary);" />
                       </td>
                       <td style="font-weight: 700; color: #c084fc; padding: 8px 4px;">#{{ idx + 1 }}</td>
 
-                      <!-- Render ô sửa chữ theo các Cột Động -->
-                      <td v-for="headerName in activeHeaders" :key="headerName" style="padding: 6px;">
+                      <!-- Render ô sửa chữ CHỈ theo các Cột được tích chọn -->
+                      <td v-for="headerName in displayHeaders" :key="headerName" style="padding: 6px;">
                         <textarea
                           v-model="item.columnData[headerName]"
                           class="clean-cell-textarea"
                           rows="2"
-                          placeholder="..."
+                          placeholder="Trống..."
                         ></textarea>
                       </td>
 
@@ -362,22 +417,30 @@ A Stranger Bought the Entire Shop"
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { FileSpreadsheet, Sparkles, RefreshCw, Play, Loader2, Check, Trash2, Code, Copy, Folder, Plus, Sliders } from 'lucide-vue-next'
+import { FileSpreadsheet, Sparkles, RefreshCw, Play, Loader2, Check, Trash2, Code, Copy, Folder, Plus, Sliders, PanelLeftOpen, PanelLeftClose, Upload } from 'lucide-vue-next'
 // @ts-ignore
+import { FetchGoogleSheetStructure, PushGoogleSheetRow, GetGoogleAppsScriptTemplate, GenerateAIContentText, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
+
 const props = defineProps<{
   showToast: (msg: string, type: 'success' | 'error' | 'info' | 'warning') => void
 }>()
 
 const STORAGE_KEY = 'traffictool_google_sheet_sync_config'
 
-const sheetUrl = ref('https://docs.google.com/spreadsheets/d/1v3Mag53ppCe2v8y5MfCrjZ9SHGyNdts3TCdOtgTWfow/edit?gid=1228770940#gid=1228770940')
+const sheetUrl = ref('')
 const webAppUrl = ref('')
-const tabName = ref('WEB - THỦY')
-const tabGid = ref('1228770940')
+const tabName = ref('')
+const tabGid = ref('')
 
 const inputTopics = ref('')
-const useAI = ref(true)
 const variantCount = ref(3)
+
+// Kẹp số mẫu nhập tay trong [1, 500] để tránh nhập 0/âm/quá lớn gây treo.
+const onVariantCountInput = (event: Event) => {
+  const raw = parseInt((event.target as HTMLInputElement).value, 10)
+  if (Number.isNaN(raw)) return
+  variantCount.value = Math.min(500, Math.max(1, raw))
+}
 
 interface DynamicTabInfo {
   name: string
@@ -386,7 +449,7 @@ interface DynamicTabInfo {
 }
 
 const availableTabs = ref<DynamicTabInfo[]>([])
-const activeTabName = ref('WEB - THỦY')
+const activeTabName = ref('')
 const activeHeaders = ref<string[]>([])
 const selectedHeaderNames = ref<Set<string>>(new Set())
 
@@ -414,6 +477,25 @@ const showScriptModal = ref(false)
 const appsScriptCode = ref('')
 const copied = ref(false)
 
+// Thu gọn cột trái để tập trung xem bảng kết quả bên phải
+const isLeftPanelCollapsed = ref(false)
+
+const tabColumnSelections = ref<Record<string, string[]>>({})
+
+// Prompt riêng cho từng cột, key = "tênTab::tênCột". Rỗng thì dùng mặc định (viết theo tên cột).
+const columnPrompts = ref<Record<string, string>>({})
+
+const columnPromptKey = (colName: string): string => `${activeTabName.value}::${colName}`
+
+const getColumnPrompt = (colName: string): string => {
+  return columnPrompts.value[columnPromptKey(colName)] || ''
+}
+
+const setColumnPrompt = (colName: string, val: string) => {
+  columnPrompts.value[columnPromptKey(colName)] = val
+  saveConfig()
+}
+
 const toggleHeaderSelection = (name: string) => {
   const newSet = new Set(selectedHeaderNames.value)
   if (newSet.has(name)) {
@@ -422,32 +504,84 @@ const toggleHeaderSelection = (name: string) => {
     newSet.add(name)
   }
   selectedHeaderNames.value = newSet
+  if (activeTabName.value) {
+    tabColumnSelections.value[activeTabName.value] = Array.from(newSet)
+  }
+  saveConfig()
+}
+
+const hasAnyHeaderSelected = computed(() => {
+  return selectedHeaderNames.value.size > 0
+})
+
+const toggleSelectAllHeaders = () => {
+  if (hasAnyHeaderSelected.value) {
+    selectedHeaderNames.value = new Set()
+    if (activeTabName.value) {
+      tabColumnSelections.value[activeTabName.value] = []
+    }
+  } else {
+    selectedHeaderNames.value = new Set(activeHeaders.value)
+    if (activeTabName.value) {
+      tabColumnSelections.value[activeTabName.value] = Array.from(activeHeaders.value)
+    }
+  }
+  saveConfig()
 }
 
 const selectTab = (tab: DynamicTabInfo) => {
+  if (activeTabName.value && selectedHeaderNames.value) {
+    tabColumnSelections.value[activeTabName.value] = Array.from(selectedHeaderNames.value)
+  }
+
   activeTabName.value = tab.name
   tabName.value = tab.name
   tabGid.value = tab.gid
   activeHeaders.value = tab.headers || []
-  selectedHeaderNames.value = new Set(tab.headers || [])
+
+  // Khôi phục các cột đã tích chọn trước đó của tab này nếu có
+  if (tabColumnSelections.value[tab.name] && tabColumnSelections.value[tab.name].length > 0) {
+    const savedCols = tabColumnSelections.value[tab.name].filter(h => tab.headers.includes(h))
+    selectedHeaderNames.value = new Set(savedCols.length > 0 ? savedCols : tab.headers)
+  } else {
+    selectedHeaderNames.value = new Set(tab.headers || [])
+    tabColumnSelections.value[tab.name] = Array.from(selectedHeaderNames.value)
+  }
+  saveConfig()
 }
 
 const fetchSheetStructure = async (isManual: boolean = false) => {
-  if (!sheetUrl.value.trim()) return
+  // Bắt buộc phải có Web App URL — đó là cầu nối DUY NHẤT đọc/ghi được đúng Sheet thật
+  // của anh (mọi tab, mọi cột). Không còn data mẫu cứng như trước.
+  if (!webAppUrl.value.trim()) {
+    if (isManual) {
+      props.showToast('Chưa có Web App URL. Bấm "Lấy mã Apps Script (1-Click)" để cài rồi dán URL vào!', 'warning')
+      showScriptModal.value = true
+    }
+    availableTabs.value = []
+    activeHeaders.value = []
+    return
+  }
   try {
     const res = await FetchGoogleSheetStructure(webAppUrl.value, sheetUrl.value)
     if (res && res.length > 0) {
       availableTabs.value = res
-      
+
       const found = res.find((t: DynamicTabInfo) => (tabGid.value && t.gid === tabGid.value) || (tabName.value && t.name === tabName.value)) || res[0]
       selectTab(found)
 
       if (isManual) {
-        props.showToast(`🎉 Tự động bóc tách được ${res.length} Tab & ${activeHeaders.value.length} Cột từ Sheet!`, 'success')
+        props.showToast(`🎉 Đọc được ${res.length} Tab thật từ Google Sheet của anh!`, 'success')
       }
+    } else {
+      availableTabs.value = []
+      activeHeaders.value = []
+      if (isManual) props.showToast('Web App không trả về tab nào. Kiểm tra lại URL và quyền truy cập (Anyone).', 'warning')
     }
   } catch (e) {
-    if (isManual) props.showToast('Không thể bóc tách cấu trúc Sheet', 'warning')
+    availableTabs.value = []
+    activeHeaders.value = []
+    if (isManual) props.showToast('Lỗi đọc Sheet: ' + String(e), 'error')
   }
 }
 
@@ -487,7 +621,7 @@ const deleteItemFromGroup = (group: TopicGroup, itemIdx: number) => {
   group.items.splice(itemIdx, 1)
 }
 
-const loadSavedConfig = () => {
+const loadSavedConfig = async () => {
   const keysToTry = [
     STORAGE_KEY,
     'google_sheet_sync_config_v5',
@@ -505,24 +639,60 @@ const loadSavedConfig = () => {
         if (cfg.tabGid) tabGid.value = cfg.tabGid
         if (cfg.variantCount) variantCount.value = cfg.variantCount
         if (cfg.inputTopics) inputTopics.value = cfg.inputTopics
+        if (cfg.tabColumnSelections) tabColumnSelections.value = cfg.tabColumnSelections
+        if (cfg.columnPrompts) columnPrompts.value = cfg.columnPrompts
         if (cfg.webAppUrl) break
       } catch (e) {}
     }
   }
+
+  try {
+    const settingsStr = await GetGlobalSettings()
+    if (settingsStr) {
+      const parsed = JSON.parse(settingsStr)
+      const cfg = parsed.googleSheetConfig || parsed.sheetConfig
+      if (cfg) {
+        if (cfg.sheetUrl) sheetUrl.value = cfg.sheetUrl
+        if (cfg.webAppUrl) webAppUrl.value = cfg.webAppUrl
+        if (cfg.tabName) tabName.value = cfg.tabName
+        if (cfg.tabGid) tabGid.value = cfg.tabGid
+        if (cfg.variantCount) variantCount.value = cfg.variantCount
+        if (cfg.inputTopics) inputTopics.value = cfg.inputTopics
+        if (cfg.tabColumnSelections) tabColumnSelections.value = cfg.tabColumnSelections
+        if (cfg.columnPrompts) columnPrompts.value = cfg.columnPrompts
+      }
+    }
+  } catch (e) {}
 }
 
-const saveConfig = () => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+const saveConfig = async () => {
+  const cfgObj = {
     sheetUrl: sheetUrl.value,
     webAppUrl: webAppUrl.value,
     tabName: tabName.value,
     tabGid: tabGid.value,
     variantCount: variantCount.value,
-    inputTopics: inputTopics.value
-  }))
+    inputTopics: inputTopics.value,
+    tabColumnSelections: tabColumnSelections.value,
+    columnPrompts: columnPrompts.value
+  }
+
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(cfgObj))
+
+  try {
+    const settingsStr = await GetGlobalSettings()
+    let parsed: Record<string, any> = {}
+    if (settingsStr) {
+      try {
+        parsed = JSON.parse(settingsStr)
+      } catch (e) {}
+    }
+    parsed.googleSheetConfig = cfgObj
+    await SaveGlobalSettings(JSON.stringify(parsed, null, 2))
+  } catch (e) {}
 }
 
-watch([sheetUrl, webAppUrl, tabName, tabGid, variantCount, inputTopics], () => {
+watch([sheetUrl, webAppUrl, tabName, tabGid, variantCount, inputTopics, tabColumnSelections, columnPrompts], () => {
   saveConfig()
 }, { deep: true })
 
@@ -540,17 +710,86 @@ const clearResults = () => {
   topicGroups.value = []
 }
 
-// BƯỚC 1: Sinh nội dung cho các Cột Động của Tab đang chọn
-const generateAllTopicGroups = async () => {
-  const lines = inputTopics.value.split('\n').map(l => l.trim()).filter(l => l.length > 0)
-  if (lines.length === 0) {
-    props.showToast('Vui lòng nhập danh sách từ khóa/chủ đề', 'warning')
-    return
+// Các cột được tick để AI sinh nội dung. CHỈ sinh đúng các cột này, mọi cột không tick
+// để TRỐNG hoàn toàn — không điền chữ giả/placeholder.
+const getColumnsToGenerate = (): string[] => {
+  return activeHeaders.value.filter(h => selectedHeaderNames.value.has(h))
+}
+
+// Danh sách các cột hiển thị trên Bảng xem trước: CHỈ hiện các Cột được tích chọn!
+const displayHeaders = computed(() => {
+  const selected = activeHeaders.value.filter(h => selectedHeaderNames.value.has(h))
+  return selected.length > 0 ? selected : activeHeaders.value
+})
+
+// Lọc bỏ hoàn toàn các dòng mẫu rỗng (không có dữ liệu hoặc chỉ có "...")
+const visibleGroupItems = (group: TopicGroup): GeneratedRowItem[] => {
+  if (!group || !group.items) return []
+  return group.items.filter(item => {
+    if (!item.columnData) return false
+    return Object.values(item.columnData).some(val => val && String(val).trim() !== '' && String(val).trim() !== '...')
+  })
+}
+
+// Gọi AI 1 lần cho 1 mẫu: trả về map { tên cột -> nội dung } CHỈ cho các cột được tick.
+// Ép AI trả JSON theo đúng tên cột để map chính xác (không tách theo dòng dễ lệch cột).
+const generateColumnsForTopic = async (topic: string, variantLabel: string, cols: string[]): Promise<Record<string, string>> => {
+  const result: Record<string, string> = {}
+  if (cols.length === 0) return result
+
+  // Mỗi cột có thể có yêu cầu (prompt) riêng. Cột nào để trống thì viết tự do theo tên cột.
+  const colLines = cols.map(c => {
+    const custom = getColumnPrompt(c).trim()
+    return custom ? `- ${c}: ${custom}` : `- ${c}: (viết nội dung hấp dẫn, ngắn gọn, phù hợp tên cột, có thể kèm emoji)`
+  }).join('\n')
+
+  const topicContext = (topic && topic !== 'Nội dung AI sinh theo cột') ? `Chủ đề: "${topic}" (${variantLabel}).\n` : `(${variantLabel}).\n`
+  const prompt = `Bạn là trợ lý viết nội dung. ${topicContext}Hãy viết nội dung cho ĐÚNG các cột sau, TUÂN THỦ yêu cầu riêng của mỗi cột (phần sau dấu hai chấm):
+${colLines}
+
+CHỈ trả về đúng một object JSON hợp lệ, key là tên cột (giữ nguyên chính xác), value là nội dung dạng chuỗi. Không thêm giải thích, không bọc trong markdown.`
+
+  const aiText = await GenerateAIContentText('', prompt)
+  if (!aiText) return result
+
+  // Cắt lấy phần JSON (phòng khi AI kèm ```json ... ``` hoặc chữ thừa).
+  let jsonStr = aiText.trim()
+  const firstBrace = jsonStr.indexOf('{')
+  const lastBrace = jsonStr.lastIndexOf('}')
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    jsonStr = jsonStr.slice(firstBrace, lastBrace + 1)
   }
 
+  try {
+    const parsed = JSON.parse(jsonStr)
+    for (const c of cols) {
+      if (parsed[c] != null && String(parsed[c]).trim() !== '') {
+        result[c] = String(parsed[c]).trim()
+      }
+    }
+  } catch (e) {
+    console.warn('AI trả về không phải JSON hợp lệ, bỏ qua mẫu này:', e)
+  }
+  return result
+}
+
+// BƯỚC 1: Sinh nội dung cho các Cột được tick của Tab đang chọn
+const generateAllTopicGroups = async () => {
   if (activeHeaders.value.length === 0) {
     props.showToast('Vui lòng bấm "Kiểm Tra Link" để nạp danh sách Cột từ Sheet!', 'warning')
     return
+  }
+
+  const colsToGen = getColumnsToGenerate()
+  if (colsToGen.length === 0) {
+    props.showToast('Vui lòng tích chọn ít nhất 1 cột để AI sinh nội dung!', 'warning')
+    return
+  }
+
+  let lines = inputTopics.value.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+  if (lines.length === 0) {
+    // Tự động sử dụng Yêu cầu ở từng Cột ở trên mà KHÔNG bắt nhập lại ở dưới!
+    lines = ['Nội dung AI sinh theo cột']
   }
 
   isGeneratingAI.value = true
@@ -558,7 +797,6 @@ const generateAllTopicGroups = async () => {
 
   try {
     const groups: TopicGroup[] = []
-    let globalCounter = 1
 
     for (let lIdx = 0; lIdx < lines.length; lIdx++) {
       const topic = lines[lIdx]
@@ -567,55 +805,26 @@ const generateAllTopicGroups = async () => {
 
       for (let v = 0; v < count; v++) {
         const id = `item_${Date.now()}_${lIdx}_${v}`
+        // Mọi cột khởi tạo TRỐNG. Chỉ các cột được tick mới được AI điền.
         const colData: Record<string, string> = {}
+        for (const h of activeHeaders.value) colData[h] = ''
 
-        for (const h of activeHeaders.value) {
-          const upperH = h.toUpperCase()
-          if (upperH === 'STT') {
-            colData[h] = String(globalCounter)
-          } else if (upperH.includes('LINK')) {
-            colData[h] = `https://baby.tandoori.com/article-${Date.now()}-${globalCounter}`
-          } else if (upperH.includes('TRẠNG THÁI')) {
-            colData[h] = 'Sẵn sàng'
-          } else if (upperH.includes('LOẠI')) {
-            colData[h] = 'Video'
-          } else {
-            colData[h] = `Mẫu ${v + 1} cho "${topic}"`
-          }
+        const generated = await generateColumnsForTopic(topic, `Mẫu biến thể #${v + 1}`, colsToGen)
+        for (const [col, val] of Object.entries(generated)) {
+          colData[col] = val
         }
 
-        if (useAI.value && selectedHeaderNames.value.size > 0) {
-          try {
-            const colsToGen = Array.from(selectedHeaderNames.value).filter(h => !['STT', 'LINK BÀI VIẾT', 'LINK WEB', 'TRẠNG THÁI'].includes(h.toUpperCase()))
-            if (colsToGen.length > 0) {
-              const prompt = `Đối với chủ đề video "${topic}" (Mẫu biến thể #${v + 1}), hãy viết nội dung cho các phần sau:\n` +
-                colsToGen.map((colName, idx) => `${idx + 1}. [${colName}]:`).join('\n') +
-                `\n\nYêu cầu: Viết hấp dẫn, kèm icon emoji phù hợp. Trả về đúng thứ tự các phần.`
-
-              const aiText = await GenerateAIContentText('', prompt)
-              if (aiText) {
-                const parts = aiText.split('\n').map(p => p.replace(/^[0-9.-]+\s*/, '').replace(/^\[.*?\]:\s*/, '').trim()).filter(p => p.length > 0)
-                colsToGen.forEach((colName, idx) => {
-                  if (parts[idx]) {
-                    colData[colName] = parts[idx]
-                  }
-                })
-              }
-            }
-          } catch (e) {
-            console.log('AI offline:', e)
-          }
+        // Chỉ giữ lại những mẫu CÓ nội dung thực sự (bỏ qua rác/rỗng/...)
+        const hasValidText = Object.values(colData).some(v => v && String(v).trim() !== '' && String(v).trim() !== '...')
+        if (hasValidText) {
+          groupItems.push({
+            id,
+            selected: true,
+            topicName: topic,
+            columnData: colData,
+            pushStatus: 'waiting'
+          })
         }
-
-        groupItems.push({
-          id,
-          selected: true,
-          topicName: topic,
-          columnData: colData,
-          pushStatus: 'waiting'
-        })
-
-        globalCounter++
       }
 
       groups.push({
@@ -638,39 +847,21 @@ const generateAllTopicGroups = async () => {
 }
 
 const addExtraSampleToGroup = async (group: TopicGroup) => {
+  const colsToGen = getColumnsToGenerate()
+  if (colsToGen.length === 0) {
+    props.showToast('Vui lòng tích chọn ít nhất 1 cột để AI sinh nội dung!', 'warning')
+    return
+  }
   group.isGeneratingMore = true
   try {
     const vIdx = group.items.length + 1
+    // Mọi cột khởi tạo TRỐNG. Chỉ các cột được tick mới được AI điền.
     const colData: Record<string, string> = {}
+    for (const h of activeHeaders.value) colData[h] = ''
 
-    for (const h of activeHeaders.value) {
-      const upperH = h.toUpperCase()
-      if (upperH === 'STT') {
-        colData[h] = String(totalItemCount.value + 1)
-      } else if (upperH.includes('LINK')) {
-        colData[h] = `https://baby.tandoori.com/article-${Date.now()}`
-      } else if (upperH.includes('TRẠNG THÁI')) {
-        colData[h] = 'Sẵn sàng'
-      } else {
-        colData[h] = `Mẫu bổ sung #${vIdx} cho "${group.topicName}"`
-      }
-    }
-
-    if (useAI.value && selectedHeaderNames.value.size > 0) {
-      try {
-        const colsToGen = Array.from(selectedHeaderNames.value).filter(h => !['STT', 'LINK BÀI VIẾT', 'LINK WEB', 'TRẠNG THÁI'].includes(h.toUpperCase()))
-        if (colsToGen.length > 0) {
-          const prompt = `Viết thêm 1 mẫu mới cho chủ đề "${group.topicName}" cho các phần:\n` +
-            colsToGen.map((colName, idx) => `${idx + 1}. [${colName}]:`).join('\n')
-          const aiText = await GenerateAIContentText('', prompt)
-          if (aiText) {
-            const parts = aiText.split('\n').map(p => p.replace(/^[0-9.-]+\s*/, '').replace(/^\[.*?\]:\s*/, '').trim()).filter(p => p.length > 0)
-            colsToGen.forEach((colName, idx) => {
-              if (parts[idx]) colData[colName] = parts[idx]
-            })
-          }
-        }
-      } catch (e) {}
+    const generated = await generateColumnsForTopic(group.topicName, `Mẫu bổ sung #${vIdx}`, colsToGen)
+    for (const [col, val] of Object.entries(generated)) {
+      colData[col] = val
     }
 
     group.items.push({
@@ -875,6 +1066,68 @@ onMounted(async () => {
   text-overflow: ellipsis;
 }
 
+/* Khối nhập prompt riêng cho từng cột */
+.col-prompts-box {
+  margin-top: 12px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--wx-border-default);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.col-prompts-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #38bdf8;
+}
+
+.col-prompt-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.col-prompt-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--wx-text-primary);
+}
+
+/* Nút thu/phóng cột trái */
+.preview-panel {
+  position: relative;
+}
+
+.panel-toggle-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  margin-bottom: 10px;
+  background: color-mix(in srgb, var(--wx-brand-primary) 16%, transparent);
+  border: 1px solid #6366f1;
+  border-radius: 7px;
+  color: var(--wx-text-primary);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.panel-toggle-btn:hover {
+  background: color-mix(in srgb, var(--wx-brand-primary) 28%, transparent);
+}
+
 /* Topic Group Box & Header */
 .topic-group-box {
   background: var(--wx-surface-sunken);
@@ -892,20 +1145,31 @@ onMounted(async () => {
   border-bottom: 1px solid var(--wx-border-default);
 }
 
+.topic-group-table-wrap {
+  max-height: 400px;
+  overflow-y: auto;
+  overflow-x: auto;
+  border-top: 1px solid var(--wx-border-default);
+}
+
 /* Clean Data Table & Textarea Inputs */
 .clean-data-table {
-  width: 100%;
+  width: 100% !important;
+  min-width: 100% !important;
   border-collapse: collapse;
   font-size: 12px;
   text-align: left;
+  table-layout: auto;
 }
 
 .clean-data-table th {
   background: #0f172a;
-  padding: 10px 10px;
+  padding: 10px 12px;
   color: #94a3b8;
   font-weight: 700;
+  font-size: 11.5px;
   border-bottom: 1px solid var(--wx-border-default);
+  white-space: nowrap;
 }
 
 .clean-data-table td {
@@ -918,9 +1182,9 @@ onMounted(async () => {
 }
 
 .clean-cell-textarea {
-  width: 100%;
+  width: 100% !important;
   background: #090d16;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   padding: 8px 10px;
   color: #f8fafc;
@@ -929,7 +1193,7 @@ onMounted(async () => {
   font-family: inherit;
   outline: none;
   resize: vertical;
-  min-height: 52px;
+  min-height: 54px;
   box-sizing: border-box;
   transition: border-color 0.15s ease, background-color 0.15s ease;
 }
@@ -981,6 +1245,22 @@ onMounted(async () => {
 .row-del-btn:hover {
   color: #ef4444;
   background: rgba(239, 68, 68, 0.15);
+}
+
+.header-text-act-btn {
+  background: none;
+  border: none;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: opacity 0.15s ease;
+}
+
+.header-text-act-btn:hover {
+  opacity: 0.85;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .spin-icon {

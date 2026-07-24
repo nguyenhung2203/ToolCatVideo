@@ -284,10 +284,21 @@ func boundaryScore(c Candidate, w project.SignalWeights) (int, []string) {
 		signals = append(signals, "layout")
 		families++
 	}
+
+	// Audio (đổi đặc trưng nhạc/môi trường) CHỈ được tính khi có ít nhất một tín hiệu
+	// KHÁC xác nhận (đổi hình/đen/layout/im lặng). Audio đứng MỘT MÌNH gần như luôn là
+	// nhịp/drop của nhạc nền giữa clip — không phải ranh giới thật — nên nếu cho nó tự
+	// cắt sẽ băm một clip thành nhiều mảnh (đặc biệt ở chế độ Kỹ, nơi trọng số audio
+	// đủ vượt ngưỡng). Yêu cầu corroboration là cách trị gốc hiện tượng cắt quá nhạy
+	// do nhạc mà không làm mất ranh giới thật (ranh giới thật luôn kèm đổi hình/đen).
 	if nAudio > 0 {
-		score += w.AudioChange * nAudio
-		signals = append(signals, "audio")
-		families++
+		if families > 0 {
+			score += w.AudioChange * nAudio
+			signals = append(signals, "audio")
+			families++
+		} else {
+			signals = append(signals, "audio-solo-bỏ")
+		}
 	}
 
 	// Co-occurrence bonus: ≥3 họ tín hiệu độc lập cùng bật → ranh giới rất đáng tin.
