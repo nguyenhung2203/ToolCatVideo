@@ -1,0 +1,5 @@
+.wx-shimmer-block {
+  display: inline-block;
+  vertical-align: middle;
+}
+.wx-shimmer-block[data-shape="circle"] { display: inline-block; }

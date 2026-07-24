@@ -190,6 +190,37 @@ func SliceForClip(all []Segment, start, end float64) []Segment {
 	return out
 }
 
+// AdjustForOutput biến đổi mốc segment (đang 0-based theo đầu clip GỐC) về đúng
+// dòng thời gian của FILE ĐÃ XUẤT khi clip bị trim đầu và/hoặc đổi tốc độ:
+//   - trimStart: clip xuất bắt đầu từ (StartTime+trimStart) nên phải trừ trimStart.
+//   - speed: setpts nén thời gian (speed>1 làm clip ngắn lại) nên chia cho speed.
+// Công thức: out = (t - trimStart) / speed. Segment nằm trọn trong vùng bị trim đầu
+// (End <= trimStart) bị loại; segment vắt qua biên được kẹp về 0. Không có trim/speed
+// (trimStart=0, speed=1) thì trả về nguyên trạng.
+func AdjustForOutput(segs []Segment, trimStart, speed float64) []Segment {
+	if speed <= 0 {
+		speed = 1.0
+	}
+	if trimStart <= 0 && speed == 1.0 {
+		return segs
+	}
+	var out []Segment
+	for _, s := range segs {
+		st := (s.Start - trimStart) / speed
+		en := (s.End - trimStart) / speed
+		if en <= 0 {
+			continue // nằm trọn trong phần đầu đã trim → không xuất hiện
+		}
+		if st < 0 {
+			st = 0
+		}
+		if en > st {
+			out = append(out, Segment{Start: st, End: en, Text: s.Text})
+		}
+	}
+	return out
+}
+
 // ToSRT dựng nội dung file SRT từ segments (đã 0-based). shift trừ thêm khỏi mọi mốc
 // (thường 0 vì SliceForClip đã dịch mốc). Bỏ segment có mốc âm sau khi shift.
 func ToSRT(segments []Segment, shift float64) string {

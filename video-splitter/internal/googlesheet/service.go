@@ -232,6 +232,15 @@ func (s *Service) fetchRawCsvHeaders(ctx context.Context, spreadsheetID string, 
 	if err != nil {
 		return nil
 	}
+	// Sheet riêng tư: endpoint gviz/tq công khai trả trang HTML đăng nhập (thường vẫn
+	// HTTP 200 sau redirect). KHÔNG được parse trang đó thành cột — nếu không sẽ ghi đè
+	// Headers đúng (từ Apps Script) bằng rác ["<!DOCTYPE html.."]. Phát hiện HTML → bỏ,
+	// để nhánh gọi giữ nguyên Headers chuẩn của Apps Script.
+	bodyLower := strings.ToLower(strings.TrimSpace(string(body)))
+	if strings.HasPrefix(bodyLower, "<!doctype html") || strings.HasPrefix(bodyLower, "<html") ||
+		strings.Contains(bodyLower, "<head>") || strings.Contains(bodyLower, "accounts.google.com") {
+		return nil
+	}
 	lines := strings.Split(string(body), "\n")
 	if len(lines) == 0 {
 		return nil
@@ -284,18 +293,27 @@ func (s *Service) FetchSheetHeaders(ctx context.Context, spreadsheetID string, g
 		return nil, "", err
 	}
 
+	// Sheet riêng tư: endpoint public trả trang login HTML (thường vẫn 200 sau redirect).
+	// Không được parse HTML thành cột — trả lỗi để caller giữ header đúng từ Apps Script.
+	bodyLower := strings.ToLower(strings.TrimSpace(string(body)))
+	if strings.HasPrefix(bodyLower, "<!doctype html") || strings.HasPrefix(bodyLower, "<html") {
+		return nil, "", fmt.Errorf("Sheet chưa bật chia sẻ công khai (CSV trả về trang đăng nhập)")
+	}
+
 	lines := strings.Split(string(body), "\n")
 	if len(lines) == 0 {
 		return nil, "", fmt.Errorf("file rỗng")
 	}
 
 	firstLine := lines[0]
-	cols := strings.Split(firstLine, ",")
+	// Parse chuẩn CSV (không tách thô trên dấu phẩy — vỡ với tên cột chứa "," trong ngoặc kép).
 	cleanCols := []string{}
-	for i := range cols {
-		val := strings.Trim(strings.TrimSpace(cols[i]), `"`)
-		if val != "" {
-			cleanCols = append(cleanCols, val)
+	if rec, rerr := csv.NewReader(strings.NewReader(firstLine)).Read(); rerr == nil {
+		for _, c := range rec {
+			val := strings.TrimSpace(c)
+			if val != "" {
+				cleanCols = append(cleanCols, val)
+			}
 		}
 	}
 
@@ -448,14 +466,18 @@ function doPost(e) {
       sheet = ss.getActiveSheet();
     }
 
-    // Đọc danh sách header ở Dòng 1 để map chính xác Cột theo Tên Cột
+    // Đọc danh sách header ở Dòng 1 để map chính xác Cột theo Tên Cột.
+    // colMap lưu HÀNG ĐỢI index cho mỗi tên (không chỉ index cuối) để xử lý đúng
+    // trường hợp 2+ cột TRÙNG TÊN: mỗi lần gặp tên đó khi ghi sẽ tiêu thụ index kế
+    // tiếp theo thứ tự trái→phải, không dồn hết vào 1 ô.
     var lastCol = Math.max(sheet.getLastColumn(), 1);
     var headerRow = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
     var colMap = {};
     for (var c = 0; c < headerRow.length; c++) {
-      var hName = headerRow[c] ? headerRow[c].toString().trim() : "";
+      var hName = headerRow[c] ? headerRow[c].toString().trim().toLowerCase() : "";
       if (hName) {
-        colMap[hName.toLowerCase()] = c + 1;
+        if (!colMap[hName]) colMap[hName] = [];
+        colMap[hName].push(c + 1);
       }
     }
 
@@ -466,11 +488,17 @@ function doPost(e) {
       for (var i = 0; i < maxIdx; i++) padded[i] = "";
 
       if (rowHeaders && rowHeaders.length === rowItem.length) {
+        // Con trỏ tiêu thụ riêng cho mỗi tên cột (xử lý tên trùng theo thứ tự).
+        var cursor = {};
         var mappedCount = 0;
         for (var h = 0; h < rowHeaders.length; h++) {
           var hName = rowHeaders[h] ? rowHeaders[h].toString().trim().toLowerCase() : "";
-          var cIdx = colMap[hName];
-          if (cIdx) {
+          var idxList = colMap[hName];
+          if (idxList && idxList.length > 0) {
+            var pos = cursor[hName] || 0;
+            // Nếu số lần gặp tên vượt số cột cùng tên, dùng lại cột cuối (an toàn).
+            var cIdx = pos < idxList.length ? idxList[pos] : idxList[idxList.length - 1];
+            cursor[hName] = pos + 1;
             padded[cIdx - 1] = rowItem[h];
             mappedCount++;
           }

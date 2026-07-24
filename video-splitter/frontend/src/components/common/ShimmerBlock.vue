@@ -38,10 +38,4 @@ function px(v: string | number) {
   />
 </template>
 
-<style scoped>
-.wx-shimmer-block {
-  display: inline-block;
-  vertical-align: middle;
-}
-.wx-shimmer-block[data-shape="circle"] { display: inline-block; }
-</style>
+<style scoped src="./ShimmerBlock.scoped.css"></style>

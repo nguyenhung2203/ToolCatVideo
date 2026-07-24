@@ -45,10 +45,32 @@ func (s *Service) Startup(ctx context.Context) {
 func (s *Service) Shutdown(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Hủy task đơn đang chạy (Generate) và toàn bộ hàng đợi AI trước, RỒI mới đóng
+	// browser. Trước đây Close() chạy ngay sau Cancel() nên goroutine automation có
+	// thể vẫn đang thao tác JS trên page vừa bị đóng → lỗi/panic lúc thoát app.
 	active := s.tm.GetActiveTask()
 	if active != nil && active.Cancel != nil {
 		active.Cancel()
 	}
+	s.qm.Cancel()
+
+	// Chờ worker hàng đợi thoát hết (tối đa 5s) để không đóng browser giữa chừng.
+	// Timeout để dù có worker treo thì app vẫn thoát được, không kẹt vô hạn.
+	if !s.qm.WaitDrain(5 * time.Second) {
+		flowLogf("Shutdown: hết 5s chờ worker hàng đợi thoát, vẫn tiến hành đóng trình duyệt.")
+	}
+
+	// Chờ goroutine của task đơn kết thúc (tối đa 5s). Lưu ý nhánh hủy chỉ EmitStatus
+	// chứ không đóng DoneChan, nên phải chờ CÓ timeout để tránh treo.
+	if active != nil && active.DoneChan != nil {
+		select {
+		case <-active.DoneChan:
+		case <-time.After(5 * time.Second):
+			flowLogf("Shutdown: hết 5s chờ tác vụ đơn kết thúc, vẫn tiến hành đóng trình duyệt.")
+		}
+	}
+
 	_ = s.session.Close()
 }
 

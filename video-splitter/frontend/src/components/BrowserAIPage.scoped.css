@@ -67,8 +67,8 @@
 
 .panel-section-title {
   margin: 0 0 var(--wx-space-1) 0;
-  font-size: 12.5px;
-  color: #38bdf8;
+  font-size: var(--wx-fs-13);
+  color: var(--wx-brand-accent);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -403,7 +403,7 @@
   font-weight: var(--wx-fw-semibold);
   cursor: pointer;
   transition: all 150ms ease;
-  height: 32px;
+  height: 28px;
   box-sizing: border-box;
 }
 
@@ -412,9 +412,10 @@
 }
 
 .img-source-pill.active {
-  background: color-mix(in srgb, var(--wx-brand-primary) 12%, transparent);
-  border-color: var(--wx-brand-primary);
-  color: var(--wx-brand-primary);
+  background: color-mix(in srgb, var(--wx-brand-accent) 15%, transparent);
+  border-color: var(--wx-brand-accent);
+  color: var(--wx-brand-accent);
+  font-weight: var(--wx-fw-bold);
 }
 
 .img-text-input {
@@ -424,7 +425,7 @@
   color: var(--wx-text-primary);
   padding: var(--wx-space-2) var(--wx-space-3);
   font-size: var(--wx-fs-13);
-  height: 38px;
+  height: 36px;
   box-sizing: border-box;
   outline: none;
   transition: border-color 150ms ease, box-shadow 150ms ease;
@@ -436,8 +437,8 @@
 }
 
 .img-text-input:focus {
-  border-color: var(--wx-brand-primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wx-brand-primary) 15%, transparent);
+  border-color: var(--wx-brand-accent);
+  box-shadow: var(--wx-shadow-focus);
 }
 
 .img-text-input:disabled {
@@ -451,7 +452,7 @@
   justify-content: center;
   gap: var(--wx-space-1);
   padding: 0 var(--wx-space-3);
-  height: 38px;
+  height: 36px;
   flex-shrink: 0;
   background: color-mix(in srgb, var(--wx-surface-base) 5%, transparent);
   border: 1px solid var(--wx-border-default);
@@ -464,8 +465,8 @@
 }
 
 .img-dir-btn:hover {
-  border-color: var(--wx-brand-primary);
-  color: var(--wx-brand-primary);
+  border-color: var(--wx-brand-accent);
+  color: var(--wx-brand-accent);
 }
 
 .img-action-btn {
@@ -473,7 +474,7 @@
   align-items: center;
   gap: var(--wx-space-1);
   justify-content: center;
-  height: 38px;
+  height: 36px;
   padding: 0 var(--wx-space-4);
   font-size: var(--wx-fs-13);
   font-weight: var(--wx-fw-bold);
@@ -484,8 +485,9 @@
 }
 
 .start-generate-btn, .check-login-btn, .apply-btn {
-  background: var(--wx-brand-primary);
-  color: var(--wx-text-inverse);
+  background: var(--wx-gradient-button);
+  color: var(--wx-text-on-brand);
+  box-shadow: var(--wx-shadow-brand);
 }
 
 .start-generate-btn:hover, .check-login-btn:hover, .apply-btn:hover {

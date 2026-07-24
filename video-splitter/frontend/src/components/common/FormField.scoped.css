@@ -1,0 +1,91 @@
+.wx-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wx-space-2);
+  font-family: var(--wx-font-primary);
+  color: var(--wx-content-primary);
+}
+.wx-field--dense { gap: var(--wx-space-1); }
+
+.wx-field[data-layout="horizontal"] {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--wx-space-4);
+}
+.wx-field[data-layout="horizontal"] > .wx-field__label-wrap {
+  flex: 0 0 200px;
+  padding-top: 6px;
+}
+.wx-field[data-layout="horizontal"] > .wx-field__control { flex: 1; min-width: 0; }
+
+.wx-field__label-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wx-field__label {
+  font-size: var(--wx-fs-14);
+  font-weight: var(--wx-fw-medium);
+  color: var(--wx-content-primary);
+  line-height: var(--wx-lh-snug);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.wx-field--dense .wx-field__label { font-size: var(--wx-fs-13); }
+
+.wx-field__required {
+  color: var(--wx-danger-text);
+  font-weight: var(--wx-fw-semibold);
+}
+.wx-field__optional {
+  font-size: var(--wx-fs-12);
+  color: var(--wx-content-muted);
+  font-weight: var(--wx-fw-regular);
+}
+.wx-field__description {
+  margin: 0;
+  font-size: var(--wx-fs-12);
+  color: var(--wx-content-muted);
+  line-height: var(--wx-lh-normal);
+}
+
+.wx-field__control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wx-space-1);
+  min-width: 0;
+}
+
+.wx-field__hint {
+  margin: 0;
+  font-size: var(--wx-fs-12);
+  color: var(--wx-content-muted);
+  line-height: var(--wx-lh-normal);
+}
+.wx-field__error {
+  margin: 0;
+  font-size: var(--wx-fs-12);
+  color: var(--wx-danger-text);
+  line-height: var(--wx-lh-snug);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.wx-field__error svg { flex-shrink: 0; }
+
+.wx-field[data-state="disabled"] .wx-field__label,
+.wx-field[data-state="disabled"] .wx-field__description {
+  opacity: 0.55;
+}
+
+@media (max-width: 640px) {
+  .wx-field[data-layout="horizontal"] {
+    flex-direction: column;
+    gap: var(--wx-space-2);
+  }
+  .wx-field[data-layout="horizontal"] > .wx-field__label-wrap {
+    flex: initial;
+    padding-top: 0;
+  }
+}

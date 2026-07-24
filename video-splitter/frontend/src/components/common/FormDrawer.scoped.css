@@ -1,0 +1,5 @@
+.fd-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wx-space-4);
+}

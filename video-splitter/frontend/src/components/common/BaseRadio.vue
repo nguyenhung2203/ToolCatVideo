@@ -37,29 +37,4 @@ defineEmits<{
   </div>
 </template>
 
-<style scoped>
-.base-radio__group-label {
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: 4px;
-}
-
-.base-radio__options--horizontal {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.base-radio__options--vertical {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.base-radio--disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-</style>
+<style scoped src="./BaseRadio.scoped.css"></style>

@@ -25,22 +25,4 @@ defineEmits<{
   </label>
 </template>
 
-<style scoped>
-.base-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-
-.base-toggle--disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.base-toggle__label {
-  font-size: 13px;
-  color: var(--wx-text-secondary);
-  user-select: none;
-}
-</style>
+<style scoped src="./BaseToggle.scoped.css"></style>

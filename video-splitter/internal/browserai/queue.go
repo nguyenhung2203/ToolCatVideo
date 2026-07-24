@@ -236,6 +236,26 @@ func (qm *AIQueueManager) topUpWorkers() {
 	}
 }
 
+// WaitDrain chờ mọi worker (tab) đang sống thoát hết, tối đa timeout. Trả về true
+// nếu đã drain sạch, false nếu hết thời gian mà vẫn còn worker. Dùng lúc Shutdown
+// để không đóng browser khi worker còn đang chạy JS trên page (tránh lỗi/panic khi
+// thoát app). Poll nhẹ vì đây là đường tắt máy, không phải hot path.
+func (qm *AIQueueManager) WaitDrain(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		qm.mu.Lock()
+		n := qm.activeWorkers
+		qm.mu.Unlock()
+		if n == 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func (qm *AIQueueManager) Cancel() {
 	qm.mu.Lock()
 	if qm.cancel != nil {
@@ -605,7 +625,7 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 		// này làm ảnh intro, nên chỉ xóa SAU khi ghép xong (xử lý trong mergeIntroForTask).
 		if !task.PrependToVideo && task.InputImagePath != "" &&
 			strings.HasPrefix(filepath.Base(task.InputImagePath), "clearframe_") &&
-			strings.Contains(filepath.ToSlash(task.InputImagePath), "/video-splitter/") {
+			strings.Contains(filepath.ToSlash(task.InputImagePath), "/TrafficTool/") {
 			_ = os.Remove(task.InputImagePath)
 		}
 
@@ -640,7 +660,7 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			// Dọn frame gốc tạm sau khi ghép xong (đã hoãn ở trên cho task này).
 			if task.InputImagePath != "" &&
 				strings.HasPrefix(filepath.Base(task.InputImagePath), "clearframe_") &&
-				strings.Contains(filepath.ToSlash(task.InputImagePath), "/video-splitter/") {
+				strings.Contains(filepath.ToSlash(task.InputImagePath), "/TrafficTool/") {
 				_ = os.Remove(task.InputImagePath)
 			}
 			// KHÔNG xóa ảnh thumbnail AI: nó được lưu vào outImageDir (thư mục người
@@ -760,7 +780,7 @@ func (qm *AIQueueManager) mergeIntroForTask(ctx context.Context, task ThumbnailT
 	}
 
 	// Ghép xong → xóa clip tạm (chỉ xóa file khớp mẫu clip tạm để tránh xóa nhầm).
-	if strings.Contains(filepath.ToSlash(task.ClipPath), "/video-splitter/") &&
+	if strings.Contains(filepath.ToSlash(task.ClipPath), "/TrafficTool/") &&
 		strings.Contains(filepath.Base(task.ClipPath), "cliptmp_") {
 		_ = os.Remove(task.ClipPath)
 	}

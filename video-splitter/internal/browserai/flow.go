@@ -37,22 +37,20 @@ func GenerateFlowVideo(
 	req GenerateRequest,
 	milestone func(step string),
 ) ([]string, error) {
-	// logDebug gắn LogPrefix (ví dụ "[W1 Clip #2] ") vào đầu mỗi dòng để phân biệt
-	// luồng nào khi nhiều tab chạy song song. Rỗng → log như cũ.
-	logDebug := func(msg string, args ...interface{}) {
-		flowLogf(req.LogPrefix+msg, args...)
-	}
-	// mile phát một bước tiến trình NGẮN GỌN ra card log ở giao diện (nếu có callback).
-	// Khác với logDebug (ghi chi tiết vào file): mile chỉ báo mốc quan trọng cho người dùng.
-	mile := func(step string) {
-		if milestone != nil {
-			milestone(step)
-		}
-	}
-
 	// Chuẩn hóa danh sách ảnh đính kèm: tự động nạp InputImagePath vào InputImagePaths nếu chưa có
 	if len(req.InputImagePaths) == 0 && req.InputImagePath != "" {
 		req.InputImagePaths = []string{req.InputImagePath}
+	}
+
+	var page *rod.Page
+	if workerPage != nil {
+		page = workerPage
+	} else {
+		p, errPage := session.GetPage()
+		if errPage != nil {
+			return nil, errPage
+		}
+		page = p
 	}
 
 	// forceNewProject: worker queue (workerPage != nil) luôn tạo project mới riêng.
@@ -70,9 +68,79 @@ func GenerateFlowVideo(
 		genTimeout = time.Duration(req.TimeoutSecond) * time.Second
 	}
 
-	sleep := func(base time.Duration) {
-		time.Sleep(time.Duration(float64(base) * FlowActionDelayMultiplier))
+	r := &flowRunner{
+		ctx:             ctx,
+		session:         session,
+		page:            page,
+		tm:              tm,
+		req:             req,
+		milestone:       milestone,
+		forceNewProject: forceNewProject,
+		genTimeout:      genTimeout,
 	}
+	return r.run()
+}
+
+// flowRunner gom state dùng chung cho một lần chạy tự động hóa Google Flow (ctx,
+// page, request, helper log/sleep). Trước đây tất cả nằm trong một hàm dài ~2000
+// dòng; tách ra struct + method để mỗi giai đoạn là một hàm đọc được.
+type flowRunner struct {
+	ctx             context.Context
+	session         *BrowserSession
+	page            *rod.Page
+	tm              *TaskManager
+	req             GenerateRequest
+	milestone       func(step string)
+	forceNewProject bool
+	genTimeout      time.Duration
+}
+
+// logDebug gắn LogPrefix (ví dụ "[W1 Clip #2] ") vào đầu mỗi dòng để phân biệt
+// luồng nào khi nhiều tab chạy song song. Rỗng → log như cũ.
+func (r *flowRunner) logDebug(msg string, args ...interface{}) {
+	flowLogf(r.req.LogPrefix+msg, args...)
+}
+
+// mile phát một bước tiến trình NGẮN GỌN ra card log ở giao diện (nếu có callback).
+func (r *flowRunner) mile(step string) {
+	if r.milestone != nil {
+		r.milestone(step)
+	}
+}
+
+// sleep ngủ base nhân với hệ số delay toàn cục của luồng Flow.
+func (r *flowRunner) sleep(base time.Duration) {
+	time.Sleep(time.Duration(float64(base) * FlowActionDelayMultiplier))
+}
+
+// findElemTimeout tìm element bằng JS NHƯNG có timeout — tránh treo vô hạn.
+// page.ElementByJS mặc định CHỜ MÃI đến khi element xuất hiện; ở chế độ ẩn trình
+// duyệt (headless) nút tải/độ phân giải có thể render chậm hoặc khác → treo cứng.
+// Bọc context có deadline để trả lỗi thay vì đứng im. Trả (nil, err) nếu quá hạn.
+func (r *flowRunner) findElemTimeout(timeout time.Duration, js string, args ...interface{}) (*rod.Element, error) {
+	subCtx, cancel := context.WithTimeout(r.ctx, timeout)
+	defer cancel()
+	el, err := r.page.Context(subCtx).ElementByJS(rod.Eval(js, args...))
+	if err != nil {
+		return nil, err
+	}
+	return el.Context(r.ctx), nil
+}
+
+// run thực thi toàn bộ luồng tạo nội dung trên Google Flow.
+func (r *flowRunner) run() ([]string, error) {
+	ctx := r.ctx
+	session := r.session
+	page := r.page
+	tm := r.tm
+	req := r.req
+	forceNewProject := r.forceNewProject
+	genTimeout := r.genTimeout
+	logDebug := r.logDebug
+	mile := r.mile
+	sleep := r.sleep
+	findElemTimeout := r.findElemTimeout
+	var err error
 
 	// Đọc link project cũ đã lưu (chỉ dùng cho tab chính; worker luôn tạo mới)
 	targetURL := "https://labs.google/fx/vi/tools/flow"
@@ -86,31 +154,6 @@ func GenerateFlowVideo(
 		}
 	} else {
 		logDebug("Worker song song: luôn tạo dự án Flow mới riêng cho tab này.")
-	}
-
-	var page *rod.Page
-	var err error
-	if workerPage != nil {
-		page = workerPage
-	} else {
-		page, err = session.GetPage()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// findElemTimeout tìm element bằng JS NHƯNG có timeout — tránh treo vô hạn.
-	// page.ElementByJS mặc định CHỜ MÃI đến khi element xuất hiện; ở chế độ ẩn trình
-	// duyệt (headless) nút tải/độ phân giải có thể render chậm hoặc khác → treo cứng.
-	// Bọc context có deadline để trả lỗi thay vì đứng im. Trả (nil, err) nếu quá hạn.
-	findElemTimeout := func(timeout time.Duration, js string, args ...interface{}) (*rod.Element, error) {
-		subCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		el, err := page.Context(subCtx).ElementByJS(rod.Eval(js, args...))
-		if err != nil {
-			return nil, err
-		}
-		return el.Context(ctx), nil
 	}
 
 	// Script ẩn danh (stealth) chống phát hiện webdriver/bot đã được đăng ký MỘT LẦN

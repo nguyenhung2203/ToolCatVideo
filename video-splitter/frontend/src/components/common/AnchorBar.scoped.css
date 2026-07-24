@@ -1,0 +1,48 @@
+.wx-anchor-bar {
+  position: sticky;
+  z-index: var(--wx-z-sticky);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wx-space-1);
+  padding: var(--wx-space-2);
+  background: var(--wx-surface-base);
+  border: 1px solid var(--wx-border-default);
+  border-radius: var(--wx-radius-md);
+  box-shadow: var(--wx-shadow-md);
+}
+
+.wx-anchor-bar--inline {
+  position: static;
+  box-shadow: none;
+}
+
+.wx-anchor-bar__item {
+  font-family: var(--wx-font-mono);
+  font-size: var(--wx-fs-12);
+  color: var(--wx-text-secondary);
+  padding: 4px 10px;
+  border-radius: var(--wx-radius-sm);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background var(--wx-d-micro) var(--wx-ease-standard),
+    color var(--wx-d-micro) var(--wx-ease-standard);
+  white-space: nowrap;
+}
+
+.wx-anchor-bar__item:hover {
+  background: var(--wx-hover-bg);
+  color: var(--wx-text-primary);
+}
+
+.wx-anchor-bar__item--active {
+  background: var(--wx-selected-bg);
+  color: var(--wx-selected-text);
+  font-weight: var(--wx-fw-semibold);
+}
+
+.wx-anchor-bar__item:focus-visible {
+  outline: 2px solid var(--wx-border-focus);
+  outline-offset: 1px;
+}

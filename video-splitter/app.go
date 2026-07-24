@@ -92,6 +92,10 @@ func (a *App) startup(ctx context.Context) {
 	// file cũ không còn bị khóa). Chạy nền để không làm chậm khởi động.
 	go cleanupOldUpdateFiles()
 
+	// Dọn file tạm xuất video còn sót (cliptmp_*.mp4 / clearframe_*.jpg trong
+	// TempDir/TrafficTool) từ các lần xuất trước bị dừng/lỗi giữa chừng. Chạy nền.
+	go cleanupStaleExportTemp()
+
 	// Mở kho lưu trữ SQLite (lưu project/clip/config để mở lại không mất việc).
 	// Lỗi mở db không nên chặn app khởi động — chỉ mất tính năng lưu.
 	if store, err := storage.Open(storage.DefaultDBPath()); err == nil {
@@ -463,6 +467,35 @@ func (a *App) CancelAnalysis() {
 	}
 }
 
+// cleanupStaleExportTemp dọn file tạm xuất video còn sót ở TempDir/TrafficTool:
+// cliptmp_*.mp4 (clip đã cắt chờ ghép intro) và clearframe_*.jpg (frame gốc trích ra
+// làm ảnh bìa). Các file này lẽ ra bị xóa sau khi ghép xong, nhưng nếu lần xuất trước
+// bị dừng/crash giữa chừng thì chúng ở lại. Chỉ quét mức thư mục gốc TrafficTool (không
+// đệ quy) để không đụng thumbnails/subtitles/merge của phiên đang chạy. Chỉ xóa file
+// khớp đúng 2 tiền tố này và cũ hơn 1 giờ (tránh xóa file của tiến trình xuất song song).
+func cleanupStaleExportTemp() {
+	root := filepath.Join(os.TempDir(), "TrafficTool")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-1 * time.Hour)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "cliptmp_") && !strings.HasPrefix(name, "clearframe_") {
+			continue
+		}
+		info, ierr := e.Info()
+		if ierr != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(root, name))
+	}
+}
+
 // GenerateThumbnail trích một khung hình tại timeSec của video nguồn và trả về
 // đường dẫn ảnh. Dùng khi frontend chia/sửa clip và cần ảnh xem trước mới.
 // Ảnh lưu trong workDir theo video (giữ lại để UI hiển thị).
@@ -644,13 +677,34 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 
 			runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Đang cắt video...", filepath.Base(sourcePath), clip.Index))
 			err := exporter.CutVideo(clipCtx, sourcePath, clip, cutTarget, cfg.ExportPreset, cfg.ExportCRF, threads, cfg.HardwareAccel, cfg.Mode)
+			// Thời lượng kỳ vọng của FILE ĐÃ XUẤT phải trừ trim đầu/đuôi rồi chia tốc độ
+			// (speed>1 làm clip ngắn lại). Nếu tính theo thời lượng thô sẽ báo lệch giả cho
+			// mọi kịch bản có speed≠1 hoặc trim. Nới tolerance khi có speed vì atempo/setpts
+			// có thể lệch nhẹ vài trăm ms.
+			expectedDur := clip.EndTime - clip.StartTime
+			if expectedDur <= 0 {
+				expectedDur = clip.Duration
+			}
+			expectedDur -= clip.Edit.TrimStart + clip.Edit.TrimEnd
+			if expectedDur < 0.5 {
+				// Trim quá lớn → CutVideo tự bỏ trim, giữ nguyên clip gốc.
+				expectedDur = clip.EndTime - clip.StartTime
+				if expectedDur <= 0 {
+					expectedDur = clip.Duration
+				}
+			}
+			verifyTol := 0.5
+			if clip.Edit.Speed > 0 && clip.Edit.Speed != 1.0 {
+				expectedDur /= clip.Edit.Speed
+				verifyTol = 1.0
+			}
 			if err != nil {
 				if clipCtx.Err() != nil {
 					res.Error = "Tiến trình bị dừng"
 				} else {
 					res.Error = err.Error()
 				}
-			} else if dur, verr := exporter.VerifyOutput(cutTarget, clip.EndTime-clip.StartTime, 0.5); verr != nil {
+			} else if dur, verr := exporter.VerifyOutput(cutTarget, expectedDur, verifyTol); verr != nil {
 				if dur <= 0 {
 					if clipCtx.Err() != nil {
 						res.Error = "Tiến trình bị dừng"
@@ -826,11 +880,35 @@ func (a *App) MergeClips(sourcePath string, clips []project.Clip, outPath string
 	_ = os.MkdirAll(tmpDir, 0755)
 	defer os.RemoveAll(tmpDir)
 
+	// Context hủy được: đăng ký vào cùng map để nút Dừng (CancelExport) giết được
+	// tiến trình ghép giữa chừng, giống ExportClips. Key riêng để không đụng clip.ID.
+	mergeCtx, cancel := context.WithCancel(a.ctx)
+	mergeKey := "__merge__" + hashPath(sourcePath)
+	a.exportCancelMu.Lock()
+	a.isExportCancelled = false
+	if a.exportCancelFuncs == nil {
+		a.exportCancelFuncs = make(map[string]context.CancelFunc)
+	}
+	a.exportCancelFuncs[mergeKey] = cancel
+	a.exportCancelMu.Unlock()
+	defer func() {
+		a.exportCancelMu.Lock()
+		delete(a.exportCancelFuncs, mergeKey)
+		a.exportCancelMu.Unlock()
+		cancel()
+	}()
+
 	var parts []string
 	for i, clip := range clips {
+		if mergeCtx.Err() != nil {
+			return "", fmt.Errorf("tiến trình ghép bị dừng")
+		}
 		runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Ghép: đang chuẩn bị phân đoạn %d/%d...", i+1, len(clips)))
 		p := filepath.Join(tmpDir, fmt.Sprintf("part_%03d.mp4", i))
-		if err := exporter.CutVideo(context.Background(), sourcePath, clip, p, cfg.ExportPreset, cfg.ExportCRF, 0, cfg.HardwareAccel, cfg.Mode); err != nil {
+		if err := exporter.CutVideo(mergeCtx, sourcePath, clip, p, cfg.ExportPreset, cfg.ExportCRF, 0, cfg.HardwareAccel, cfg.Mode); err != nil {
+			if mergeCtx.Err() != nil {
+				return "", fmt.Errorf("tiến trình ghép bị dừng")
+			}
 			return "", fmt.Errorf("lỗi chuẩn bị clip #%d: %v", clip.Index, err)
 		}
 		parts = append(parts, p)
@@ -847,7 +925,13 @@ func (a *App) MergeClips(sourcePath string, clips []project.Clip, outPath string
 	}
 
 	runtime.EventsEmit(a.ctx, "export_log", "Ghép: đang nối các phân đoạn thành video hoàn chỉnh...")
-	if err := exporter.ConcatClips(parts, outPath, transType, transDur, cfg.ExportPreset, cfg.ExportCRF, cfg.HardwareAccel); err != nil {
+	if mergeCtx.Err() != nil {
+		return "", fmt.Errorf("tiến trình ghép bị dừng")
+	}
+	if err := exporter.ConcatClips(mergeCtx, parts, outPath, transType, transDur, cfg.ExportPreset, cfg.ExportCRF, cfg.HardwareAccel); err != nil {
+		if mergeCtx.Err() != nil {
+			return "", fmt.Errorf("tiến trình ghép bị dừng")
+		}
 		return "", err
 	}
 	if _, err := exporter.VerifyOutput(outPath, 0, 0); err != nil {
@@ -970,6 +1054,14 @@ func (a *App) genSubtitleForClip(ctx context.Context, sourcePath string, clip *p
 		return nil // clip không có tiếng nói → bỏ qua, không bật phụ đề
 	}
 
+	// Chỉnh mốc phụ đề về đúng dòng thời gian FILE XUẤT: trừ TrimStart (clip xuất bắt
+	// đầu muộn hơn) rồi chia Speed (setpts nén thời gian). Không làm bước này thì ở
+	// speed≠1 phụ đề trôi lệch dần, và có trim đầu thì phụ đề hiện sớm/sai nội dung.
+	segs = subtitle.AdjustForOutput(segs, clip.Edit.TrimStart, clip.Edit.Speed)
+	if len(segs) == 0 {
+		return nil
+	}
+
 	// Dịch nếu cần.
 	if cfg.TargetLang != "" {
 		translated, err := a.translateSegments(segs, cfg.TargetLang, cfg.APIKey)
@@ -1003,7 +1095,9 @@ func (a *App) TranscribeClips(sourcePath string, clips []project.Clip, cfg Subti
 	if cfg.SourceLang == "" {
 		cfg.SourceLang = "auto"
 	}
-	ctx := context.Background()
+	// Dùng a.ctx (không phải Background) để nút Dừng / đóng app hủy được tiến trình
+	// nghe Whisper đang chạy giữa chừng, không để worker chạy tới hết.
+	ctx := a.ctx
 
 	emit := func(pct int, msg string) {
 		payload := map[string]interface{}{"path": sourcePath}
@@ -1097,7 +1191,16 @@ func (a *App) AutoGenSubtitlesForClips(sourcePath string, clips []project.Clip, 
 	var needDur float64
 	for i := range out {
 		s := out[i].Edit.Subtitle
-		if s.AutoGen && s.Path == "" {
+		// Cần nghe nếu AutoGen bật và CHƯA có .srt hợp lệ. Path cũ trỏ vào TempDir đã bị
+		// OS dọn cũng coi như chưa có (nếu chỉ kiểm rỗng, phụ đề sẽ mất im lặng vì lúc
+		// burn os.Stat fail → bỏ qua). Kiểm tồn tại thật để buộc nghe lại.
+		pathValid := false
+		if s.Path != "" {
+			if _, statErr := os.Stat(s.Path); statErr == nil {
+				pathValid = true
+			}
+		}
+		if s.AutoGen && !pathValid {
 			need = append(need, i)
 			needDur += out[i].EndTime - out[i].StartTime
 		}
@@ -1149,7 +1252,9 @@ func (a *App) AutoGenSubtitlesForClips(sourcePath string, clips []project.Clip, 
 		}
 	}
 
-	ctx := context.Background()
+	// Dùng a.ctx (không phải Background) để nút Dừng / đóng app hủy được tiến trình
+	// nghe Whisper đang chạy giữa chừng, không để worker chạy tới hết.
+	ctx := a.ctx
 
 	var wholeSegments []subtitle.Segment
 	if useWhole {

@@ -73,10 +73,4 @@ function close() {
   </BaseDrawer>
 </template>
 
-<style scoped>
-.fd-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--wx-space-4);
-}
-</style>
+<style scoped src="./FormDrawer.scoped.css"></style>

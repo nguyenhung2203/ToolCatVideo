@@ -1824,7 +1824,20 @@ const handleSelectFiles = async () => {
       if (newPaths.length > 0) {
         const wasEmpty = videoPaths.value.length === 0
         videoPaths.value = [...videoPaths.value, ...newPaths]
-        
+
+        // Nạp lại clip đã cắt trước đó (lưu trong SQLite) cho các video mới thêm.
+        // Nhờ vậy video đã cắt sẽ hiện clip ngay và được analyzeAll tự bỏ qua, không cắt lại.
+        for (const path of newPaths) {
+          try {
+            const pData = await LoadProjectBySource(path)
+            if (pData && pData.clips && pData.clips.length > 0) {
+              clipsMap.value[path] = pData.clips
+            }
+          } catch (err) {
+            console.error('Lỗi nạp clip đã lưu cho video:', path, err)
+          }
+        }
+
         if (wasEmpty) {
           activeVideoIndex.value = 0
           activeVideoSrc.value = await GetStreamURL(videoPaths.value[0])

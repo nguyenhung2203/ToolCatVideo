@@ -9,10 +9,5 @@ useTheme()
   <VideoSplitter/>
 </template>
 
-<style>
-/* Remove default wails styles for clean UI */
-body {
-  margin: 0;
-  padding: 0;
-}
-</style>
+<style src="./App.css"></style>
+

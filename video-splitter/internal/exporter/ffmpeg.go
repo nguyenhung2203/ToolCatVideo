@@ -784,7 +784,7 @@ func ffSubPath(p string) string {
 // transitionType == "" hoặc transitionDur <= 0 → nối cứng (concat, nhanh).
 // Ngược lại → dùng xfade (video) + acrossfade (audio) tại mọi mối nối, thời lượng
 // transition đồng nhất. Các input được chuẩn hóa về cùng khung/fps của clip đầu.
-func ConcatClips(inputFiles []string, outputPath, transitionType string, transitionDur float64, preset string, crf int, hwAccel string) error {
+func ConcatClips(ctx context.Context, inputFiles []string, outputPath, transitionType string, transitionDur float64, preset string, crf int, hwAccel string) error {
 	if len(inputFiles) == 0 {
 		return fmt.Errorf("không có clip để ghép")
 	}
@@ -800,13 +800,13 @@ func ConcatClips(inputFiles []string, outputPath, transitionType string, transit
 
 	useTransition := transitionType != "" && transitionDur > 0
 	if !useTransition {
-		return concatDemuxer(inputFiles, outputPath, preset, crf, hwAccel)
+		return concatDemuxer(ctx, inputFiles, outputPath, preset, crf, hwAccel)
 	}
-	return concatXfade(inputFiles, outputPath, transitionType, transitionDur, preset, crf, hwAccel)
+	return concatXfade(ctx, inputFiles, outputPath, transitionType, transitionDur, preset, crf, hwAccel)
 }
 
 // concatDemuxer nối cứng bằng concat filter (re-encode, an toàn với input cùng codec).
-func concatDemuxer(inputFiles []string, outputPath, preset string, crf int, hwAccel string) error {
+func concatDemuxer(ctx context.Context, inputFiles []string, outputPath, preset string, crf int, hwAccel string) error {
 	// Chuẩn hóa về khung/fps của clip đầu để concat filter không lỗi lệch kích thước.
 	w, h, fps := probeFrame(inputFiles[0])
 	var parts []string
@@ -840,17 +840,20 @@ func concatDemuxer(inputFiles []string, outputPath, preset string, crf int, hwAc
 	encoder, encoderArgs := getEncoderParams(hwAccel, preset, crf)
 	if encoder != "libx264" {
 		cmdArgs := buildArgs(encoder, encoderArgs)
-		cmd := exec.Command(utils.GetBinPath("ffmpeg"), cmdArgs...)
+		cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), cmdArgs...)
 		utils.HideCmdWindow(cmd)
 		if err := cmd.Run(); err == nil {
 			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		_ = os.Remove(outputPath)
 	}
 
 	// Fallback to CPU
 	cmdArgs := buildArgs("libx264", []string{"-preset", preset, "-crf", strconv.Itoa(crf)})
-	cmd := exec.Command(utils.GetBinPath("ffmpeg"), cmdArgs...)
+	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), cmdArgs...)
 	utils.HideCmdWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -860,7 +863,7 @@ func concatDemuxer(inputFiles []string, outputPath, preset string, crf int, hwAc
 }
 
 // concatXfade nối các clip với hiệu ứng chuyển cảnh xfade/acrossfade đồng nhất.
-func concatXfade(inputFiles []string, outputPath, transitionType string, td float64, preset string, crf int, hwAccel string) error {
+func concatXfade(ctx context.Context, inputFiles []string, outputPath, transitionType string, td float64, preset string, crf int, hwAccel string) error {
 	w, h, fps := probeFrame(inputFiles[0])
 	durs := make([]float64, len(inputFiles))
 	for i, f := range inputFiles {
@@ -920,17 +923,21 @@ func concatXfade(inputFiles []string, outputPath, transitionType string, td floa
 	encoder, encoderArgs := getEncoderParams(hwAccel, preset, crf)
 	if encoder != "libx264" {
 		cmdArgs := buildArgs(encoder, encoderArgs)
-		cmd := exec.Command(utils.GetBinPath("ffmpeg"), cmdArgs...)
+		cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), cmdArgs...)
 		utils.HideCmdWindow(cmd)
 		if err := cmd.Run(); err == nil {
 			return nil
+		}
+		if ctx.Err() != nil {
+			_ = os.Remove(outputPath)
+			return ctx.Err()
 		}
 		_ = os.Remove(outputPath)
 	}
 
 	// Fallback to CPU
 	cmdArgs := buildArgs("libx264", []string{"-preset", preset, "-crf", strconv.Itoa(crf)})
-	cmd := exec.Command(utils.GetBinPath("ffmpeg"), cmdArgs...)
+	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), cmdArgs...)
 	utils.HideCmdWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

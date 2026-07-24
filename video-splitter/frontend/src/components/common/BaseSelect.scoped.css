@@ -1,0 +1,91 @@
+.base-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.base-select__label {
+  font-size: var(--wx-fs-12);
+  font-weight: var(--wx-fw-semibold);
+  color: var(--wx-text-secondary);
+}
+
+/* ── Trigger — giữ dáng input giống form-input cũ ── */
+.base-select__field {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  cursor: pointer;
+  padding: 8px 12px;
+  border: 1px solid var(--wx-border-default);
+  border-radius: var(--wx-radius-md);
+  background-color: var(--wx-surface-elevated);
+  color: var(--wx-text-primary);
+  font-family: var(--wx-font-primary);
+  font-size: var(--wx-fs-13);
+  text-align: left;
+  line-height: 1.4;
+  transition:
+    border-color var(--wx-d-fast) var(--wx-ease-standard),
+    box-shadow   var(--wx-d-fast) var(--wx-ease-standard);
+}
+
+.base-select__field:focus-visible {
+  outline: none;
+  border-color: var(--wx-brand-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wx-brand-primary) 18%, transparent);
+}
+
+.base-select--open .base-select__field {
+  border-color: var(--wx-brand-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wx-brand-primary) 18%, transparent);
+}
+
+.base-select--disabled .base-select__field {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.base-select__value {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.base-select__value--placeholder {
+  color: var(--wx-text-muted);
+}
+
+.base-select__chevron {
+  flex-shrink: 0;
+  color: var(--wx-text-secondary);
+  transition: transform var(--wx-d-fast) var(--wx-ease-standard);
+}
+
+.base-select--open .base-select__chevron { transform: rotate(180deg); }
+
+/* ── Size sm ── */
+.base-select--sm .base-select__field {
+  padding: 5px 10px;
+  font-size: var(--wx-fs-12);
+}
+.base-select--sm .base-select__label {
+  font-size: var(--wx-fs-11);
+}
+
+/* ── Drop transition ── */
+.base-select-drop-enter-active { transition: opacity 0.14s ease, transform 0.14s ease; }
+.base-select-drop-leave-active { transition: opacity 0.1s ease,  transform 0.1s ease; }
+.base-select-drop-enter-from,
+.base-select-drop-leave-to { opacity: 0; transform: translateY(-4px) scale(0.98); }
+
+@media (prefers-reduced-motion: reduce) {
+  .base-select__field,
+  .base-select__chevron,
+  .base-select-drop-enter-active,
+  .base-select-drop-leave-active { transition: none; }
+}

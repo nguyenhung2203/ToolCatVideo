@@ -51,7 +51,7 @@
                 style="flex: 1;"
               />
               <button @click="openScriptModal" class="img-dir-btn" style="white-space: nowrap;" title="Xem hướng dẫn cài đặt Apps Script 1-Click">
-                <Code :size="13" /> Mã Apps Script
+                <Code :size="13" /> Lấy mã Apps Script (1-Click)
               </button>
             </div>
           </div>
@@ -830,29 +830,53 @@ const generateAllTopicGroups = async () => {
   }
 
   isGeneratingAI.value = true
+  cancelGenerationFlag.value = false
   clearResults()
 
+  // Commit TỪNG nhóm/mẫu vào topicGroups ngay khi sinh xong (không gom rồi gán 1 lần
+  // cuối). Nếu 1 call AI lỗi (rate limit/mạng) hoặc người dùng bấm Dừng, mọi mẫu đã
+  // sinh trước đó vẫn được giữ nguyên trên bảng — không mất công + tiền API.
+  let failCount = 0
   try {
-    const groups: TopicGroup[] = []
-
     for (let lIdx = 0; lIdx < lines.length; lIdx++) {
+      if (cancelGenerationFlag.value) break
       const topic = lines[lIdx]
       const count = variantCount.value || 1
-      const groupItems: GeneratedRowItem[] = []
+
+      const group: TopicGroup = {
+        topicId: `group_${Date.now()}_${lIdx}`,
+        topicName: topic,
+        isCollapsed: false,
+        isGeneratingMore: false,
+        items: []
+      }
+      topicGroups.value.push(group)
 
       for (let v = 0; v < count; v++) {
+        if (cancelGenerationFlag.value) break
         const id = `item_${Date.now()}_${lIdx}_${v}`
         const colData: Record<string, string> = {}
         for (const h of activeHeaders.value) colData[h] = ''
 
-        const { columnData: genData, columnTranslations: genTrans } = await generateColumnsForTopic(topic, `Mẫu biến thể #${v + 1}`, colsToGen)
+        // Mỗi mẫu bọc riêng: 1 mẫu lỗi chỉ bỏ mẫu đó, không văng cả lô. Gặp lỗi rate
+        // limit (429) thì lùi dần rồi thử lại vài lần trước khi bỏ qua.
+        let genData: Record<string, string> = {}
+        let genTrans: Record<string, string> = {}
+        try {
+          const r = await generateColumnsForTopicWithRetry(topic, `Mẫu biến thể #${v + 1}`, colsToGen)
+          genData = r.columnData
+          genTrans = r.columnTranslations
+        } catch (e) {
+          failCount++
+          continue
+        }
         for (const [col, val] of Object.entries(genData)) {
           colData[col] = val
         }
 
         const hasValidText = Object.values(colData).some(v => v && String(v).trim() !== '' && String(v).trim() !== '...')
         if (hasValidText) {
-          groupItems.push({
+          group.items.push({
             id,
             selected: true,
             topicName: topic,
@@ -862,23 +886,21 @@ const generateAllTopicGroups = async () => {
           })
         }
       }
-
-      groups.push({
-        topicId: `group_${Date.now()}_${lIdx}`,
-        topicName: topic,
-        isCollapsed: false,
-        isGeneratingMore: false,
-        items: groupItems
-      })
     }
 
-    topicGroups.value = groups
-    props.showToast(`🎉 AI đã sinh xong ${totalItemCount.value} mẫu cho ${groups.length} nhóm thuộc Tab "${activeTabName.value}"!`, 'success')
+    if (cancelGenerationFlag.value) {
+      props.showToast(`Đã dừng. Giữ lại ${totalItemCount.value} mẫu đã sinh.`, 'info')
+    } else if (failCount > 0) {
+      props.showToast(`Sinh xong ${totalItemCount.value} mẫu (bỏ qua ${failCount} mẫu lỗi API).`, 'warning', 5000)
+    } else {
+      props.showToast(`🎉 AI đã sinh xong ${totalItemCount.value} mẫu cho ${topicGroups.value.length} nhóm thuộc Tab "${activeTabName.value}"!`, 'success')
+    }
 
   } catch (err) {
     props.showToast('Lỗi sinh nội dung AI: ' + String(err), 'error')
   } finally {
     isGeneratingAI.value = false
+    cancelGenerationFlag.value = false
   }
 }
 
@@ -986,448 +1008,5 @@ onMounted(async () => {
 </script>
 
 <style scoped src="./BrowserAIPage.scoped.css"></style>
-<style scoped>
+<style scoped src="./GoogleSheetSyncPage.scoped.css"></style>
 
-/* Tooltip Hover Dịch Tiếng Việt */
-.cell-textarea-wrap {
-  position: relative;
-}
-
-.cell-textarea-wrap:hover .vi-translation-tooltip {
-  opacity: 1;
-  visibility: visible;
-  transform: translateY(0);
-}
-
-.vi-translation-tooltip {
-  position: absolute;
-  left: 0;
-  width: 280px;
-  max-width: 90vw;
-  z-index: 10000;
-  background: rgba(15, 23, 42, 0.98);
-  border: 1px solid rgba(56, 189, 248, 0.6);
-  border-radius: 8px;
-  padding: 8px 10px;
-  box-shadow: 0 12px 28px -4px rgba(0, 0, 0, 0.8);
-  pointer-events: none;
-  opacity: 0;
-  visibility: hidden;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  backdrop-filter: blur(12px);
-}
-
-.vi-translation-tooltip.position-below {
-  top: calc(100% + 4px);
-  bottom: auto;
-  transform: translateY(-4px);
-}
-
-.cell-textarea-wrap:hover .vi-translation-tooltip.position-below {
-  opacity: 1;
-  visibility: visible;
-  transform: translateY(0);
-}
-
-.vi-translation-tooltip.position-above {
-  bottom: calc(100% + 4px);
-  top: auto;
-  transform: translateY(4px);
-}
-
-.cell-textarea-wrap:hover .vi-translation-tooltip.position-above {
-  opacity: 1;
-  visibility: visible;
-  transform: translateY(0);
-}
-
-.vi-tooltip-header {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10.5px;
-  font-weight: 700;
-  color: #38bdf8;
-  margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-
-.vi-tooltip-body {
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: #f1f5f9;
-  font-weight: 500;
-  word-break: break-word;
-}
-
-/* Step Cards */
-.step-card {
-  background: var(--wx-surface-sunken);
-  border: 1.5px solid var(--wx-border-default);
-  border-radius: var(--wx-radius-md);
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.step-num {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--wx-brand-accent);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.btn-accent-blue {
-  background: color-mix(in srgb, var(--wx-brand-primary) 20%, transparent) !important;
-  color: #38bdf8 !important;
-  border-color: rgba(56, 189, 248, 0.4) !important;
-}
-
-.btn-accent-blue:hover {
-  background: color-mix(in srgb, var(--wx-brand-primary) 35%, transparent) !important;
-}
-
-/* Tab Select Pills Grid (Giới hạn chuẩn xác đúng 4 hàng nút giống hệt Bước 2) */
-.tab-pills-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
-  margin-top: 4px;
-  max-height: 148px !important;
-  overflow-y: auto !important;
-  padding-right: 4px;
-}
-
-.tab-select-pill {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-  padding: 6px 10px;
-  height: 32px;
-  min-height: 32px;
-  font-size: 11.5px;
-  font-weight: 600;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.3);
-  color: var(--wx-text-primary);
-  border: 1px solid var(--wx-border-default);
-  cursor: pointer;
-  box-sizing: border-box;
-  transition: all 0.15s ease;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.tab-select-pill:hover {
-  border-color: rgba(255, 255, 255, 0.25);
-}
-
-.tab-select-pill.active {
-  background: color-mix(in srgb, var(--wx-brand-primary) 20%, transparent);
-  border-color: #8b5cf6;
-  color: #38bdf8;
-  font-weight: 700;
-  box-shadow: 0 0 10px rgba(139, 92, 246, 0.25);
-}
-
-/* Column Chips Grid (Đồng bộ 2 cột) */
-.column-chips-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
-  margin-top: 4px;
-  max-height: 160px;
-  overflow-y: auto;
-  padding-right: 2px;
-}
-
-.column-chip-card {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid var(--wx-border-default);
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  user-select: none;
-}
-
-.column-chip-card:hover {
-  border-color: rgba(255, 255, 255, 0.25);
-}
-
-.column-chip-card.selected {
-  background: color-mix(in srgb, var(--wx-brand-primary) 14%, transparent);
-  border-color: #6366f1;
-}
-
-.chip-checkbox {
-  width: 14px;
-  height: 14px;
-  accent-color: #6366f1;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.chip-title {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--wx-text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Khối nhập prompt riêng cho từng cột */
-.col-prompts-box {
-  margin-top: 12px;
-  padding: 10px;
-  background: var(--wx-surface-sunken);
-  border: 1.5px solid var(--wx-border-default);
-  border-radius: var(--wx-radius-md);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  max-height: 280px;
-  overflow-y: auto;
-}
-
-.col-prompts-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  font-weight: 700;
-  color: #38bdf8;
-  padding-bottom: 6px;
-  border-bottom: 1px dashed var(--wx-border-default);
-}
-
-.col-prompt-item {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid var(--wx-border-default);
-  border-radius: 6px;
-  padding: 8px 10px;
-}
-
-.col-prompt-label {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--wx-text-primary);
-}
-
-.col-prompt-textarea {
-  width: 100% !important;
-  box-sizing: border-box !important;
-  font-size: 12px !important;
-  line-height: 1.5 !important;
-  padding: 8px 10px !important;
-  min-height: 54px !important;
-  background: #090d16 !important;
-  border: 1px solid rgba(255, 255, 255, 0.14) !important;
-  border-radius: 6px !important;
-  color: #f8fafc !important;
-  outline: none;
-  resize: vertical;
-  font-family: inherit;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.col-prompt-textarea:focus {
-  border-color: #38bdf8 !important;
-  box-shadow: 0 0 8px rgba(56, 189, 248, 0.3) !important;
-}
-
-/* Nút thu/phóng cột trái */
-.preview-panel {
-  position: relative;
-}
-
-.panel-toggle-btn {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 12px;
-  margin-bottom: 10px;
-  background: color-mix(in srgb, var(--wx-brand-primary) 16%, transparent);
-  border: 1px solid #6366f1;
-  border-radius: 7px;
-  color: var(--wx-text-primary);
-  font-size: 11.5px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.panel-toggle-btn:hover {
-  background: color-mix(in srgb, var(--wx-brand-primary) 28%, transparent);
-}
-
-/* Topic Group Box & Header */
-.topic-group-box {
-  background: var(--wx-surface-sunken);
-  border: 1.5px solid var(--wx-border-default);
-  border-radius: var(--wx-radius-md);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-}
-
-.topic-group-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  background: #111827;
-  border-bottom: 1px solid var(--wx-border-default);
-}
-
-.topic-group-table-wrap {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: auto;
-  border-top: 1px solid var(--wx-border-default);
-}
-
-/* Clean Data Table & Textarea Inputs */
-.clean-data-table {
-  width: 100% !important;
-  min-width: 100% !important;
-  border-collapse: collapse;
-  font-size: 12px;
-  text-align: left;
-  table-layout: auto;
-}
-
-.clean-data-table th {
-  background: #0f172a;
-  padding: 10px 12px;
-  color: #94a3b8;
-  font-weight: 700;
-  font-size: 11.5px;
-  border-bottom: 1px solid var(--wx-border-default);
-  white-space: nowrap;
-}
-
-.clean-data-table td {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  vertical-align: middle;
-}
-
-.clean-data-table tr.row_active {
-  background: rgba(99, 102, 241, 0.04);
-}
-
-.clean-cell-textarea {
-  width: 100% !important;
-  background: #090d16;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  padding: 8px 10px;
-  color: #f8fafc;
-  font-size: 12px;
-  line-height: 1.5;
-  font-family: inherit;
-  outline: none;
-  resize: vertical;
-  min-height: 54px;
-  box-sizing: border-box;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
-}
-
-.clean-cell-textarea:focus {
-  border-color: #38bdf8;
-  background: #000;
-  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
-}
-
-.status-tag {
-  display: inline-block;
-  padding: 3px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.status-tag.success {
-  background: rgba(34, 197, 94, 0.2);
-  color: #4ade80;
-}
-
-.status-tag.error {
-  background: rgba(239, 68, 68, 0.2);
-  color: #f87171;
-}
-
-.status-tag.pushing {
-  background: rgba(56, 189, 248, 0.2);
-  color: #38bdf8;
-}
-
-.status-tag.waiting {
-  color: var(--wx-text-muted);
-}
-
-.row-del-btn {
-  background: none;
-  border: none;
-  color: var(--wx-text-muted);
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
-  transition: all 0.15s ease;
-}
-
-.row-del-btn:hover {
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.15);
-}
-
-.header-text-act-btn {
-  background: none;
-  border: none;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 4px;
-  transition: opacity 0.15s ease;
-}
-
-.header-text-act-btn:hover {
-  opacity: 0.85;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.spin-icon {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  100% { transform: rotate(360deg); }
-}
-</style>

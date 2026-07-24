@@ -1,0 +1,5 @@
+/* Remove default wails styles for clean UI */
+body {
+  margin: 0;
+  padding: 0;
+}
