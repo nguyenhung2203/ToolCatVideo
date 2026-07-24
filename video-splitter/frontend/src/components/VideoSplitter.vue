@@ -5266,9 +5266,6 @@ const formatSize = (bytes: number) => {
                   </select>
                 </div>
               </div>
-              <div style="font-size: 10.5px; color: var(--text-muted); margin-top: 8px; line-height: 1.4;">
-                Mọi mô hình đều nghe được 99 ngôn ngữ — kích thước chỉ đổi độ chính xác. Model tải tự động lần đầu. Dịch phụ đề cần Gemini API key ở trên.
-              </div>
             </div>
 
             <div class="settings-group" style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid var(--l-border);">

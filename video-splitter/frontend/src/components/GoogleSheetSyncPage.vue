@@ -773,7 +773,13 @@ const visibleGroupItems = (group: TopicGroup): GeneratedRowItem[] => {
 }
 
 // Gọi AI 1 lần cho 1 mẫu: trả về map { tên cột -> nội dung } & { tên cột_vi -> bản dịch tiếng Việt }
-const generateColumnsForTopic = async (topic: string, variantLabel: string, cols: string[]): Promise<{ columnData: Record<string, string>, columnTranslations: Record<string, string> }> => {
+// Hỗ trợ truyền danh sách historyList các mẫu đã sinh trước đó để AI làm bộ nhớ đệm tránh trùng lặp ý tưởng.
+const generateColumnsForTopic = async (
+  topic: string,
+  variantLabel: string,
+  cols: string[],
+  historyList: Record<string, string>[] = []
+): Promise<{ columnData: Record<string, string>, columnTranslations: Record<string, string> }> => {
   const columnData: Record<string, string> = {}
   const columnTranslations: Record<string, string> = {}
   if (cols.length === 0) return { columnData, columnTranslations }
@@ -788,8 +794,19 @@ const generateColumnsForTopic = async (topic: string, variantLabel: string, cols
   const topicContext = (topic && topic !== 'Nội dung AI sinh theo cột') ? `Chủ đề: "${topic}" (${variantLabel}).\n` : `(${variantLabel}).\n`
   const emojiGlobalRule = enforceLeadingEmoji.value ? '\nYÊU CẦU: Tự nhiên chèn các biểu tượng Emoji/Icon cảm xúc sinh động, phù hợp ngữ cảnh ở các vị trí thích hợp trong bài viết.' : ''
   
+  let historyContext = ''
+  if (historyList && historyList.length > 0) {
+    // Chỉ lấy tối đa 5 mẫu gần nhất làm bộ nhớ đệm (Sliding Window Memory) để tránh làm đầy cửa sổ ngữ cảnh, quá tải Token hoặc làm chậm tốc độ phản hồi của API
+    const recentHistory = historyList.slice(-5)
+    const historyText = recentHistory.map((h, i) => {
+      const parts = Object.entries(h).map(([col, val]) => `+ ${col}: "${val}"`).join(', ')
+      return `Mẫu đã sinh #${i + 1}: { ${parts} }`
+    }).join('\n')
+    historyContext = `\n\nĐÂY LÀ CÁC MẪU BẠN ĐÃ VIẾT TRƯỚC ĐÓ CHO CHỦ ĐỀ NÀY (HÃY ĐỌC KỸ ĐỂ LÀM BỘ NHỚ ĐỆM - TUYỆT ĐỐI TRÁNH TRÙNG LẶP Ý TƯỞNG, HÃY VIẾT CÁC MẪU MỚI KHÁC BIỆT HOÀN TOÀN, ĐA DẠNG GÓC NHÌN VÀ SÁNG TẠO HƠN):\n${historyText}`
+  }
+
   const prompt = `Bạn là trợ lý viết nội dung chuyên nghiệp. ${topicContext}Hãy viết nội dung cho ĐÚNG các cột sau, TUÂN THỦ yêu cầu riêng của mỗi cột (phần sau dấu hai chấm):
-${colLines}${emojiGlobalRule}
+${colLines}${emojiGlobalRule}${historyContext}
 
 CHỈ trả về đúng một object JSON hợp lệ với cấu trúc key:
 - "tên_cột": "nội dung của cột đó"
@@ -831,12 +848,13 @@ const generateColumnsForTopicWithRetry = async (
   topic: string,
   variantLabel: string,
   cols: string[],
+  historyList: Record<string, string>[] = [],
   retries = 3,
   delay = 1000
 ): Promise<{ columnData: Record<string, string>, columnTranslations: Record<string, string> }> => {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const res = await generateColumnsForTopic(topic, variantLabel, cols)
+      const res = await generateColumnsForTopic(topic, variantLabel, cols, historyList)
       if (res && Object.keys(res.columnData).length > 0) {
         return res
       }
@@ -899,12 +917,15 @@ const generateAllTopicGroups = async () => {
         const colData: Record<string, string> = {}
         for (const h of activeHeaders.value) colData[h] = ''
 
+        // Thu thập lịch sử các mẫu đã được sinh thành công trước đó trong nhóm này để làm bộ nhớ đệm
+        const historyList = group.items.map(item => item.columnData)
+
         // Mỗi mẫu bọc riêng: 1 mẫu lỗi chỉ bỏ mẫu đó, không văng cả lô. Gặp lỗi rate
         // limit (429) thì lùi dần rồi thử lại vài lần trước khi bỏ qua.
         let genData: Record<string, string> = {}
         let genTrans: Record<string, string> = {}
         try {
-          const r = await generateColumnsForTopicWithRetry(topic, `Mẫu biến thể #${v + 1}`, colsToGen)
+          const r = await generateColumnsForTopicWithRetry(topic, `Mẫu biến thể #${v + 1}`, colsToGen, historyList)
           genData = r.columnData
           genTrans = r.columnTranslations
         } catch (e) {
@@ -957,7 +978,8 @@ const addExtraSampleToGroup = async (group: TopicGroup) => {
     const colData: Record<string, string> = {}
     for (const h of activeHeaders.value) colData[h] = ''
 
-    const { columnData: genData, columnTranslations: genTrans } = await generateColumnsForTopic(group.topicName, `Mẫu bổ sung #${vIdx}`, colsToGen)
+    const historyList = group.items.map(item => item.columnData)
+    const { columnData: genData, columnTranslations: genTrans } = await generateColumnsForTopic(group.topicName, `Mẫu bổ sung #${vIdx}`, colsToGen, historyList)
     for (const [col, val] of Object.entries(genData)) {
       colData[col] = val
     }
