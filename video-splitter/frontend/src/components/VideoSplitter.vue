@@ -279,6 +279,7 @@ const showEdit = ref(false)
 const editClipIdx = ref(-1)
 
 const geminiAPIKey = ref('')
+const geminiTextModel = ref('auto')   // model Gemini dùng cho dịch phụ đề / tối ưu prompt / sinh nội dung ('auto' = tự chọn)
 const browserAIShowChrome = ref(true)
 const browserAIConcurrency = ref(3)
 
@@ -761,21 +762,20 @@ const pickScenarioForClip = (idx: number): RemixScenario | null => {
 // Merge combo edit của kịch bản vào clip.edit (deep clone để mỗi clip độc lập).
 const applyScenarioToClip = (clip: project.Clip, scenario: RemixScenario) => {
   ensureEdit(clip)
+  // Lọc text đã tick TRÊN DỮ LIỆU THÔ của kịch bản (còn field `selected`), vì
+  // EditOps.createFrom → TextOp constructor KHÔNG copy `selected` nên sau merge
+  // mọi t.selected = undefined (lọc sẽ sai). Đã tick câu nào → giữ ĐÚNG câu đó,
+  // không random: preview hiện gì thì video xuất ra đúng vậy.
+  const rawTexts: any[] = Array.isArray(scenario.edit?.texts) ? scenario.edit.texts : []
+  const activeTexts = scenario.edit?.textEnabled === false
+    ? []
+    : rawTexts.filter((t: any) => t.selected !== false)
+
   const merged = project.EditOps.createFrom({
     ...JSON.parse(JSON.stringify(clip.edit)),
     ...JSON.parse(JSON.stringify(scenario.edit))
   })
-  if (scenario.edit?.textEnabled === false) {
-    merged.texts = []
-  } else {
-    const activeTexts = (merged.texts || []).filter((t: any) => t.selected !== false)
-    if (activeTexts.length > 1) {
-      const randomIndex = Math.floor(Math.random() * activeTexts.length)
-      merged.texts = [activeTexts[randomIndex]]
-    } else {
-      merged.texts = activeTexts
-    }
-  }
+  merged.texts = activeTexts.map((t: any) => project.TextOp.createFrom(JSON.parse(JSON.stringify(t))))
   clip.edit = merged
 }
 
@@ -895,6 +895,7 @@ const saveGlobalSettings = async () => {
     gSettings.exportWithThumbnails = exportWithThumbnails.value
     gSettings.thumbnailIntroDuration = thumbnailIntroDuration.value
     gSettings.geminiAPIKey = geminiAPIKey.value
+    gSettings.geminiTextModel = geminiTextModel.value
     gSettings.browserAIShowChrome = browserAIShowChrome.value
     gSettings.browserAIConcurrency = browserAIConcurrency.value
     gSettings.namingConfig = JSON.parse(JSON.stringify(namingConfig))
@@ -916,7 +917,7 @@ const saveGlobalSettings = async () => {
 }
 
 let saveTimeout: any = null
-watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, exportWithThumbnails, thumbnailIntroDuration, geminiAPIKey, browserAIShowChrome, browserAIConcurrency, namingConfig, promptPresets, namedProjects, activeProjectId, whisperModel, subtitleTiming, remixScenarios, scenarioMode], () => {
+watch([analyzerConfig, globalRemix, exportJobs, analyzeJobs, outDir, outImageDir, exportWithThumbnails, thumbnailIntroDuration, geminiAPIKey, geminiTextModel, browserAIShowChrome, browserAIConcurrency, namingConfig, promptPresets, namedProjects, activeProjectId, whisperModel, subtitleTiming, remixScenarios, scenarioMode], () => {
   if (!isSettingsLoaded.value) return
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(() => {
@@ -1205,6 +1206,9 @@ onMounted(async () => {
       if (gSettings.geminiAPIKey !== undefined) {
         geminiAPIKey.value = gSettings.geminiAPIKey
       }
+      if (gSettings.geminiTextModel !== undefined) {
+        geminiTextModel.value = gSettings.geminiTextModel
+      }
       if (gSettings.browserAIShowChrome !== undefined) {
         browserAIShowChrome.value = gSettings.browserAIShowChrome
       }
@@ -1458,7 +1462,14 @@ onMounted(async () => {
         break
       }
     }
-    showToast(`⚠ ${task.clipName || 'Clip'}: Không tạo được ảnh bìa AI. Clip này chưa có ảnh bìa.`, 'warning', 5000)
+    const name = task.clipName || 'Clip'
+    if (task.mediaType === 'video' || task.source === 'ai-video') {
+      showToast(`⚠ ${name}: Tạo video AI không thành công (${task.errorMessage || 'Lỗi Google Flow'})`, 'warning', 5000)
+    } else if (task.source === 'video-cut') {
+      showToast(`⚠ ${name}: Không tạo được ảnh bìa AI. Clip này chưa có ảnh bìa.`, 'warning', 5000)
+    } else {
+      showToast(`⚠ ${name}: Không tạo được ảnh AI (${task.errorMessage || 'Lỗi Google Flow'})`, 'warning', 5000)
+    }
   })
 
   // Đếm ngược thời gian hoàn tất & Cập nhật tiến độ mượt mà (interpolation)
@@ -3453,37 +3464,9 @@ const editSummary = computed<string[]>(() => {
   return tags
 })
 
-// Chip tóm tắt hiệu ứng cho MỘT clip bất kỳ (hiển thị ở thẻ clip danh sách).
+// Chip tóm tắt hiệu ứng cho MỘT clip bất kỳ.
 const clipEditChips = (clip: project.Clip): string[] => {
   const tags: string[] = []
-
-  // 1. Nếu có kịch bản được tích chọn ở CẤU HÌNH XUẤT, hiển thị nhãn Kịch bản + các hiệu ứng trong kịch bản đó
-  const activeScenarios = remixScenarios.value.filter(s => selectedScenarioIds.value.has(s.id))
-  if (activeScenarios.length > 0) {
-    if (activeScenarios.length === 1) {
-      tags.push(`🎬 ${activeScenarios[0].name}`)
-    } else {
-      tags.push(`🎬 ${activeScenarios.length} Kịch bản`)
-    }
-
-    const scEdit = activeScenarios[0].edit
-    const e = clip.edit || scEdit
-    if (e) {
-      if (e.hflip) tags.push('lật')
-      if (e.aspect?.enabled) tags.push(e.aspect.ratio)
-      if (e.color?.enabled || e.color?.preset) tags.push('màu')
-      if (e.speed && e.speed !== 1) tags.push(e.speed + '×')
-      if (e.texts?.length) tags.push('chữ ' + e.texts.length)
-      if (e.card?.enabled || e.cardAboveText) tags.push('nền card')
-      if (e.watermark?.enabled && e.watermark?.imgPath) tags.push('logo')
-      if (e.audio?.musicPath) tags.push('nhạc')
-      if ((e.audio?.fadeIn || 0) > 0 || (e.audio?.fadeOut || 0) > 0) tags.push('fade')
-      if (e.transition?.type && (e.transition?.duration || 0) > 0) tags.push('trans')
-    }
-    return tags
-  }
-
-  // 2. Nếu không tick kịch bản, hiển thị cấu hình edit riêng của clip nếu có
   const e = clip.edit
   if (!e) return tags
   if (e.hflip) tags.push('lật')
@@ -3491,7 +3474,7 @@ const clipEditChips = (clip: project.Clip): string[] => {
   if (e.color?.enabled || e.color?.preset) tags.push('màu')
   if (e.speed && e.speed !== 1) tags.push(e.speed + '×')
   if (e.texts?.length) tags.push('chữ ' + e.texts.length)
-  if (e.card?.enabled || e.cardAboveText) tags.push('nền card')
+  if (e.card?.enabled || (e as any).cardAboveText) tags.push('nền card')
   if (e.watermark?.enabled && e.watermark?.imgPath) tags.push('logo')
   if (e.audio?.musicPath) tags.push('nhạc')
   if ((e.audio?.fadeIn || 0) > 0 || (e.audio?.fadeOut || 0) > 0) tags.push('fade')
@@ -3673,9 +3656,6 @@ const onCardVideoTimeUpdate = (e: Event, clip: any) => {
     cardRelTimeStr.value = `${formatTime(video.currentTime)} / ${formatTime(video.duration || 0)}`
   }
 }
-    cardRelTimeStr.value = `${formatTime(relSec)} / ${formatTime(totalSec)}`
-  }
-}
 
 const formatTime = (seconds: number) => {
   if (seconds === undefined || seconds === null || seconds < 0) return '00:00'
@@ -3725,13 +3705,13 @@ const formatSize = (bytes: number) => {
             <Download :size="13" /> Tải Ảnh
           </button>
           <button class="nav-segment-btn" :class="{ active: activeView === 'ai-image' }" @click="activeView = 'ai-image'">
-            <Sparkles :size="13" style="color: var(--wx-brand-accent);" /> Tạo Ảnh AI
+            <Sparkles :size="13" /> Tạo Ảnh AI
           </button>
           <button class="nav-segment-btn" :class="{ active: activeView === 'ai-video' }" @click="activeView = 'ai-video'">
-            <Sparkles :size="13" style="color: var(--wx-brand-accent);" /> Tạo Video AI
+            <Sparkles :size="13" /> Tạo Video AI
           </button>
           <button class="nav-segment-btn" :class="{ active: activeView === 'google-sheet' }" @click="activeView = 'google-sheet'">
-            <FileSpreadsheet :size="13" style="color: #22c55e;" /> Đồng Bộ Sheet AI
+            <FileSpreadsheet :size="13" /> Content
           </button>
         </div>
 
@@ -4273,12 +4253,6 @@ const formatSize = (bytes: number) => {
                   <Trash2 :size="12" />
                   Xóa
                 </button>
-              </div>
-
-              <!-- Chips các hiệu ứng đã áp trên clip này -->
-              <div class="clip-effects-chips">
-                <span v-for="(chip, ci) in clipEditChips(clip)" :key="ci" class="eff-chip" :class="'chip-' + chip">{{ chip }}</span>
-                <span class="eff-chip-empty" v-if="clipEditChips(clip).length === 0">Chưa áp hiệu ứng</span>
               </div>
             </div>
           </div>
@@ -5172,9 +5146,22 @@ const formatSize = (bytes: number) => {
                 <Key :size="15" />
                 Cấu hình AI Thumbnail (Google Gemini)
               </h4>
-              <div class="setting-item" style="margin-bottom: 8px;">
-                <label style="font-size: 12.5px; font-weight: 600;">Google Gemini API Key:</label>
-                <input type="password" v-model="geminiAPIKey" class="text-content-input" placeholder="Dán Gemini API Key của bạn..." style="margin-bottom: 0;" />
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; width: 100%;">
+                <div class="setting-item" style="margin-bottom: 0;">
+                  <label style="font-size: 12.5px; font-weight: 600;">Google Gemini API Key:</label>
+                  <input type="password" v-model="geminiAPIKey" class="text-content-input" placeholder="Dán Gemini API Key của bạn..." style="margin-bottom: 0;" />
+                </div>
+                <div class="setting-item" style="margin-bottom: 0;">
+                  <label style="font-size: 12.5px; font-weight: 600;">Model AI:</label>
+                  <select v-model="geminiTextModel" class="text-content-input" style="margin-bottom: 0;">
+                    <option value="auto">Tự động (khuyên dùng)</option>
+                    <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (500 lượt/ngày)</option>
+                    <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (500 lượt/ngày)</option>
+                    <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                    <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                    <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                  </select>
+                </div>
               </div>
             </div>
 

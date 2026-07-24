@@ -125,9 +125,11 @@ type SubtitleOp struct {
 
 // AspectOp mô tả cách chuyển tỷ lệ khung hình.
 type AspectOp struct {
-	Enabled bool   `json:"enabled"`
-	Ratio   string `json:"ratio"` // "9:16" / "1:1" / "16:9"
-	Mode    string `json:"mode"`  // "crop" (cắt) / "pad" (viền đen) / "blur" (nền mờ)
+	Enabled bool    `json:"enabled"`
+	Ratio   string  `json:"ratio"` // "9:16" / "1:1" / "16:9"
+	Mode    string  `json:"mode"`  // "crop" (cắt) / "pad" (viền đen) / "blur" (nền mờ)
+	PanX    float64 `json:"panX"`  // vị trí pan X (0..1, 0.5 = giữa tâm)
+	PanY    float64 `json:"panY"`  // vị trí pan Y (0..1, 0.5 = giữa tâm)
 }
 
 // ColorOp chỉnh màu cơ bản + preset filter.

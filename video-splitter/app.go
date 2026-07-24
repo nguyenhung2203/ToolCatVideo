@@ -1229,7 +1229,7 @@ func (a *App) translateSegments(segments []subtitle.Segment, targetLang, apiKey 
 	}
 
 	client := &http.Client{Timeout: 60 * time.Second}
-	modelsToTry := []string{"gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"}
+	modelsToTry := buildGeminiModelList(a.getPreferredGeminiModel(), []string{"gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"})
 	var respText string
 	var lastErr error
 	for _, modelName := range modelsToTry {
@@ -1501,6 +1501,41 @@ func (a *App) GetGlobalSettings() (string, error) {
 	return string(data), nil
 }
 
+// getPreferredGeminiModel đọc model Gemini (text) mà người dùng chọn trong Cài đặt chung.
+// Trả về "" nếu chưa chọn hoặc để "auto" (dùng danh sách mặc định).
+func (a *App) getPreferredGeminiModel() string {
+	settingsStr, err := a.GetGlobalSettings()
+	if err != nil || settingsStr == "" {
+		return ""
+	}
+	var parsed struct {
+		GeminiTextModel string `json:"geminiTextModel"`
+	}
+	if err := json.Unmarshal([]byte(settingsStr), &parsed); err != nil {
+		return ""
+	}
+	m := strings.TrimSpace(parsed.GeminiTextModel)
+	if m == "auto" {
+		return ""
+	}
+	return m
+}
+
+// buildGeminiModelList đặt model ưu tiên (nếu có) lên đầu danh sách dự phòng, loại trùng.
+// Vẫn giữ các model còn lại làm phương án dự phòng khi model chọn bị lỗi/hết quota.
+func buildGeminiModelList(preferred string, fallback []string) []string {
+	if preferred == "" {
+		return fallback
+	}
+	result := []string{preferred}
+	for _, m := range fallback {
+		if m != preferred {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
 // ExtractClipFrames trích xuất 3 khung hình từ video gốc làm ảnh tham chiếu để tạo thumbnail AI
 func (a *App) ExtractClipFrames(videoPath string, startTime float64, endTime float64) ([]string, error) {
 	dir, err := os.UserConfigDir()
@@ -1654,14 +1689,13 @@ Return only the final English image prompt without headings, explanations, markd
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	apiVersions := []string{"v1beta"}
-	modelsToTry := []string{
+	modelsToTry := buildGeminiModelList(a.getPreferredGeminiModel(), []string{
 		"gemini-3.5-flash-lite",
+		"gemini-3.1-flash-lite",
+		"gemini-2.5-flash-lite",
 		"gemini-3.5-flash",
 		"gemini-2.5-flash",
-		"gemini-2.0-flash",
-		"gemini-2.0-flash-lite",
-		"gemini-1.5-flash",
-	}
+	})
 	var optimizedPrompt string
 	var lastErr error
 
@@ -2180,19 +2214,19 @@ func (a *App) FetchGoogleSheetStructure(webAppURL string, rawURL string) ([]goog
 }
 
 // PushGoogleSheetRow đẩy 1 dòng dữ liệu vào Google Sheet qua Web App URL
-func (a *App) PushGoogleSheetRow(webAppURL string, gid string, tabName string, row []string) error {
+func (a *App) PushGoogleSheetRow(webAppURL string, gid string, tabName string, row []string, headers []string) error {
 	if a.googleSheetService == nil {
 		a.googleSheetService = googlesheet.NewService()
 	}
-	return a.googleSheetService.PushRowToWebApp(a.ctx, webAppURL, gid, tabName, row)
+	return a.googleSheetService.PushRowToWebApp(a.ctx, webAppURL, gid, tabName, row, headers)
 }
 
 // PushGoogleSheetBatch đẩy danh sách nhiều dòng dữ liệu vào Google Sheet qua Web App URL
-func (a *App) PushGoogleSheetBatch(webAppURL string, gid string, tabName string, rows [][]string) error {
+func (a *App) PushGoogleSheetBatch(webAppURL string, gid string, tabName string, rows [][]string, headers []string) error {
 	if a.googleSheetService == nil {
 		a.googleSheetService = googlesheet.NewService()
 	}
-	return a.googleSheetService.PushBatchToWebApp(a.ctx, webAppURL, gid, tabName, rows)
+	return a.googleSheetService.PushBatchToWebApp(a.ctx, webAppURL, gid, tabName, rows, headers)
 }
 
 // GetGoogleAppsScriptTemplate trả về đoạn mã mẫu Apps Script để dán vào Google Sheet
@@ -2224,14 +2258,13 @@ func (a *App) GenerateAIContentText(apiKey string, prompt string) (string, error
 	}
 
 	if apiKey != "" {
-		modelsToTry := []string{
+		modelsToTry := buildGeminiModelList(a.getPreferredGeminiModel(), []string{
 			"gemini-3.5-flash-lite",
+			"gemini-3.1-flash-lite",
+			"gemini-2.5-flash-lite",
 			"gemini-3.5-flash",
 			"gemini-2.5-flash",
-			"gemini-2.0-flash",
-			"gemini-2.0-flash-lite",
-			"gemini-1.5-flash",
-		}
+		})
 		reqBody := map[string]interface{}{
 			"contents": []map[string]interface{}{
 				{

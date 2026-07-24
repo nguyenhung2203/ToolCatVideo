@@ -49,7 +49,7 @@ interface DraftText {
   selected?: boolean
 }
 
-type DragTarget = 'watermark' | 'subtitle' | 'card' | `text:${string}` | null
+type DragTarget = 'video-pan' | 'watermark' | 'subtitle' | 'card' | `text:${string}` | null
 
 const STORAGE_KEY = 'remix_scenarios_list'
 
@@ -105,6 +105,8 @@ const draft = reactive({
   aspectEnabled: false,
   aspectRatio: '9:16',
   aspectMode: 'blur',
+  videoPanX: 0.5,
+  videoPanY: 0.5,
   colorEnabled: false,
   colorPreset: '',
   colorBrightness: 0,
@@ -386,6 +388,13 @@ const isCardVisible = computed(() => {
   return currentSec.value >= st && currentSec.value <= et
 })
 
+const isWmVisible = computed(() => {
+  if (!draft.wmEnabled || !draft.wmPath) return false
+  const st = Math.max(0, Number(draft.wmStartTime) || 0)
+  const et = Number(draft.wmEndTime) > st ? Number(draft.wmEndTime) : Number.POSITIVE_INFINITY
+  return currentSec.value >= st && currentSec.value <= et
+})
+
 const cardStyle = computed(() => {
   const w = Math.min(100, Math.max(10, Number(draft.cardWidth) || 82))
   const h = Math.min(100, Math.max(5, Number(draft.cardHeight) || 22))
@@ -653,6 +662,33 @@ let dragOffsetY = 0
 let dragElementW = 0
 let dragElementH = 0
 
+let initialPanX = 0.5
+let initialPanY = 0.5
+let panStartX = 0
+let panStartY = 0
+
+const beginVideoPanDrag = (e: PointerEvent) => {
+  const targetEl = e.target as HTMLElement
+  if (targetEl && targetEl.closest('.draggable-overlay')) return
+  selectedTextId.value = '' // Bỏ chọn text ngay khi nhấp vào video
+  if (!playerFrameRef.value) return
+  e.preventDefault()
+  e.stopPropagation()
+
+  const frameRect = playerFrameRef.value.getBoundingClientRect()
+  dragTarget.value = 'video-pan'
+  dragPointerId = e.pointerId
+  panStartX = e.clientX
+  panStartY = e.clientY
+  initialPanX = draft.videoPanX ?? 0.5
+  initialPanY = draft.videoPanY ?? 0.5
+  dragElementW = frameRect.width
+  dragElementH = frameRect.height
+
+  const el = e.currentTarget as HTMLElement
+  el.setPointerCapture(e.pointerId)
+}
+
 const beginOverlayDrag = (target: Exclude<DragTarget, null>, e: PointerEvent) => {
   if (!playerFrameRef.value) return
   e.preventDefault()
@@ -673,6 +709,25 @@ const updateOverlayDrag = (e: PointerEvent) => {
   if (!dragTarget.value || e.pointerId !== dragPointerId || !playerFrameRef.value) return
   e.preventDefault()
   e.stopPropagation()
+
+  if (dragTarget.value === 'video-pan') {
+    // Tự động bật aspect & zoom nhẹ nếu chưa bật để thao tác kéo lọt khung có hiệu lực tức thì
+    if (!draft.aspectEnabled) draft.aspectEnabled = true
+    if (!draft.zoomEnabled) {
+      draft.zoomEnabled = true
+      if (draft.zoomFactor < 1.05) draft.zoomFactor = 1.05
+    }
+
+    const deltaX = e.clientX - panStartX
+    const deltaY = e.clientY - panStartY
+    // Hệ số độ nhạy chuột (0.35) giúp kéo trượt chuẩn xác từng mm, không bị giật nhanh
+    const sensitivity = 0.35
+    const normDx = (deltaX / Math.max(1, dragElementW)) * sensitivity
+    const normDy = (deltaY / Math.max(1, dragElementH)) * sensitivity
+    draft.videoPanX = clamp01(initialPanX - normDx)
+    draft.videoPanY = clamp01(initialPanY - normDy)
+    return
+  }
   const frame = playerFrameRef.value.getBoundingClientRect()
   const left = e.clientX - frame.left - dragOffsetX
   const top = e.clientY - frame.top - dragOffsetY
@@ -905,20 +960,17 @@ const onFrameWheel = (e: WheelEvent) => {
   if (!e.ctrlKey && !e.metaKey) return
   e.preventDefault()
 
-  if (selectedTextId.value) {
-    onOverlayWheel(e, `text:${selectedTextId.value}`)
-    return
-  }
   if (dragTarget.value) {
     onOverlayWheel(e, dragTarget.value)
     return
   }
-  if (draft.wmEnabled) {
-    onOverlayWheel(e, 'watermark')
+  const targetEl = e.target as HTMLElement | null
+  if (targetEl && targetEl.closest('.text-preview-overlay') && selectedTextId.value) {
+    onOverlayWheel(e, `text:${selectedTextId.value}`)
     return
   }
-  if (draft.subEnabled || draft.subAutoGen) {
-    onOverlayWheel(e, 'subtitle')
+  if (targetEl && targetEl.closest('.wm-preview-overlay') && draft.wmEnabled) {
+    onOverlayWheel(e, 'watermark')
     return
   }
 }
@@ -1120,10 +1172,16 @@ const videoTransform = computed(() => {
 })
 
 const videoStyle = computed(() => {
+  const px = Math.min(100, Math.max(0, (draft.videoPanX ?? 0.5) * 100))
+  const py = Math.min(100, Math.max(0, (draft.videoPanY ?? 0.5) * 100))
+
   return {
     transform: videoTransform.value,
+    transformOrigin: `${px}% ${py}%`,
     filter: colorFilterStyle.value,
-    objectFit: videoObjectFit.value as any
+    objectFit: videoObjectFit.value as any,
+    objectPosition: `${px}% ${py}%`,
+    cursor: dragTarget.value === 'video-pan' ? 'grabbing' : 'grab',
   }
 })
 
@@ -1218,7 +1276,7 @@ const resetDraft = () => {
     subEnabled: false, subPath: '', subFontSize: 24, subFontColor: '#ffffff', subOutlineColor: '#000000', subMarginV: 40,
     subX: 0.5, subY: 0.9, subHasCustomPosition: false,
     subAutoGen: false, subSourceLang: 'auto', subTargetLang: '', textEnabled: false, texts: [],
-    randomText: false, cardEnabled: false, cardMode: 'preset', cardPreset: 'glass', cardImgPath: '',
+    randomText: false, cardEnabled: false, cardAboveText: false, cardMode: 'preset', cardPreset: 'glass', cardImgPath: '',
     cardColor: '#0f172a', cardColor2: '#1e293b', cardOpacity: 0.85, cardX: 0.5, cardY: 0.75,
     cardWidth: 82, cardHeight: 22, cardBorderRadius: 12, cardStartTime: 0, cardEndTime: 0,
   })
@@ -1228,7 +1286,7 @@ const resetDraft = () => {
 const draftToEdit = (): any => ({
   hflip: draft.hflip,
   speed: draft.speed,
-  aspect: { enabled: draft.aspectEnabled, ratio: draft.aspectRatio, mode: draft.aspectMode },
+  aspect: { enabled: draft.aspectEnabled, ratio: draft.aspectRatio, mode: draft.aspectMode, panX: clamp01(draft.videoPanX), panY: clamp01(draft.videoPanY) },
   color: { enabled: draft.colorEnabled, preset: draft.colorPreset, brightness: draft.colorBrightness, contrast: draft.colorContrast, saturation: draft.colorSaturation },
   zoomPan: { enabled: draft.zoomEnabled, zoom: draft.zoomFactor, dir: draft.zoomDir },
   crop: { enabled: draft.cropEnabled, percent: draft.cropPercent },
@@ -1266,6 +1324,7 @@ const draftToEdit = (): any => ({
     borderRadius: draft.cardBorderRadius,
     startTime: Math.max(0, draft.cardStartTime || 0),
     endTime: draft.cardEndTime > 0 ? Math.max(draft.cardStartTime || 0, draft.cardEndTime) : 0,
+    cardAboveText: draft.cardAboveText,
   },
   watermark: {
     enabled: draft.wmEnabled,
@@ -1335,6 +1394,7 @@ const editToDraft = (e: any) => {
     draft.cardBorderRadius = e.card.borderRadius ?? 12
     draft.cardStartTime = Math.max(0, e.card.startTime || 0)
     draft.cardEndTime = Math.max(0, e.card.endTime || 0)
+    draft.cardAboveText = !!e.card.cardAboveText
   }
   if (e.subtitle) {
     draft.subEnabled = !!e.subtitle.enabled
@@ -1364,7 +1424,7 @@ const editToDraft = (e: any) => {
     bgBox: !!t.bgBox,
     selected: t.selected !== false,
   })) : []
-  selectedTextId.value = draft.texts[0]?.id || ''
+  selectedTextId.value = ''
 }
 
 function openNew() {
@@ -1626,13 +1686,43 @@ onMounted(load)
             <label class="toggle-switch-lbl" style="margin-top: 12px;">
               <input type="checkbox" v-model="draft.zoomEnabled" />
               <span class="switch-slider"></span>
-              <span class="lbl-txt">Zoom Ken Burns ({{ draft.zoomFactor }}x)</span>
+              <span class="lbl-txt">Zoom &amp; Vị trí góc quay ({{ draft.zoomFactor }}x)</span>
             </label>
-            <div class="inline-field-row" v-if="draft.zoomEnabled" style="margin-top: 4px;">
-              <input type="range" step="0.01" min="1.01" max="1.3" v-model.number="draft.zoomFactor" class="custom-range-slider" />
-              <select v-model="draft.zoomDir" class="scenario-select">
-                <option value="in">Giữa</option><option value="left">Trái</option><option value="right">Phải</option>
-              </select>
+            <div v-if="draft.zoomEnabled" style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 8px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
+                <span>Phóng to: <strong>{{ draft.zoomFactor }}x</strong></span>
+                <div class="quick-speed-pills">
+                  <button type="button" class="sp-pill" :class="{ active: draft.zoomFactor === 1.1 }" @click="draft.zoomFactor = 1.1">1.1x</button>
+                  <button type="button" class="sp-pill" :class="{ active: draft.zoomFactor === 1.5 }" @click="draft.zoomFactor = 1.5">1.5x</button>
+                  <button type="button" class="sp-pill" :class="{ active: draft.zoomFactor === 2.0 }" @click="draft.zoomFactor = 2.0">2.0x</button>
+                  <button type="button" class="sp-pill" :class="{ active: draft.zoomFactor === 3.0 }" @click="draft.zoomFactor = 3.0">3.0x</button>
+                </div>
+              </div>
+              <input type="range" step="0.01" min="1.01" max="3.0" v-model.number="draft.zoomFactor" class="custom-range-slider" />
+              
+              <div style="font-size: 11px; color: var(--wx-text-secondary); margin-top: 2px;">Vị trí góc quay (Crop View Position):</div>
+              <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;">
+                <button type="button" class="sp-pill" :class="{ active: draft.videoPanX <= 0.1 }" @click="draft.videoPanX = 0; draft.videoPanY = 0.5; draft.zoomDir = 'left'">⬅ Trái</button>
+                <button type="button" class="sp-pill" :class="{ active: Math.abs(draft.videoPanX - 0.5) < 0.1 && Math.abs(draft.videoPanY - 0.5) < 0.1 }" @click="draft.videoPanX = 0.5; draft.videoPanY = 0.5; draft.zoomDir = 'in'">🎯 Giữa</button>
+                <button type="button" class="sp-pill" :class="{ active: draft.videoPanX >= 0.9 }" @click="draft.videoPanX = 1.0; draft.videoPanY = 0.5; draft.zoomDir = 'right'">➡ Phải</button>
+                <button type="button" class="sp-pill" :class="{ active: draft.videoPanY <= 0.1 }" @click="draft.videoPanX = 0.5; draft.videoPanY = 0; draft.zoomDir = 'up'" style="grid-column: span 1;">⬆ Trên</button>
+                <button type="button" class="sp-pill" :class="{ active: draft.videoPanY >= 0.9 }" @click="draft.videoPanX = 0.5; draft.videoPanY = 1.0; draft.zoomDir = 'down'" style="grid-column: span 2;">⬇ Dưới</button>
+              </div>
+
+              <!-- Hướng dẫn Kéo thả Pan trực tiếp như Avatar FB -->
+              <div style="margin-top: 6px; padding: 6px 8px; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 6px; font-size: 11px; color: #38bdf8; display: flex; flex-direction: column; gap: 4px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 2px;">
+                  <span>Tọa độ Pan: X: {{ Math.round(draft.videoPanX * 100) }}% | Y: {{ Math.round(draft.videoPanY * 100) }}%</span>
+                  <button
+                    type="button"
+                    @click="draft.videoPanX = 0.5; draft.videoPanY = 0.5"
+                    style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #fff; border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer;"
+                    title="Đặt lại vị trí góc quay về chính giữa tâm"
+                  >
+                    🔄 Reset về tâm
+                  </button>
+                </div>
+              </div>
             </div>
 
             <label class="toggle-switch-lbl" style="margin-top: 10px;">
@@ -1651,6 +1741,15 @@ onMounted(load)
             </label>
             <div class="inline-field-row" v-if="draft.rotateEnabled" style="margin-top: 4px;">
               <input type="range" step="0.5" min="-5" max="5" v-model.number="draft.rotateDegrees" class="custom-range-slider" />
+            </div>
+
+            <label class="toggle-switch-lbl" style="margin-top: 10px;">
+              <input type="checkbox" v-model="draft.noiseEnabled" />
+              <span class="switch-slider"></span>
+              <span class="lbl-txt">Hạt nhiễu Noise (Mức {{ draft.noiseStrength }})</span>
+            </label>
+            <div class="inline-field-row" v-if="draft.noiseEnabled" style="margin-top: 4px;">
+              <input type="range" step="1" min="1" max="40" v-model.number="draft.noiseStrength" class="custom-range-slider" />
             </div>
 
             <div class="trim-inputs-row" style="margin-top: 12px; border-top: 1px dashed var(--wx-border-default); padding-top: 8px;">
@@ -1986,13 +2085,20 @@ onMounted(load)
               playsinline
             ></video>
 
-            <!-- Video chính phát xem trực tiếp -->
+            <!-- Video chính phát xem trực tiếp (Hỗ trợ nhấp giữ & kéo trực tiếp trên video để căn vị trí như avatar FB) -->
             <video
               v-if="activeVideoSrc"
               ref="videoRef"
               :src="activeVideoSrc"
               class="real-capcut-video"
+              :class="{ 'is-panning': dragTarget === 'video-pan' }"
               :style="videoStyle"
+              title="Nhấp giữ và kéo trực tiếp trên video để căn chỉnh vị trí khung hình (Avatar FB style)"
+              @pointerdown="beginVideoPanDrag"
+              @pointermove="updateOverlayDrag"
+              @pointerup="finishOverlayDrag"
+              @pointercancel="cancelOverlayDrag"
+              @lostpointercapture="cancelOverlayDrag"
               @timeupdate="onTimeUpdate"
               @loadedmetadata="onMetadataLoaded"
               @ended="isPlaying = false"
@@ -2037,7 +2143,7 @@ onMounted(load)
 
             <!-- Logo watermark thật -->
             <div
-              v-if="draft.wmEnabled && wmStreamUrl"
+              v-if="draft.wmEnabled && wmStreamUrl && isWmVisible"
               :style="wmStyle"
               class="draggable-overlay wm-preview-overlay"
               :class="{ 'active-selected': dragTarget === 'watermark' }"
@@ -2153,7 +2259,7 @@ onMounted(load)
             <li :class="{ active: draft.muteOriginal }">Tắt tiếng video gốc</li>
             <li :class="{ active: draft.subEnabled && !!draft.subPath }">Ghép phụ đề file (.SRT / .ASS)</li>
             <li :class="{ active: draft.subAutoGen }">Whisper AI tự tạo phụ đề</li>
-            <li :class="{ active: selectedTextsCount > 0 }">Chèn chữ tùy chọn (Đã tích {{ selectedTextsCount }}/{{ draft.texts.length }} câu{{ selectedTextsCount > 1 ? ' · Random 1 chữ/clip' : '' }})</li>
+            <li :class="{ active: selectedTextsCount > 0 }">Chèn chữ tùy chọn (Đã tích {{ selectedTextsCount }}/{{ draft.texts.length }} câu — hiện tất cả khi xuất)</li>
             <li :class="{ active: draft.stripMeta }">Xóa Metadata chống quét</li>
           </ul>
         </div>

@@ -148,7 +148,7 @@ function updateSelectionFromDrag() {
 
     <!-- ── Search input ───────────────────────────────── -->
     <div class="img-search-section">
-      <label class="img-label">Nhập chủ đề / từ khóa:</label>
+      <label class="img-label">NHẬP CHỦ ĐỀ / TỪ KHÓA:</label>
       <div class="img-input-row">
         <input
           v-model="imageQuery"
@@ -436,11 +436,11 @@ function updateSelectionFromDrag() {
 /* ── Common label ──────────────────────────────────────────── */
 .img-label {
   display: block;
-  font-size: var(--wx-fs-12);
-  font-weight: var(--wx-fw-bold);
-  color: var(--wx-text-muted);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #38bdf8;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   margin-bottom: var(--wx-space-2);
 }
 

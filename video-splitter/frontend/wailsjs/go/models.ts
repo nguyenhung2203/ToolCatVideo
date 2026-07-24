@@ -306,6 +306,7 @@ export namespace googlesheet {
 	    name: string;
 	    gid: string;
 	    headers: string[];
+	    rawHeaders?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new SheetTabInfo(source);
@@ -316,6 +317,7 @@ export namespace googlesheet {
 	        this.name = source["name"];
 	        this.gid = source["gid"];
 	        this.headers = source["headers"];
+	        this.rawHeaders = source["rawHeaders"];
 	    }
 	}
 
@@ -597,6 +599,8 @@ export namespace project {
 	    enabled: boolean;
 	    ratio: string;
 	    mode: string;
+	    panX: number;
+	    panY: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AspectOp(source);
@@ -607,6 +611,8 @@ export namespace project {
 	        this.enabled = source["enabled"];
 	        this.ratio = source["ratio"];
 	        this.mode = source["mode"];
+	        this.panX = source["panX"];
+	        this.panY = source["panY"];
 	    }
 	}
 	export class AudioOp {

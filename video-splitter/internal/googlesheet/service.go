@@ -3,6 +3,7 @@ package googlesheet
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,9 +24,10 @@ type SheetLinkInfo struct {
 
 // SheetTabInfo đại diện cho 1 Tab thực tế trên Google Sheet với danh sách Cột
 type SheetTabInfo struct {
-	Name    string   `json:"name"`
-	Gid     string   `json:"gid"`
-	Headers []string `json:"headers"`
+	Name       string   `json:"name"`
+	Gid        string   `json:"gid"`
+	Headers    []string `json:"headers"`
+	RawHeaders []string `json:"rawHeaders,omitempty"`
 }
 
 // Service quản lý kết nối và gửi dữ liệu tới Google Sheets
@@ -172,7 +174,84 @@ func (s *Service) FetchSheetStructure(ctx context.Context, webAppURL string, spr
 		return nil, fmt.Errorf("Web App không trả về tab nào. Kiểm tra lại mã Apps Script đã cập nhật đúng chưa")
 	}
 
+	// Tự động bổ sung RawHeaders & Headers chuẩn 1-to-1 vị trí cột tuyệt đối
+	for i := range res.Sheets {
+		if spreadsheetID != "" {
+			rawCols := s.fetchRawCsvHeaders(ctx, spreadsheetID, res.Sheets[i].Gid)
+			if len(rawCols) > 0 {
+				res.Sheets[i].RawHeaders = rawCols
+				res.Sheets[i].Headers = rawCols
+			}
+		}
+		// Dự phòng: vá các ô trống không có tên tiêu đề thành "Cột <Chữ cái>" để đảm bảo chỉ số mảng luôn trùng khớp 100% với Cột Google Sheet
+		if len(res.Sheets[i].Headers) > 0 {
+			for j := range res.Sheets[i].Headers {
+				if strings.TrimSpace(res.Sheets[i].Headers[j]) == "" {
+					res.Sheets[i].Headers[j] = fmt.Sprintf("Cột %s", colLetter(j+1))
+				}
+			}
+		}
+	}
+
 	return res.Sheets, nil
+}
+
+// colLetter chuyển chỉ số cột (1-based) thành chữ cái tên cột Excel (1 -> A, 14 -> N, 15 -> O, 16 -> P...)
+func colLetter(col int) string {
+	result := ""
+	for col > 0 {
+		col--
+		result = string(rune('A'+(col%26))) + result
+		col /= 26
+	}
+	return result
+}
+
+// fetchRawCsvHeaders tải trực tiếp dòng 1 qua CSV API của Google Sheet để lấy danh sách cột tuyệt đối
+func (s *Service) fetchRawCsvHeaders(ctx context.Context, spreadsheetID string, gid string) []string {
+	if spreadsheetID == "" {
+		return nil
+	}
+	if gid == "" {
+		gid = "0"
+	}
+	csvURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s/gviz/tq?tqx=out:csv&gid=%s", spreadsheetID, gid)
+	req, err := http.NewRequestWithContext(ctx, "GET", csvURL, nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(body), "\n")
+	if len(lines) == 0 {
+		return nil
+	}
+	// Dùng csv.Reader để parse dòng 1 chuẩn xác theo chuẩn CSV
+	r := csv.NewReader(strings.NewReader(lines[0]))
+	r.LazyQuotes = true
+	record, err := r.Read()
+	if err != nil || len(record) == 0 {
+		return nil
+	}
+	rawCols := make([]string, len(record))
+	for i, col := range record {
+		val := strings.TrimSpace(col)
+		if val == "" {
+			val = fmt.Sprintf("Cột %s", colLetter(i+1))
+		}
+		rawCols[i] = val
+	}
+	return rawCols
 }
 
 // FetchSheetHeaders tải 1 dòng đầu tiên của tab qua Google CSV API để tự bóc tách Tên & Cột của Tab
@@ -238,6 +317,7 @@ type WebAppPayload struct {
 	TabName string     `json:"tabName,omitempty"` // Tên tab (nếu chỉ định theo tên)
 	Row     []string   `json:"row,omitempty"`     // 1 dòng dữ liệu
 	Rows    [][]string `json:"rows,omitempty"`    // Nhiều dòng dữ liệu
+	Headers []string   `json:"headers,omitempty"` // Danh sách tên cột để Apps Script map theo Tên Cột chính xác 100%
 }
 
 // WebAppResponse phản hồi từ Google Apps Script Web App
@@ -248,24 +328,26 @@ type WebAppResponse struct {
 }
 
 // PushRowToWebApp gửi 1 dòng dữ liệu lên Apps Script Web App URL
-func (s *Service) PushRowToWebApp(ctx context.Context, webAppURL string, gid string, tabName string, row []string) error {
+func (s *Service) PushRowToWebApp(ctx context.Context, webAppURL string, gid string, tabName string, row []string, headers []string) error {
 	payload := WebAppPayload{
 		Action:  "append_row",
 		Gid:     gid,
 		TabName: tabName,
 		Row:     row,
+		Headers: headers,
 	}
 
 	return s.sendRequest(ctx, webAppURL, payload)
 }
 
 // PushBatchToWebApp gửi danh sách nhiều dòng dữ liệu lên Apps Script Web App URL
-func (s *Service) PushBatchToWebApp(ctx context.Context, webAppURL string, gid string, tabName string, rows [][]string) error {
+func (s *Service) PushBatchToWebApp(ctx context.Context, webAppURL string, gid string, tabName string, rows [][]string, headers []string) error {
 	payload := WebAppPayload{
 		Action:  "append_batch",
 		Gid:     gid,
 		TabName: tabName,
 		Rows:    rows,
+		Headers: headers,
 	}
 
 	return s.sendRequest(ctx, webAppURL, payload)
@@ -366,12 +448,53 @@ function doPost(e) {
       sheet = ss.getActiveSheet();
     }
 
+    // Đọc danh sách header ở Dòng 1 để map chính xác Cột theo Tên Cột
+    var lastCol = Math.max(sheet.getLastColumn(), 1);
+    var headerRow = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    var colMap = {};
+    for (var c = 0; c < headerRow.length; c++) {
+      var hName = headerRow[c] ? headerRow[c].toString().trim() : "";
+      if (hName) {
+        colMap[hName.toLowerCase()] = c + 1;
+      }
+    }
+
+    function processSingleRow(rowItem, rowHeaders) {
+      var nextRow = sheet.getLastRow() + 1;
+      var maxIdx = Math.max(lastCol, rowItem.length);
+      var padded = new Array(maxIdx);
+      for (var i = 0; i < maxIdx; i++) padded[i] = "";
+
+      if (rowHeaders && rowHeaders.length === rowItem.length) {
+        var mappedCount = 0;
+        for (var h = 0; h < rowHeaders.length; h++) {
+          var hName = rowHeaders[h] ? rowHeaders[h].toString().trim().toLowerCase() : "";
+          var cIdx = colMap[hName];
+          if (cIdx) {
+            padded[cIdx - 1] = rowItem[h];
+            mappedCount++;
+          }
+        }
+        // Nếu không map được theo tên cột nào, dán thẳng theo vị trí index mảng (1-to-1)
+        if (mappedCount === 0) {
+          for (var k = 0; k < rowItem.length; k++) {
+            padded[k] = rowItem[k];
+          }
+        }
+      } else {
+        for (var k = 0; k < rowItem.length; k++) {
+          padded[k] = rowItem[k];
+        }
+      }
+      sheet.getRange(nextRow, 1, 1, padded.length).setValues([padded]);
+    }
+
     if (data.action === "append_batch" && data.rows && data.rows.length > 0) {
       for (var r = 0; r < data.rows.length; r++) {
-        sheet.appendRow(data.rows[r]);
+        processSingleRow(data.rows[r], data.headers);
       }
     } else if (data.row && data.row.length > 0) {
-      sheet.appendRow(data.row);
+      processSingleRow(data.row, data.headers);
     }
 
     return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Đã chèn thành công" }))
@@ -391,19 +514,21 @@ function handleGetSheets() {
       var s = sheets[i];
       var lastCol = s.getLastColumn();
       var headers = [];
+      var rawHeaders = [];
       if (lastCol > 0) {
         var row1 = s.getRange(1, 1, 1, lastCol).getValues()[0];
         for (var c = 0; c < row1.length; c++) {
           var name = row1[c] ? row1[c].toString().trim() : "";
-          if (name !== "") {
-            headers.push(name);
-          }
+          var colName = name !== "" ? name : ("Cột " + getColLetter(c + 1));
+          headers.push(colName);
+          rawHeaders.push(colName);
         }
       }
       result.push({
         name: s.getName(),
         gid: s.getSheetId().toString(),
-        headers: headers
+        headers: headers,
+        rawHeaders: rawHeaders
       });
     }
     return ContentService.createTextOutput(JSON.stringify({ status: "success", sheets: result }))
@@ -412,5 +537,15 @@ function handleGetSheets() {
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: err.toString() }))
       .setMimeType(ContentService.MimeType.JSON);
   }
+}
+
+function getColLetter(col) {
+  var temp, letter = '';
+  while (col > 0) {
+    temp = (col - 1) % 26;
+    letter = String.fromCharCode(65 + temp) + letter;
+    col = (col - temp - 1) / 26;
+  }
+  return letter;
 }`
 }

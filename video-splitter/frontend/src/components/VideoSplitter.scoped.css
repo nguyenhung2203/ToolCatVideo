@@ -2375,10 +2375,14 @@
 }
 
 .nav-segment-btn.active {
-  color: var(--wx-brand-accent);
-  background: color-mix(in srgb, var(--wx-brand-accent) 12%, transparent);
-  border-color: color-mix(in srgb, var(--wx-brand-accent) 25%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 5%, transparent);
+  color: #38bdf8 !important;
+  background: rgba(56, 189, 248, 0.16) !important;
+  border-color: rgba(56, 189, 248, 0.45) !important;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.25) !important;
+}
+
+.nav-segment-btn.active svg {
+  color: #38bdf8 !important;
 }
 
 /* ── Analysis overlay ───────────────────────────────────── */

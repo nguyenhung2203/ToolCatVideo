@@ -346,6 +346,16 @@ func (qm *AIQueueManager) emitProgress() {
 	}
 }
 
+// taskCancelledLocked cho biết task tại idx đã bị hủy/ẩn (thường do CancelSource)
+// hay chưa. PHẢI gọi khi đang giữ qm.mu. Worker dùng để không ghi đè trạng thái
+// Cancelled bằng Completed/Failed sau khi đã nhả lock chạy tác vụ dài.
+func (qm *AIQueueManager) taskCancelledLocked(idx int) bool {
+	if idx < 0 || idx >= len(qm.tasks) {
+		return true
+	}
+	return qm.tasks[idx].Hidden || qm.tasks[idx].State == QueueStateCancelled
+}
+
 // claimNextTask lấy task pending kế tiếp, đánh dấu Processing và trả về (bản sao, chỉ số).
 // Trả về idx = -1 nếu không còn task nào. An toàn khi gọi từ nhiều worker.
 //
@@ -486,13 +496,14 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 		if batchSize == "" {
 			batchSize = "1x"
 		}
-		// Timeout mỗi task theo loại: video render lâu hơn ảnh nhiều.
+		// Timeout mỗi task theo loại: video render lâu hơn ảnh nhiều. taskTimeoutSec
+		// PHẢI khớp với taskTimeout (context bọc worker) — nếu lệch, deadline nội bộ
+		// của GenerateFlowVideo (nay đọc req.TimeoutSecond) sẽ cắt sớm hơn context.
 		taskTimeout := ImageGenerateTimeout
-		taskTimeoutSec := 180
 		if mt == MediaTypeVideo {
 			taskTimeout = VideoGenerateTimeout
-			taskTimeoutSec = int(VideoGenerateTimeout / time.Second)
 		}
+		taskTimeoutSec := int(taskTimeout / time.Second)
 
 		cfg := LoadGlobalSettingsConfig()
 
@@ -560,6 +571,13 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 				})
 			}
 		}
+		// Dãn cách thời điểm khởi chạy giữa các tab song song (stagger delay) để tránh 5-6 tab
+		// cùng gửi request dồn dập trong 1 giây khiến Google Flow nghi ngờ "Hoạt động bất thường".
+		if workerID > 0 {
+			staggerMs := time.Duration((workerID%4)*2500 + 1000) * time.Millisecond
+			time.Sleep(staggerMs)
+		}
+
 		emitLog("info", "Bắt đầu")
 
 		// Mỗi task chạy trong timeout riêng để một task treo không chặn worker mãi.
@@ -606,7 +624,18 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 				emitLog("info", "AI tạo ảnh lỗi → dùng frame gốc làm ảnh bìa")
 			}
 
-			mergeErr := qm.mergeIntroForTask(ctx, task, introImg, func(step string) { emitLog("info", step) })
+			// Ghép intro (ffmpeg re-encode) chạy trong ctx riêng đăng ký lại theo task ID,
+			// để CancelSource dừng đúng task này giữa chừng thay vì để ffmpeg chạy tới hết.
+			// (taskCtx ở trên đã bị cancel() sau khi GenerateFlowVideo trả về nên không tái dùng.)
+			mergeCtx, mergeCancel := context.WithTimeout(ctx, taskTimeout)
+			qm.mu.Lock()
+			qm.taskCancels[task.ID] = mergeCancel
+			qm.mu.Unlock()
+			mergeErr := qm.mergeIntroForTask(mergeCtx, task, introImg, func(step string) { emitLog("info", step) })
+			mergeCancel()
+			qm.mu.Lock()
+			delete(qm.taskCancels, task.ID)
+			qm.mu.Unlock()
 
 			// Dọn frame gốc tạm sau khi ghép xong (đã hoãn ở trên cho task này).
 			if task.InputImagePath != "" &&
@@ -618,6 +647,15 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			// dùng) và chính là ảnh bìa họ muốn giữ song song với video đã ghép intro.
 
 			qm.mu.Lock()
+			// Task có thể đã bị CancelSource đánh dấu Cancelled+Hidden trong lúc worker
+			// đang chạy/ghép (worker giữ idx sau khi nhả lock). Nếu vậy, TÔN TRỌNG trạng
+			// thái hủy — không ghi đè thành Completed/Failed, cũng không emit sự kiện kết
+			// quả (người dùng đã chủ động dừng nguồn này).
+			if qm.taskCancelledLocked(idx) {
+				qm.mu.Unlock()
+				qm.emitProgress()
+				continue
+			}
 			if mergeErr != nil {
 				qm.tasks[idx].State = QueueStateFailed
 				qm.tasks[idx].ErrorMessage = mergeErr.Error()
@@ -649,6 +687,12 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 		}
 
 		qm.mu.Lock()
+		// Cùng lý do như nhánh PrependToVideo: tôn trọng hủy theo nguồn nếu task đã bị ẩn.
+		if qm.taskCancelledLocked(idx) {
+			qm.mu.Unlock()
+			qm.emitProgress()
+			continue
+		}
 		if genErr != nil {
 			qm.tasks[idx].State = QueueStateFailed
 			qm.tasks[idx].ErrorMessage = genErr.Error()

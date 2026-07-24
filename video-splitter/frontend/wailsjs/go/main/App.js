@@ -138,12 +138,12 @@ export function ProbeOnlineURL(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['ProbeOnlineURL'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function PushGoogleSheetBatch(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['PushGoogleSheetBatch'](arg1, arg2, arg3, arg4);
+export function PushGoogleSheetBatch(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['PushGoogleSheetBatch'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function PushGoogleSheetRow(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['PushGoogleSheetRow'](arg1, arg2, arg3, arg4);
+export function PushGoogleSheetRow(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['PushGoogleSheetRow'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function SaveGlobalSettings(arg1) {

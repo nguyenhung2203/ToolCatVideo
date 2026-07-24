@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"video-splitter/internal/utils"
@@ -56,6 +57,18 @@ func GenerateFlowVideo(
 
 	// forceNewProject: worker queue (workerPage != nil) luôn tạo project mới riêng.
 	forceNewProject := workerPage != nil
+
+	// genTimeout: thời gian chờ tối đa AI tạo xong nội dung. Ưu tiên req.TimeoutSecond
+	// do người gọi truyền vào (worker queue tính theo loại media); nếu <= 0 thì dùng
+	// hằng mặc định theo loại. Trước đây field này bị bỏ qua hoàn toàn nên timeout luôn
+	// cứng 10/20 phút bất kể yêu cầu — nay tôn trọng giá trị truyền vào.
+	genTimeout := ImageGenerateTimeout
+	if req.MediaType == MediaTypeVideo {
+		genTimeout = VideoGenerateTimeout
+	}
+	if req.TimeoutSecond > 0 {
+		genTimeout = time.Duration(req.TimeoutSecond) * time.Second
+	}
 
 	sleep := func(base time.Duration) {
 		time.Sleep(time.Duration(float64(base) * FlowActionDelayMultiplier))
@@ -481,24 +494,7 @@ func GenerateFlowVideo(
 	// Lấy danh sách URL tất cả ảnh hiện có trong dự án trước khi bấm Tạo
 	var lastGroupUrls []string
 	if req.MediaType == MediaTypeImage {
-		lastUrlsObj, errLast := page.Eval(`() => {
-			const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
-				const src = img.getAttribute('src') || '';
-				return src.includes('getMediaUrl') || src.includes('/fx/api/');
-			});
-			return imgs.map(img => {
-				let src = img.getAttribute('src') || '';
-				if (src.startsWith('/')) {
-					src = 'https://labs.google' + src;
-				}
-				return src;
-			}).filter(src => src !== '');
-		}`)
-		if errLast == nil && lastUrlsObj != nil {
-			for _, v := range lastUrlsObj.Value.Arr() {
-				lastGroupUrls = append(lastGroupUrls, v.Str())
-			}
-		}
+		lastGroupUrls = readAllMediaImageURLs(page)
 		logDebug("URL tất cả ảnh hiện tại trước khi tạo (%d ảnh): %v", len(lastGroupUrls), lastGroupUrls)
 	}
 
@@ -522,11 +518,47 @@ func GenerateFlowVideo(
 			tm.EmitStatus(TaskStateSubmitting, fmt.Sprintf("Gặp lỗi, đang tự động gửi lại prompt (Lần %d/3)...", attempt), 35)
 			mile(fmt.Sprintf("⚠ Gặp lỗi, thử lại lần %d/%d...", attempt, maxAttempts))
 			
+			// Đảm bảo quay về trang chính dự án và đóng toàn bộ modal/popover trước khi tìm lại ô prompt
+			_, _ = page.Eval(`() => {
+				if (window.location.href.includes('/edit/')) {
+					const backBtn = Array.from(document.querySelectorAll('button, a')).find(b => {
+						const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+						const title = (b.getAttribute('title') || '').toLowerCase();
+						const iTxt = (b.querySelector('i, span')?.textContent || '').trim().toLowerCase();
+						const txt = (b.textContent || '').trim().toLowerCase();
+						const isVisible = (b.getBoundingClientRect().width > 0 || b.offsetWidth > 0);
+						return isVisible && (iTxt === 'arrow_back' || aria.includes('back') || aria.includes('quay lại') || title.includes('back') || txt === 'quay lại');
+					});
+					if (backBtn) {
+						backBtn.click();
+					} else {
+						window.history.back();
+					}
+				}
+				// Đóng các modal/dialog overlays nếu đang mở
+				const closeBtns = Array.from(document.querySelectorAll('[role="dialog"] button, button[aria-label*="Close"], button[aria-label*="Đóng"]'));
+				for (const cb of closeBtns) {
+					if (cb.getBoundingClientRect().width > 0) {
+						try { cb.click(); } catch(e){}
+					}
+				}
+			}`)
+			sleep(1500 * time.Millisecond)
+			DismissWelcomeModals(ctx, page)
+
 			// Refind prompt input
-			promptInput, err = FindFirstVisible(ctx, page, FlowSelectors.PromptInputs, 5*time.Second)
+			promptInput, err = FindFirstVisible(ctx, page, FlowSelectors.PromptInputs, 10*time.Second)
 			if err != nil {
-				finalErr = fmt.Errorf("không tìm thấy ô nhập liệu khi gửi lại: %w", err)
-				continue
+				logDebug("Không tìm thấy ô nhập liệu sau 10s trên trang hiện tại. Thử nạp lại URL dự án...")
+				if info, errInfo := page.Info(); errInfo == nil && !strings.Contains(info.URL, "/tools/flow") {
+					_ = page.Navigate("https://labs.google/fx/vi/tools/flow")
+					_ = page.WaitDOMStable(1*time.Second, 0.5)
+				}
+				promptInput, err = FindFirstVisible(ctx, page, FlowSelectors.PromptInputs, 10*time.Second)
+				if err != nil {
+					finalErr = fmt.Errorf("không tìm thấy ô nhập liệu khi gửi lại: %w", err)
+					continue
+				}
 			}
 
 			// Cập nhật lại số lượng nút tải & card video cũ trước khi retry lần tiếp theo
@@ -619,25 +651,7 @@ func GenerateFlowVideo(
 
 		// Cập nhật lại danh sách tất cả URL ảnh đang có trên trang NGAY TRƯỚC KHI BẤM NÚT GỬI PROMPT
 		// (bao gồm cả URL của ảnh vừa dán vào) để chắc chắn KHÔNG nhầm ảnh upload với ảnh do AI vừa tạo ra!
-		lastUrlsObj, errLast := page.Eval(`() => {
-			const imgs = Array.from(document.querySelectorAll('img')).filter(img => {
-				const src = img.getAttribute('src') || '';
-				return src.includes('getMediaUrl') || src.includes('/fx/api/');
-			});
-			return imgs.map(img => {
-				let src = img.getAttribute('src') || '';
-				if (src.startsWith('/')) {
-					src = 'https://labs.google' + src;
-				}
-				return src;
-			}).filter(src => src !== '');
-		}`)
-		if errLast == nil && lastUrlsObj != nil {
-			lastGroupUrls = nil
-			for _, v := range lastUrlsObj.Value.Arr() {
-				lastGroupUrls = append(lastGroupUrls, v.Str())
-			}
-		}
+		lastGroupUrls = readAllMediaImageURLs(page)
 		logDebug("Cập nhật lại danh sách URL ảnh hiện có trước khi bấm Gửi (%d ảnh): %v", len(lastGroupUrls), lastGroupUrls)
 
 		logDebug("Bắt đầu thực hiện gửi prompt...")
@@ -758,7 +772,7 @@ func GenerateFlowVideo(
 			var directUrls []string
 			tickerImg := time.NewTicker(2 * time.Second)
 
-			deadlineImg := time.Now().Add(ImageGenerateTimeout)
+			deadlineImg := time.Now().Add(genTimeout)
 			pollCount := 0
 			allErrorPolls := 0 // số poll liên tiếp thấy thẻ lỗi mà KHÔNG có ảnh thành công nào
 
@@ -1446,7 +1460,7 @@ func GenerateFlowVideo(
 			var downloadBtn *rod.Element
 			ticker := time.NewTicker(3 * time.Second)
 
-			deadline := time.Now().Add(VideoGenerateTimeout)
+			deadline := time.Now().Add(genTimeout)
 			submittedAt := time.Now()           // Thời điểm submit prompt
 			const gracePeriod = 25 * time.Second // Không detect lỗi trong 25s đầu (chờ spinner)
 			autoRetryCount := 0                  // Số lần đã bấm nút Thử lại trong Google Flow
@@ -1611,9 +1625,9 @@ func GenerateFlowVideo(
 						logDebug("Đang tạo video... (everWasGenerating=true)")
 					} else {
 						elapsedSec := time.Since(submittedAt).Seconds()
-						if everWasGenerating || currentDlCount > initialVideoButtonsCount || (elapsedSec > 20 && currentTileCount > initialVideoTilesCount) {
+						if everWasGenerating || currentDlCount > initialVideoButtonsCount || (elapsedSec > 30 && currentTileCount > initialVideoTilesCount) {
 							stableFinishedPolls++
-							logDebug("Kiểm tra độ ổn định video hoàn thành (%d/2 poll)...", stableFinishedPolls)
+							logDebug("Kiểm tra độ ổn định video hoàn thành (%d poll)...", stableFinishedPolls)
 						}
 					}
 
@@ -1640,32 +1654,92 @@ func GenerateFlowVideo(
 						} else if autoRetryCount < 3 {
 							autoRetryCount++
 							consecutiveErrPolls = 0
-							logDebug("Bấm Thử lại (%d/3) trong Google Flow. everWasGenerating=%v", autoRetryCount, everWasGenerating)
-							mile(fmt.Sprintf("⚠ Gặp lỗi, bấm Thử lại (%d/3)...", autoRetryCount))
-							_, _ = page.Eval(`() => {
-								const btn = Array.from(document.querySelectorAll('button, div[role="button"]')).find(b => {
-									const txt = (b.textContent || '').trim().toLowerCase();
-									const iTxt = (b.querySelector('i, span')?.textContent || '').trim().toLowerCase();
-									const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-									const title = (b.getAttribute('title') || '').toLowerCase();
-									const isVisible = (b.getBoundingClientRect().width > 0 && b.getBoundingClientRect().height > 0) || b.offsetWidth > 0;
-									const isRetryIcon = iTxt === 'refresh' || iTxt === 'restart_alt' || iTxt === 'autorenew' || iTxt === 'replay' || iTxt === 'rotate_right' || iTxt === 'sync' || iTxt === 'loop' || iTxt === 'update';
-									return isVisible && (txt.includes('thử lại') || txt.includes('retry') || aria.includes('thử lại') || title.includes('thử lại') || isRetryIcon);
-								});
-								if (btn) {
-									btn.click();
-									try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e){}
-									try { btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); } catch(e){}
-									return true;
+							logDebug("Bấm Thử lại (%d/3) trong Google Flow... everWasGenerating=%v", autoRetryCount, everWasGenerating)
+							mile(fmt.Sprintf("⚠ Gặp lỗi (Hoạt động bất thường/Retry), chờ 3s trước khi bấm Thử lại (%d/3)...", autoRetryCount))
+							time.Sleep(3 * time.Second)
+
+							// 1. Click bằng Rod CDP Native Click dựa trên XPath người dùng cung cấp & khoanh vùng thẻ card lỗi div[data-tile-id]
+							retryDone := false
+							retryBtnEl, errFindRetry := page.ElementByJS(rod.Eval(`() => {
+								// Bước A: Khoanh vùng chính xác thẻ card báo lỗi (div[data-tile-id])
+								const tiles = Array.from(document.querySelectorAll('div[data-tile-id]'));
+								for (const tile of tiles) {
+									const txt = (tile.textContent || '').toLowerCase();
+									const isError = txt.includes('không thành công') || txt.includes('hoạt động bất thường') || txt.includes('lượng truy cập cao');
+									if (isError) {
+										// Lấy nút đầu tiên (button[1]) bên trong thẻ lỗi — đây chính là nút Thử lại!
+										const btn = tile.querySelector('button');
+										if (btn) {
+											try { btn.scrollIntoView({ block: 'center' }); } catch(e){}
+											return btn;
+										}
+									}
 								}
-								return false;
-							}`)
-							submittedAt = time.Now() // Reset grace period cho lần tạo mới
-							everWasGenerating = false // Reset để theo dõi lần mới
+
+								// Bước B: Dùng chính xác XPath do người dùng cung cấp
+								try {
+									const xpathRes = document.evaluate('//*[@id="__next"]/div[1]/div[4]/div[2]/div/div/div/div[2]/div/div/div/div/div/span/div/div/div/span/div/div[2]/button[1]', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+									if (xpathRes && xpathRes.singleNodeValue) {
+										const b = xpathRes.singleNodeValue;
+										try { b.scrollIntoView({ block: 'center' }); } catch(e){}
+										return b;
+									}
+								} catch(e){}
+
+								// Bước C: Tìm nút có icon 'refresh' hoặc chữ 'Thử lại' nằm NỘI BỘ trong div[data-tile-id]
+								const cardBtn = Array.from(document.querySelectorAll('div[data-tile-id] button')).find(b => {
+									const t = (b.textContent || '').toLowerCase();
+									const i = Array.from(b.querySelectorAll('i, span')).map(el => (el.textContent || '').toLowerCase()).join(' ');
+									return t.includes('thử lại') || i.includes('refresh') || b.classList.contains('blvbdy');
+								});
+								if (cardBtn) {
+									try { cardBtn.scrollIntoView({ block: 'center' }); } catch(e){}
+									return cardBtn;
+								}
+
+								return null;
+							}`))
+
+							if errFindRetry == nil && retryBtnEl != nil {
+								_ = retryBtnEl.ScrollIntoView()
+								errClick := retryBtnEl.Click(proto.InputMouseButtonLeft, 1)
+								if errClick == nil {
+									retryDone = true
+									logDebug("✓ Đã click nút Thử lại bằng Rod CDP Native Click theo XPath/Tile card lỗi thành công (%d/3)!", autoRetryCount)
+								}
+							}
+
+							// 2. Dự phòng JS dispatch click nếu CDP Native click chưa bắt đúng
+							if !retryDone {
+								logDebug("Thử fallback JS click nút Thử lại (%d/3)...", autoRetryCount)
+								_, _ = page.Eval(`() => {
+									const tiles = Array.from(document.querySelectorAll('div[data-tile-id]'));
+									for (const tile of tiles) {
+										const txt = (tile.textContent || '').toLowerCase();
+										if (txt.includes('không thành công') || txt.includes('hoạt động bất thường')) {
+											const btn = tile.querySelector('button');
+											if (btn) {
+												btn.click();
+												const innerTarget = btn.querySelector('i, span, div') || btn;
+												try { innerTarget.click(); } catch(e){}
+												try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e){}
+												return true;
+											}
+										}
+									}
+									return false;
+								}`)
+							}
+
+							submittedAt = time.Now()    // Reset grace period cho lần tạo mới
+							everWasGenerating = false   // Reset để theo dõi lần mới
+							stableFinishedPolls = 0     // Reset bộ đếm hoàn thành về 0 sau khi bấm Thử lại
+							consecutiveErrPolls = 0     // Reset đếm lỗi liên tiếp
 							continue
 						} else {
-							logDebug("Đã bấm Thử lại 3/3 lần vẫn lỗi. Báo lỗi để outer loop re-submit.")
-							finalErr = NewError(ErrGenerationFailed, "Google Flow báo lỗi tạo video sau 3 lần thử.")
+							logDebug("Đã bấm Thử lại 3/3 lần vẫn lỗi. Báo lỗi để outer loop re-submit prompt từ đầu!")
+							mile("⚠ 3 lần 'Thử lại' không được, chuyển sang tự động điền lại Prompt từ đầu...")
+							finalErr = NewError(ErrGenerationFailed, "Google Flow báo lỗi tạo video sau 3 lần bấm Thử lại. Tiến hành nhập lại prompt từ đầu.")
 							generationFailed = true
 							break
 						}
@@ -1677,17 +1751,14 @@ func GenerateFlowVideo(
 				hasNewDlBtn := currentDlCount > initialVideoButtonsCount
 				elapsedSec := time.Since(submittedAt).Seconds()
 
-				// Phát hiện video đã hoàn thành: KHÔNG còn spinner/phần trăm (!isGen) VÀ % đã mất hoàn toàn
-				// QUAN TRỌNG: loại trừ isErr — thẻ báo lỗi ("hoạt động bất thường"/vi phạm) cũng làm
-				// !isGen=true và tạo tile mới, nên nếu không chặn thì nhánh này (chỉ cần 1 poll) sẽ THẮNG
-				// nhánh retry (cần 2 poll liên tiếp) → nhận nhầm thẻ lỗi là video xong, báo "đã sinh video"
-				// rồi cố mở chi tiết một card lỗi. Có lỗi → để luồng rơi xuống nhánh retry bên trên.
-				isFinishedGenerating := !isGen && !isErr && (stableFinishedPolls >= 1 || hasNewDlBtn || (elapsedSec > 20 && hasNewTile))
+				// Phát hiện video đã hoàn thành: KHÔNG còn spinner/phần trăm (!isGen) VÀ KHÔNG có lỗi (!isErr) VÀ:
+				// - Hoặc có nút Tải xuống mới (hasNewDlBtn)
+				// - Hoặc đã từng thấy spinner (everWasGenerating) và giữ nguyên không spinner trong >= 1 poll (stableFinishedPolls >= 1)
+				// - Hoặc chưa từng thấy spinner nhưng đã trôi qua > 30s và stableFinishedPolls >= 3
+				isFinishedGenerating := !isGen && !isErr && (hasNewDlBtn || (everWasGenerating && stableFinishedPolls >= 1) || (stableFinishedPolls >= 3 && elapsedSec > 30 && hasNewTile))
 
 				if isFinishedGenerating {
 					logDebug("Phát hiện video mới đã tạo xong sau %.0fs (hasNewTile=%v, hasNewDlBtn=%v, everWasGenerating=%v, tileCount=%d)! Bắt đầu mở chi tiết video...", elapsedSec, hasNewTile, hasNewDlBtn, everWasGenerating, currentTileCount)
-					mile("✓ Đã sinh video, bắt đầu tải về...")
-					mile("Đang mở chi tiết video...")
 
 					// 1. Click vào thẻ video card mới nhất bằng Rod CDP Native Click (giúp kích hoạt chính xác event của Chrome)
 					tileEl, errFindTile := page.ElementByJS(rod.Eval(`() => {
@@ -1752,8 +1823,31 @@ func GenerateFlowVideo(
 					}
 
 					if downloadBtn == nil {
-						logDebug("Không thấy nút tải khả dụng trong popup chi tiết, chuyển sang tải trực tiếp...")
+						// Kiểm tra xem có video tag trực tiếp với URL hợp lệ hay không trước khi rời poll
+						hasDirectVideo, _ := page.Eval(`() => {
+							const vids = document.querySelectorAll('video');
+							for (const v of vids) {
+								const src = v.src || v.currentSrc || v.querySelector('source')?.src || '';
+								if (src && (src.includes('http') || src.includes('blob') || src.includes('data:'))) return true;
+							}
+							return false;
+						}`)
+						if hasDirectVideo == nil || !hasDirectVideo.Value.Bool() {
+							logDebug("Chưa thấy nút tải hoặc video sẵn sàng trong popup chi tiết (có thể AI vẫn đang tạo). Quay lại tiếp tục chờ...")
+							_, _ = page.Eval(`() => {
+								if (window.location.href.includes('/edit/')) {
+									window.history.back();
+								}
+							}`)
+							sleep(1000 * time.Millisecond)
+							stableFinishedPolls = 0
+							continue
+						}
+						logDebug("Không thấy nút tải khả dụng trong popup chi tiết nhưng có video trực tiếp, chuyển sang tải trực tiếp...")
 					}
+
+					mile("✓ Đã sinh video, bắt đầu tải về...")
+					mile("Đang mở chi tiết video...")
 					break // Luôn thoát vòng lặp poll để tải ngay!
 				}
 			}
@@ -2889,28 +2983,25 @@ func FillFlowPrompt(page *rod.Page, promptInput *rod.Element, prompt string, log
 	return fmt.Errorf("không điền được prompt vào ô nhập liệu sau 4 cách thử (Slate không nhận text)")
 }
 
-func getSettingsPath() string {
-	return getSettingsFilePath()
-}
+// settingsFileMu tuần tự hóa đọc-sửa-ghi settings.json: nhiều worker song song có
+// thể cùng lưu link project → mất cập nhật hoặc hỏng file JSON nếu ghi chồng nhau.
+var settingsFileMu sync.Mutex
 
 func readProjectURL() string {
-	path := getSettingsPath()
-	file, err := os.Open(path)
+	settingsFileMu.Lock()
+	defer settingsFileMu.Unlock()
+
+	path := getSettingsFilePath()
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
-	defer file.Close()
-	
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return ""
-	}
-	
+
 	var config map[string]interface{}
 	if err := json.Unmarshal(data, &config); err != nil {
 		return ""
 	}
-	
+
 	if val, ok := config["googleFlowProjectURL"]; ok {
 		if str, ok := val.(string); ok {
 			return str
@@ -2920,25 +3011,33 @@ func readProjectURL() string {
 }
 
 func saveProjectURL(projectURL string) {
-	path := getSettingsPath()
-	
+	settingsFileMu.Lock()
+	defer settingsFileMu.Unlock()
+
+	path := getSettingsFilePath()
+
 	var config map[string]interface{} = make(map[string]interface{})
-	
-	file, err := os.Open(path)
-	if err == nil {
-		data, errRead := io.ReadAll(file)
-		file.Close()
-		if errRead == nil {
-			_ = json.Unmarshal(data, &config)
-		}
+
+	if data, errRead := os.ReadFile(path); errRead == nil {
+		_ = json.Unmarshal(data, &config)
 	}
-	
+
 	config["googleFlowProjectURL"] = projectURL
-	
+
 	newData, errMarshal := json.MarshalIndent(config, "", "  ")
-	if errMarshal == nil {
-		_ = os.MkdirAll(filepath.Dir(path), 0755)
-		_ = os.WriteFile(path, newData, 0644)
+	if errMarshal != nil {
+		return
+	}
+
+	_ = os.MkdirAll(filepath.Dir(path), 0755)
+	// Ghi atomic: ghi ra file tạm cùng thư mục rồi rename đè lên file cũ. Tránh để
+	// lại file settings.json hỏng (ghi dở) nếu tiến trình bị ngắt giữa chừng.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, newData, 0644); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 	}
 }
 
@@ -2949,7 +3048,9 @@ func CopyImageToClipboardWindows(imagePath string) error {
 		absPath = imagePath
 	}
 
-	cmdStr := fmt.Sprintf(`Add-Type -Assembly System.Windows.Forms; Add-Type -Assembly System.Drawing; $img = [System.Drawing.Image]::FromFile('%s'); [System.Windows.Forms.Clipboard]::SetImage($img); $img.Dispose()`, absPath)
+	// Escape dấu ' để tránh PowerShell injection khi đường dẫn chứa ' (tên user/clip).
+	escaped := strings.ReplaceAll(absPath, "'", "''")
+	cmdStr := fmt.Sprintf(`Add-Type -Assembly System.Windows.Forms; Add-Type -Assembly System.Drawing; $img = [System.Drawing.Image]::FromFile('%s'); [System.Windows.Forms.Clipboard]::SetImage($img); $img.Dispose()`, escaped)
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", cmdStr)
 	utils.HideCmdWindow(cmd)
 	return cmd.Run()
@@ -3129,6 +3230,30 @@ const jsMediaImgFilter = `Array.from(document.querySelectorAll('img')).filter(im
 	const src = img.getAttribute('src') || '';
 	return src.includes('getMediaUrl') || src.includes('/fx/api/');
 })`
+
+// readAllMediaImageURLs đọc toàn bộ URL ảnh media Flow đang hiển thị trên trang,
+// đã chuẩn hóa tiền tố https://labs.google cho src tương đối. Dùng làm mốc "ảnh
+// cũ trước khi tạo" để phân biệt với ảnh AI vừa sinh. Gom từ nhiều chỗ lặp trước đây.
+func readAllMediaImageURLs(page *rod.Page) []string {
+	obj, err := page.Eval(`() => {
+		const imgs = ` + jsMediaImgFilter + `;
+		return imgs.map(img => {
+			let src = img.getAttribute('src') || '';
+			if (src.startsWith('/')) {
+				src = 'https://labs.google' + src;
+			}
+			return src;
+		}).filter(src => src !== '');
+	}`)
+	if err != nil || obj == nil {
+		return nil
+	}
+	var urls []string
+	for _, v := range obj.Value.Arr() {
+		urls = append(urls, v.Str())
+	}
+	return urls
+}
 
 // countProjectImages đếm tổng số ảnh media đang hiển thị trong dự án Flow.
 func countProjectImages(page *rod.Page) int {

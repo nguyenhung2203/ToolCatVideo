@@ -196,6 +196,17 @@ func (s *Service) Generate(req GenerateRequest) (TaskInfo, error) {
 	if req.Provider != ProviderGemini && req.Provider != ProviderFlow {
 		return TaskInfo{}, fmt.Errorf("nhà cung cấp dịch vụ không hợp lệ")
 	}
+	// Gemini chỉ tạo ảnh và KHÔNG nhận ảnh đầu vào (luồng GenerateGeminiImage bỏ qua
+	// InputImagePaths). Báo lỗi rõ thay vì âm thầm bỏ ảnh/không tạo được video.
+	if req.Provider == ProviderGemini {
+		if req.MediaType == MediaTypeVideo {
+			return TaskInfo{}, fmt.Errorf("Gemini không hỗ trợ tạo video, vui lòng dùng Google Flow")
+		}
+		if len(req.InputImagePaths) > 0 || req.InputImagePath != "" ||
+			len(req.InputImageBase64s) > 0 || req.InputImageBase64 != "" {
+			return TaskInfo{}, fmt.Errorf("Gemini không hỗ trợ ảnh đầu vào, vui lòng dùng Google Flow để tạo ảnh từ ảnh")
+		}
+	}
 	if req.OutputDir == "" {
 		return TaskInfo{}, fmt.Errorf("thư mục lưu kết quả không được để trống")
 	}
@@ -348,12 +359,22 @@ func (s *Service) OpenOutputFolder(path string) error {
 // Hàng Đợi AI (chế độ tắt tự-tải-giữ-lại: tải hết rồi cho xóa sau). Chỉ xóa file
 // thường đang tồn tại; bỏ qua path rỗng/không tồn tại. Trả về danh sách đã xóa.
 func (s *Service) DeleteResultFiles(paths []string) ([]string, error) {
+	// Chỉ cho xóa đúng loại file media (ảnh/video) là kết quả AI. Đây là hàng rào
+	// an toàn: dù frontend chỉ gửi path ảnh kết quả, ta vẫn từ chối mọi đuôi lạ để
+	// một request sai/bị chỉnh không xóa nhầm file hệ thống của người dùng.
+	allowedExt := map[string]bool{
+		".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".gif": true, ".bmp": true,
+		".mp4": true, ".webm": true, ".mov": true, ".mkv": true,
+	}
 	var deleted []string
 	for _, p := range paths {
 		if strings.TrimSpace(p) == "" {
 			continue
 		}
 		clean := filepath.Clean(p)
+		if !allowedExt[strings.ToLower(filepath.Ext(clean))] {
+			continue
+		}
 		info, err := os.Stat(clean)
 		if err != nil || info.IsDir() {
 			continue
@@ -408,6 +429,13 @@ func (s *Service) ConfirmSelectedImages(
 
 	if len(selectedPaths) == 0 {
 		return nil, fmt.Errorf("không có ảnh nào được chọn")
+	}
+
+	// Chặn path traversal ở thư mục đích (giống Generate): frontend gửi outputDir nên
+	// phải làm sạch + từ chối ".." trước khi tạo thư mục và ghi file vào đó.
+	outputDir = filepath.Clean(outputDir)
+	if outputDir == "" || strings.Contains(outputDir, "..") {
+		return nil, fmt.Errorf("đường dẫn lưu trữ không hợp lệ")
 	}
 
 	// Đảm bảo thư mục output tồn tại

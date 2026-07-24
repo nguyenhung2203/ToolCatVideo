@@ -72,8 +72,11 @@ var FlowSelectors = SelectorSet{
 	PromptInputs: []SelectorCandidate{
 		{Selector: "//*[@id=\"__next\"]/div[1]/div[5]/div/div/div/div/div[1]/div"},
 		{Selector: "//*[@id=\"__next\"]/div[1]/div[4]/div[2]/div[2]/div/div/div[2]/div[2]/div/div[1]/div"},
+		{Selector: "textarea[placeholder*='tạo']"},
+		{Selector: "textarea[placeholder*='Bạn muốn']"},
 		{Selector: "textarea[placeholder*='prompt']"},
 		{Selector: "textarea[placeholder*='Prompt']"},
+		{Selector: "div[role='textbox']"},
 		{Selector: "textarea"},
 		{Selector: "div[contenteditable='true']"},
 	},

@@ -1,5 +1,5 @@
 <template>
-  <div class="browser-ai-page" style="padding: 6px 10px; gap: 8px;">
+  <div class="browser-ai-page">
 
     <!-- Workspace Grid 2 Cột chuẩn - thu gọn cột trái để tập trung bảng phải rộng như Excel -->
     <div class="workspace-grid" :style="{ gridTemplateColumns: isLeftPanelCollapsed ? '1fr' : '3.4fr 6.6fr' }">
@@ -40,14 +40,20 @@
             <label style="font-size: 11.5px; font-weight: 600; color: var(--wx-text-secondary);">
               Google Apps Script Web App URL:
             </label>
-            <input
-              type="text"
-              v-model="webAppUrl"
-              @input="saveConfig"
-              @change="fetchSheetStructure(false)"
-              placeholder="https://script.google.com/macros/s/AKfycb.../exec"
-              class="img-text-input"
-            />
+            <div style="display: flex; gap: 6px;">
+              <input
+                type="text"
+                v-model="webAppUrl"
+                @input="saveConfig"
+                @change="fetchSheetStructure(false)"
+                placeholder="https://script.google.com/macros/s/AKfycb.../exec"
+                class="img-text-input"
+                style="flex: 1;"
+              />
+              <button @click="openScriptModal" class="img-dir-btn" style="white-space: nowrap;" title="Xem hướng dẫn cài đặt Apps Script 1-Click">
+                <Code :size="13" /> Mã Apps Script
+              </button>
+            </div>
           </div>
 
           <!-- Danh sách Nút Chọn Tab -->
@@ -85,10 +91,10 @@
               <button
                 @click="toggleSelectAllHeaders"
                 class="header-text-act-btn"
-                :style="{ color: hasAnyHeaderSelected ? '#f87171' : '#38bdf8' }"
-                :title="hasAnyHeaderSelected ? 'Bỏ chọn tất cả các cột' : 'Chọn tất cả các cột'"
+                :style="{ color: isAllHeadersSelected ? '#f87171' : '#38bdf8' }"
+                :title="isAllHeadersSelected ? 'Bỏ chọn tất cả các cột' : 'Chọn tất cả các cột'"
               >
-                {{ hasAnyHeaderSelected ? 'Bỏ chọn tất cả' : 'Chọn tất cả' }}
+                {{ isAllHeadersSelected ? 'Bỏ chọn tất cả' : 'Chọn tất cả' }}
               </button>
             </div>
           </h4>
@@ -119,18 +125,21 @@
           <!-- Prompt riêng cho từng cột được tick -->
           <div v-if="getColumnsToGenerate().length > 0" class="col-prompts-box">
             <div class="col-prompts-title">
-              <Sliders :size="12" />
-              <span>Yêu cầu AI riêng cho từng cột (để trống = viết tự do theo tên cột)</span>
+              <Sliders :size="13" />
+              <span>YÊU CẦU NỘI DUNG THEO CỘT</span>
+              <span style="font-weight: normal; color: var(--wx-text-muted); font-size: 10.5px;">(Để trống = tự do)</span>
             </div>
             <div v-for="col in getColumnsToGenerate()" :key="col" class="col-prompt-item">
-              <label class="col-prompt-label">{{ col }}</label>
+              <label class="col-prompt-label">
+                <Sparkles :size="12" style="color: #38bdf8;" />
+                <span>Yêu cầu cho cột: <strong style="color: #38bdf8;">{{ col }}</strong></span>
+              </label>
               <textarea
                 :value="getColumnPrompt(col)"
                 @input="setColumnPrompt(col, ($event.target as HTMLTextAreaElement).value)"
-                :placeholder="`VD: Viết ${col} ngắn 1-2 câu, giọng hài hước, có emoji...`"
-                class="img-text-input"
+                :placeholder="`VD: Viết nội dung cho cột ${col} ngắn gọn 1-2 câu, thu hút tương tác...`"
+                class="col-prompt-textarea"
                 rows="2"
-                style="font-size: 11.5px; padding: 6px 8px; resize: vertical; min-height: 34px;"
               ></textarea>
             </div>
           </div>
@@ -158,25 +167,17 @@
               </button>
             </div>
           </div>
+
+          <!-- Tùy chọn Icon / Emoji -->
+          <div style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--wx-border-default); display: flex; align-items: center; justify-content: space-between;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11.5px; font-weight: 600; color: #38bdf8; user-select: none;">
+              <input type="checkbox" v-model="enforceLeadingEmoji" style="width: 14px; height: 14px; accent-color: #38bdf8; cursor: pointer;" />
+              <span>Tự động chèn Emoji / Icon phù hợp ngữ cảnh (😷, 🙈, 🔥...)</span>
+            </label>
+          </div>
         </div>
 
-        <!-- BƯỚC 3: NHẬP CHỦ ĐỀ & BẮT ĐẦU -->
-        <div class="step-card" style="flex: 1; display: flex; flex-direction: column;">
-          <h4 class="panel-section-title" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-            <span style="display: flex; align-items: center; gap: 6px;">
-              <span class="step-num">3</span>
-              <span>NHẬP CHỦ ĐỀ / TỪ KHÓA</span>
-            </span>
-            <span style="font-size: 11px; color: #34d399; font-weight: normal;">(Không bắt buộc - Có thể để trống)</span>
-          </h4>
-          
-          <textarea
-            v-model="inputTopics"
-            placeholder="Nhập danh sách chủ đề (mỗi câu 1 dòng). Có thể để trống nếu đã điền yêu cầu riêng ở từng Cột ở trên."
-            class="img-text-input prompt-auto-textarea"
-            style="flex: 1; min-height: 80px;"
-          ></textarea>
-        </div>
+
 
         <!-- Nút Hành Động Bước 1 -->
         <div class="config-footer-row" style="padding-top: 6px;">
@@ -211,27 +212,23 @@
               <span>{{ isLeftPanelCollapsed ? 'Hiện cấu hình' : 'Mở rộng bảng Excel' }}</span>
             </button>
             
-            <span style="font-size: 12.5px; font-weight: 700; color: #22c55e; display: flex; align-items: center; gap: 6px;">
+            <span style="font-size: 12.5px; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
               <FileSpreadsheet :size="16" />
               <span>Bảng xem trước & đẩy Sheet</span>
             </span>
           </div>
-
-            <button @click="showScriptModal = true" class="img-dir-btn" style="height: 30px; font-size: 11.5px; padding: 0 10px;" title="Xem hướng dẫn cài đặt Apps Script 1-Click">
-              <Code :size="13" /> Mã Apps Script (1-Click)
-            </button>
         </div>
 
         <!-- Màn hình chờ (Placeholder) khi chưa có kết quả -->
         <div v-if="topicGroups.length === 0" class="state-placeholder" style="margin: auto;">
           <div class="placeholder-decor">
-            <FileSpreadsheet :size="60" style="color: #22c55e;" />
+            <FileSpreadsheet :size="60" style="color: #38bdf8;" />
           </div>
           <template v-if="activeHeaders.length > 0">
             <h3 class="state-title">Tab đang chọn: {{ activeTabName || 'Chưa chọn' }}</h3>
-            <p class="state-description">
+            <!-- <p class="state-description">
               Đã đọc được {{ activeHeaders.length }} cột trên Tab <strong>{{ activeTabName }}</strong>. Tích chọn cột cần sinh, điền danh sách chủ đề bên trái rồi nhấn "Sinh Content AI".
-            </p>
+            </p> -->
           </template>
           <template v-else>
             <h3 class="state-title">Chưa kết nối Google Sheet</h3>
@@ -242,45 +239,14 @@
         </div>
 
         <!-- Màn hình Kết Quả Gom Nhóm & Chọn Lọc -->
-        <div v-else style="display: flex; flex-direction: column; gap: 12px; height: 100%;">
+        <div v-else style="display: flex; flex-direction: column; gap: 10px; height: 100%;">
           
-          <!-- Header Bar trên cùng của Bảng -->
-          <div style="display: flex; align-items: center; justify-content: space-between; background: var(--wx-surface-sunken); border: 1.5px solid var(--wx-border-default); padding: 10px 14px; border-radius: var(--wx-radius-md);">
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <input type="checkbox" :checked="isAllGlobalSelected" @change="toggleSelectAllGlobal" style="width: 16px; height: 16px; cursor: pointer; accent-color: var(--wx-brand-primary);" />
-              <span style="font-size: 13px; font-weight: 700; color: var(--wx-text-primary);">
-                Chọn tất cả ({{ totalSelectedCount }}/{{ totalItemCount }} mẫu)
-              </span>
-              <span v-if="totalSelectedCount > 0" style="font-size: 11.5px; background: rgba(16, 185, 129, 0.2); color: #34d399; padding: 3px 10px; border-radius: 12px; font-weight: 700; border: 1px solid rgba(16, 185, 129, 0.4);">
-                Sẵn sàng đẩy lên Tab "{{ activeTabName }}"
-              </span>
-            </div>
-
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <button @click="clearResults" class="img-dir-btn" style="height: 34px; font-size: 12px; color: #f87171; border-color: rgba(239, 68, 68, 0.3);">
-                <Trash2 :size="13" /> Xóa tất cả
-              </button>
-
-              <!-- Nút Đẩy Sheet -->
-              <button
-                @click="pushSelectedRowsToSheet"
-                :disabled="isPushing || totalSelectedCount === 0"
-                class="img-action-btn start-generate-btn"
-                style="height: 34px; padding: 0 16px; font-size: 12.5px; background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);"
-              >
-                <Upload v-if="!isPushing" :size="14" />
-                <Loader2 v-else :size="14" class="spin-icon" />
-                <span>{{ isPushing ? 'Đang Đẩy Lên Sheet...' : `2. Đẩy (${totalSelectedCount}) Mẫu Đã Chọn Lên Sheet` }}</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- Danh sách các Nhóm Chủ Đề (Collapsible Group Cards) -->
+          <!-- Danh sách các Nhóm Chủ Đề (Gộp gọn gàng thành 1 Thanh Header Duy Nhất) -->
           <div class="custom-scroll-grid" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-right: 4px;">
             <div v-for="(group, gIdx) in topicGroups" :key="group.topicId" class="topic-group-box">
               
-              <!-- Card Group Title Header -->
-              <div class="topic-group-header">
+              <!-- Single Merged Header Bar -->
+              <div class="topic-group-header" style="padding: 8px 12px;">
                 <div style="display: flex; align-items: center; gap: 10px;">
                   <input
                     type="checkbox"
@@ -288,33 +254,42 @@
                     @change="toggleGroupSelection(group)"
                     style="width: 16px; height: 16px; cursor: pointer; accent-color: var(--wx-brand-primary);"
                   />
-                  <Folder :size="16" style="color: #a855f7;" />
-                  <span style="font-size: 13.5px; font-weight: 700; color: var(--wx-text-primary);">
-                    Nhóm #{{ gIdx + 1 }}: <strong style="color: #38bdf8;">{{ group.topicName }}</strong>
-                  </span>
-                  <span style="font-size: 11.5px; color: var(--wx-text-muted);">
-                    ({{ group.items.filter(i => i.selected).length }}/{{ group.items.length }} mẫu được chọn)
+                  <span style="font-size: 13px; font-weight: 700; color: var(--wx-text-primary); display: flex; align-items: center; gap: 6px;">
+                    <FileSpreadsheet :size="15" style="color: #38bdf8;" />
+                    <span v-if="topicGroups.length > 1">Nhóm #{{ gIdx + 1 }}</span>
+                    <span v-else>Danh sách mẫu AI sinh</span>
+                    <span style="font-size: 11.5px; color: var(--wx-text-muted); font-weight: normal;">
+                      ({{ group.items.filter(i => i.selected).length }}/{{ group.items.length }} mẫu được chọn)
+                    </span>
                   </span>
                 </div>
 
-                <div style="display: flex; align-items: center; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
                   <button
                     @click="addExtraSampleToGroup(group)"
                     :disabled="group.isGeneratingMore"
                     class="img-dir-btn"
-                    style="height: 28px; padding: 0 10px; font-size: 11.5px; color: #c084fc; border-color: rgba(168, 85, 247, 0.4);"
+                    style="height: 32px; padding: 0 10px; font-size: 11.5px; color: #c084fc; border-color: rgba(168, 85, 247, 0.4);"
                   >
                     <Loader2 v-if="group.isGeneratingMore" :size="12" class="spin-icon" />
                     <Plus v-else :size="12" />
                     <span>{{ group.isGeneratingMore ? 'Đang tạo...' : 'Sinh Thêm 1 Mẫu' }}</span>
                   </button>
 
-                  <button @click="group.isCollapsed = !group.isCollapsed" class="img-dir-btn" style="height: 28px; padding: 0 10px; font-size: 11.5px;">
-                    {{ group.isCollapsed ? 'Mở ▲' : 'Ẩn ▼' }}
+                  <button @click="clearResults" class="img-dir-btn" style="height: 32px; font-size: 11.5px; color: #f87171; border-color: rgba(239, 68, 68, 0.3);" title="Xóa tất cả mẫu">
+                    <Trash2 :size="13" /> Xóa tất cả
                   </button>
 
-                  <button @click="deleteGroup(gIdx)" class="img-dir-btn" style="height: 28px; padding: 0 8px; color: #ef4444; border-color: rgba(239,68,68,0.3);">
-                    <Trash2 :size="13" />
+                  <!-- Nút Đẩy Sheet -->
+                  <button
+                    @click="pushSelectedRowsToSheet"
+                    :disabled="isPushing || totalSelectedCount === 0"
+                    class="img-action-btn start-generate-btn"
+                    style="height: 32px; padding: 0 14px; font-size: 12px; background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);"
+                  >
+                    <Upload v-if="!isPushing" :size="13" />
+                    <Loader2 v-else :size="13" class="spin-icon" />
+                    <span>{{ isPushing ? 'Đang Đẩy Sheet...' : `Đẩy Lên Sheet` }}</span>
                   </button>
                 </div>
               </div>
@@ -324,33 +299,48 @@
                 <table class="clean-data-table">
                   <thead>
                     <tr>
-                      <th style="width: 42px; text-align: center;">Chọn</th>
-                      <th style="width: 55px;">Mẫu</th>
+                      <th style="width: 42px; min-width: 42px; text-align: center;">Chọn</th>
+                      <th style="width: 55px; min-width: 55px;">Mẫu</th>
                       
                       <!-- Render tiêu đề Cột Động CHỈ cho các Cột được tích chọn -->
-                      <th v-for="headerName in displayHeaders" :key="headerName" style="min-width: 140px;">
+                      <th v-for="headerName in displayHeaders" :key="headerName" style="min-width: 260px;">
                         {{ headerName }}
                       </th>
 
-                      <th style="width: 90px;">Trạng Thái</th>
-                      <th style="width: 40px; text-align: center;"></th>
+                      <th style="width: 90px; min-width: 90px;">Trạng Thái</th>
+                      <th style="width: 40px; min-width: 40px; text-align: center;"></th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr v-for="(item, idx) in visibleGroupItems(group)" :key="item.id" :class="{ row_active: item.selected }">
-                      <td style="text-align: center; padding: 8px 4px;">
+                      <td style="text-align: center; padding: 8px 4px; width: 42px; min-width: 42px;">
                         <input type="checkbox" v-model="item.selected" style="width: 15px; height: 15px; cursor: pointer; accent-color: var(--wx-brand-primary);" />
                       </td>
-                      <td style="font-weight: 700; color: #c084fc; padding: 8px 4px;">#{{ idx + 1 }}</td>
+                      <td style="font-weight: 700; color: #c084fc; padding: 8px 4px; width: 55px; min-width: 55px;">#{{ idx + 1 }}</td>
 
                       <!-- Render ô sửa chữ CHỈ theo các Cột được tích chọn -->
-                      <td v-for="headerName in displayHeaders" :key="headerName" style="padding: 6px;">
-                        <textarea
-                          v-model="item.columnData[headerName]"
-                          class="clean-cell-textarea"
-                          rows="2"
-                          placeholder="Trống..."
-                        ></textarea>
+                      <td v-for="headerName in displayHeaders" :key="headerName" style="padding: 6px; position: relative; min-width: 260px;">
+                        <div class="cell-textarea-wrap" style="position: relative;">
+                          <textarea
+                            v-model="item.columnData[headerName]"
+                            class="clean-cell-textarea"
+                            rows="2"
+                            placeholder="Trống..."
+                          ></textarea>
+
+                          <!-- Hover Tooltip Bản Dịch Tiếng Việt (Tự động nảy lên TRÊN nếu ở mép dưới, nảy xuống DƯỚI nếu ở mép trên) -->
+                          <div
+                            v-if="getItemTranslation(item, headerName)"
+                            :class="['vi-translation-tooltip', isLastRow(group, idx) ? 'position-above' : 'position-below']"
+                          >
+                            <div class="vi-tooltip-header">
+                              <span>🇻🇳 Dịch Tiếng Việt</span>
+                            </div>
+                            <div class="vi-tooltip-body">
+                              {{ getItemTranslation(item, headerName) }}
+                            </div>
+                          </div>
+                        </div>
                       </td>
 
                       <td style="padding: 8px 6px;">
@@ -381,33 +371,36 @@
 
     <!-- Modal Hướng dẫn Google Apps Script -->
     <div v-if="showScriptModal" class="lightbox-overlay" @click.self="showScriptModal = false">
-      <div style="background: var(--wx-surface-base); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-lg); width: 600px; max-width: 90vw; padding: 20px; box-shadow: var(--wx-shadow-2xl);">
-        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--wx-border-default); padding-bottom: 12px; margin-bottom: 14px;">
+      <div style="background: var(--wx-surface-base); border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-lg); width: 640px; max-width: 92vw; max-height: 88vh; display: flex; flex-direction: column; padding: 20px; box-shadow: var(--wx-shadow-2xl); overflow: hidden;">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--wx-border-default); padding-bottom: 12px; margin-bottom: 14px; flex-shrink: 0;">
           <h3 style="margin: 0; font-size: 15px; color: var(--wx-brand-accent);">Hướng Dẫn 1-Click Cài Đặt Google Apps Script</h3>
           <button @click="showScriptModal = false" style="background: none; border: none; color: var(--wx-text-muted); cursor: pointer; font-size: 16px;">✕</button>
         </div>
         
-        <ol style="padding-left: 20px; font-size: 12.5px; line-height: 1.6; color: var(--wx-text-secondary); margin: 0 0 12px 0;">
-          <li>Mở file Google Sheet của anh trên trình duyệt.</li>
-          <li>Chọn <strong>Tiện ích mở rộng (Extensions)</strong> → <strong>Apps Script</strong>.</li>
-          <li>Xóa toàn bộ mã cũ và **Dán đoạn mã dưới đây** vào:</li>
-        </ol>
+        <div style="overflow-y: auto; flex: 1; padding-right: 4px;">
+          <ol style="padding-left: 20px; font-size: 12.5px; line-height: 1.6; color: var(--wx-text-secondary); margin: 0 0 12px 0;">
+            <li>Mở file Google Sheet của anh trên trình duyệt.</li>
+            <li>Chọn <strong>Tiện ích mở rộng (Extensions)</strong> → <strong>Apps Script</strong>.</li>
+            <li>Xóa toàn bộ mã cũ và <strong>Dán đoạn mã dưới đây</strong> vào:</li>
+          </ol>
 
-        <div style="position: relative; background: var(--wx-surface-sunken); border: 1px solid var(--wx-border-default); border-radius: 6px; padding: 12px; margin-bottom: 14px;">
-          <pre style="margin: 0; font-family: monospace; font-size: 11.5px; color: #a5f3fc; overflow-x: auto;"><code>{{ appsScriptCode }}</code></pre>
-          <button @click="copyAppsScript" class="img-dir-btn" style="position: absolute; top: 8px; right: 8px; height: 26px; font-size: 11px;">
-            <Copy :size="12" /> {{ copied ? 'Đã copy!' : 'Copy Code' }}
-          </button>
+          <div style="background: var(--wx-surface-sunken); border: 1px solid var(--wx-border-default); border-radius: 6px; padding: 12px; margin-bottom: 14px; max-height: 280px; overflow: auto;">
+            <pre style="margin: 0; font-family: monospace; font-size: 11.5px; color: #a5f3fc;"><code>{{ appsScriptCode }}</code></pre>
+          </div>
+
+          <ol style="padding-left: 20px; font-size: 12.5px; line-height: 1.6; color: var(--wx-text-secondary); margin: 0 0 14px 0;" start="4">
+            <li>Bấm <strong>Triển khai (Deploy)</strong> → <strong>Quản lý các bản triển khai (Manage deployments)</strong>.</li>
+            <li>Bấm ✏️ (Chỉnh sửa) → Ở mục <em>Phiên bản</em> chọn <strong>Phiên bản mới (New version)</strong>.</li>
+            <li>Mục <strong>Who has access (Quyền truy cập)</strong>: Chọn <strong style="color: #ef4444;">Bất kỳ ai (Anyone)</strong>.</li>
+            <li>Bấm <strong>Triển khai</strong> → Quay lại Tool bấm <strong>"Đẩy Mẫu Đã Chọn Lên Sheet"</strong>.</li>
+          </ol>
         </div>
 
-        <ol style="padding-left: 20px; font-size: 12.5px; line-height: 1.6; color: var(--wx-text-secondary); margin: 0 0 14px 0;" start="4">
-          <li>Bấm **Triển khai (Deploy)** → **Triển khai dưới dạng ứng dụng web (New deployment)**.</li>
-          <li>Mục **Who has access (Quyền truy cập)**: Chọn <strong style="color: #ef4444;">Bất kỳ ai (Anyone)</strong>.</li>
-          <li>Bấm **Triển khai** → Copy lấy đường **URL Web App** thu được dán vào ô bên trái trên Tool.</li>
-        </ol>
-
-        <div style="display: flex; justify-content: flex-end;">
-          <button @click="showScriptModal = false" class="img-dir-btn">Đóng</button>
+        <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--wx-border-default); flex-shrink: 0;">
+          <button @click="copyAppsScript" class="img-dir-btn btn-accent-blue" style="height: 32px;">
+            <Copy :size="13" /> {{ copied ? '🎉 Đã Copy Code!' : 'Copy Toàn Bộ Mã Code' }}
+          </button>
+          <button @click="showScriptModal = false" class="img-dir-btn" style="height: 32px;">Đóng</button>
         </div>
       </div>
     </div>
@@ -418,7 +411,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { FileSpreadsheet, Sparkles, RefreshCw, Play, Loader2, Check, Trash2, Code, Copy, Folder, Plus, Sliders, PanelLeftOpen, PanelLeftClose, Upload } from 'lucide-vue-next'
-// @ts-ignore
 import { FetchGoogleSheetStructure, PushGoogleSheetRow, GetGoogleAppsScriptTemplate, GenerateAIContentText, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
 
 const props = defineProps<{
@@ -446,19 +438,52 @@ interface DynamicTabInfo {
   name: string
   gid: string
   headers: string[]
+  rawHeaders?: string[]
 }
 
 const availableTabs = ref<DynamicTabInfo[]>([])
 const activeTabName = ref('')
 const activeHeaders = ref<string[]>([])
+const activeRawHeaders = ref<string[]>([])
 const selectedHeaderNames = ref<Set<string>>(new Set())
+const enforceLeadingEmoji = ref(true)
+
+const EMOJI_LIST = ['😷', '🙈', '👿', '💅', '🔥', '✨', '🤣', '💬', '🌟', '📌', '💡', '🎉', '❤️', '🙌', '😎', '🥳', '🚀', '🎯', '⚡', '💯']
+
+const hasAnyEmoji = (str: string): boolean => {
+  if (!str) return false
+  const emojiRegex = /(\p{Extended_Pictographic}|\p{Emoji_Presentation}|[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}])/u
+  return emojiRegex.test(str)
+}
+
+const addEmojiIfMissing = (str: string): string => {
+  if (!str) return str
+  let trimmed = str.trim()
+  if (enforceLeadingEmoji.value && !hasAnyEmoji(trimmed)) {
+    const randomEmoji = EMOJI_LIST[Math.floor(Math.random() * EMOJI_LIST.length)]
+    trimmed = `${randomEmoji} ${trimmed}`
+  }
+  return trimmed
+}
 
 interface GeneratedRowItem {
   id: string
   selected: boolean
   topicName: string
   columnData: Record<string, string>
+  columnTranslations?: Record<string, string>
   pushStatus: 'waiting' | 'pushing' | 'success' | 'error'
+}
+
+const getItemTranslation = (item: GeneratedRowItem, colName: string): string => {
+  if (!item || !item.columnTranslations) return ''
+  return item.columnTranslations[colName] || ''
+}
+
+const isLastRow = (group: TopicGroup, idx: number): boolean => {
+  const items = visibleGroupItems(group)
+  if (items.length <= 1) return false
+  return idx >= items.length - 1
 }
 
 interface TopicGroup {
@@ -510,12 +535,12 @@ const toggleHeaderSelection = (name: string) => {
   saveConfig()
 }
 
-const hasAnyHeaderSelected = computed(() => {
-  return selectedHeaderNames.value.size > 0
+const isAllHeadersSelected = computed(() => {
+  return activeHeaders.value.length > 0 && selectedHeaderNames.value.size === activeHeaders.value.length
 })
 
 const toggleSelectAllHeaders = () => {
-  if (hasAnyHeaderSelected.value) {
+  if (isAllHeadersSelected.value) {
     selectedHeaderNames.value = new Set()
     if (activeTabName.value) {
       tabColumnSelections.value[activeTabName.value] = []
@@ -538,6 +563,7 @@ const selectTab = (tab: DynamicTabInfo) => {
   tabName.value = tab.name
   tabGid.value = tab.gid
   activeHeaders.value = tab.headers || []
+  activeRawHeaders.value = tab.rawHeaders || tab.headers || []
 
   // Khôi phục các cột đã tích chọn trước đó của tab này nếu có
   if (tabColumnSelections.value[tab.name] && tabColumnSelections.value[tab.name].length > 0) {
@@ -731,26 +757,33 @@ const visibleGroupItems = (group: TopicGroup): GeneratedRowItem[] => {
   })
 }
 
-// Gọi AI 1 lần cho 1 mẫu: trả về map { tên cột -> nội dung } CHỈ cho các cột được tick.
-// Ép AI trả JSON theo đúng tên cột để map chính xác (không tách theo dòng dễ lệch cột).
-const generateColumnsForTopic = async (topic: string, variantLabel: string, cols: string[]): Promise<Record<string, string>> => {
-  const result: Record<string, string> = {}
-  if (cols.length === 0) return result
+// Gọi AI 1 lần cho 1 mẫu: trả về map { tên cột -> nội dung } & { tên cột_vi -> bản dịch tiếng Việt }
+const generateColumnsForTopic = async (topic: string, variantLabel: string, cols: string[]): Promise<{ columnData: Record<string, string>, columnTranslations: Record<string, string> }> => {
+  const columnData: Record<string, string> = {}
+  const columnTranslations: Record<string, string> = {}
+  if (cols.length === 0) return { columnData, columnTranslations }
 
   // Mỗi cột có thể có yêu cầu (prompt) riêng. Cột nào để trống thì viết tự do theo tên cột.
   const colLines = cols.map(c => {
     const custom = getColumnPrompt(c).trim()
-    return custom ? `- ${c}: ${custom}` : `- ${c}: (viết nội dung hấp dẫn, ngắn gọn, phù hợp tên cột, có thể kèm emoji)`
+    const emojiReq = enforceLeadingEmoji.value ? ' (chèn 1-3 biểu tượng Emoji/Icon sinh động, phù hợp ngữ cảnh bài viết như 😷, 🙈, 👿, 💅, 🔥...)' : ''
+    return custom ? `- ${c}: ${custom}${emojiReq}` : `- ${c}: (viết nội dung hấp dẫn, ngắn gọn, phù hợp tên cột${emojiReq})`
   }).join('\n')
 
   const topicContext = (topic && topic !== 'Nội dung AI sinh theo cột') ? `Chủ đề: "${topic}" (${variantLabel}).\n` : `(${variantLabel}).\n`
-  const prompt = `Bạn là trợ lý viết nội dung. ${topicContext}Hãy viết nội dung cho ĐÚNG các cột sau, TUÂN THỦ yêu cầu riêng của mỗi cột (phần sau dấu hai chấm):
-${colLines}
+  const emojiGlobalRule = enforceLeadingEmoji.value ? '\nYÊU CẦU: Tự nhiên chèn các biểu tượng Emoji/Icon cảm xúc sinh động, phù hợp ngữ cảnh ở các vị trí thích hợp trong bài viết.' : ''
+  
+  const prompt = `Bạn là trợ lý viết nội dung chuyên nghiệp. ${topicContext}Hãy viết nội dung cho ĐÚNG các cột sau, TUÂN THỦ yêu cầu riêng của mỗi cột (phần sau dấu hai chấm):
+${colLines}${emojiGlobalRule}
 
-CHỈ trả về đúng một object JSON hợp lệ, key là tên cột (giữ nguyên chính xác), value là nội dung dạng chuỗi. Không thêm giải thích, không bọc trong markdown.`
+CHỈ trả về đúng một object JSON hợp lệ với cấu trúc key:
+- "tên_cột": "nội dung của cột đó"
+- "tên_cột_vi": "NẾU nội dung trên là TIẾNG NƯỚC NGOÀI (tiếng Anh, v.v.), hãy cung cấp BẢN DỊCH TIẾNG VIỆT tự nhiên, mượt mà của câu đó vào key này. Nếu nội dung đã là tiếng Việt thì để rỗng \"\"."
+
+Không thêm bất kỳ chữ giải thích nào khác, không bọc trong markdown.`
 
   const aiText = await GenerateAIContentText('', prompt)
-  if (!aiText) return result
+  if (!aiText) return { columnData, columnTranslations }
 
   // Cắt lấy phần JSON (phòng khi AI kèm ```json ... ``` hoặc chữ thừa).
   let jsonStr = aiText.trim()
@@ -764,13 +797,18 @@ CHỈ trả về đúng một object JSON hợp lệ, key là tên cột (giữ 
     const parsed = JSON.parse(jsonStr)
     for (const c of cols) {
       if (parsed[c] != null && String(parsed[c]).trim() !== '') {
-        result[c] = String(parsed[c]).trim()
+        columnData[c] = addEmojiIfMissing(String(parsed[c]).trim())
+      }
+      const viKey = `${c}_vi`
+      if (parsed[viKey] != null && String(parsed[viKey]).trim() !== '') {
+        columnTranslations[c] = String(parsed[viKey]).trim()
       }
     }
   } catch (e) {
     console.warn('AI trả về không phải JSON hợp lệ, bỏ qua mẫu này:', e)
   }
-  return result
+
+  return { columnData, columnTranslations }
 }
 
 // BƯỚC 1: Sinh nội dung cho các Cột được tick của Tab đang chọn
@@ -788,7 +826,6 @@ const generateAllTopicGroups = async () => {
 
   let lines = inputTopics.value.split('\n').map(l => l.trim()).filter(l => l.length > 0)
   if (lines.length === 0) {
-    // Tự động sử dụng Yêu cầu ở từng Cột ở trên mà KHÔNG bắt nhập lại ở dưới!
     lines = ['Nội dung AI sinh theo cột']
   }
 
@@ -805,16 +842,14 @@ const generateAllTopicGroups = async () => {
 
       for (let v = 0; v < count; v++) {
         const id = `item_${Date.now()}_${lIdx}_${v}`
-        // Mọi cột khởi tạo TRỐNG. Chỉ các cột được tick mới được AI điền.
         const colData: Record<string, string> = {}
         for (const h of activeHeaders.value) colData[h] = ''
 
-        const generated = await generateColumnsForTopic(topic, `Mẫu biến thể #${v + 1}`, colsToGen)
-        for (const [col, val] of Object.entries(generated)) {
+        const { columnData: genData, columnTranslations: genTrans } = await generateColumnsForTopic(topic, `Mẫu biến thể #${v + 1}`, colsToGen)
+        for (const [col, val] of Object.entries(genData)) {
           colData[col] = val
         }
 
-        // Chỉ giữ lại những mẫu CÓ nội dung thực sự (bỏ qua rác/rỗng/...)
         const hasValidText = Object.values(colData).some(v => v && String(v).trim() !== '' && String(v).trim() !== '...')
         if (hasValidText) {
           groupItems.push({
@@ -822,6 +857,7 @@ const generateAllTopicGroups = async () => {
             selected: true,
             topicName: topic,
             columnData: colData,
+            columnTranslations: genTrans,
             pushStatus: 'waiting'
           })
         }
@@ -855,12 +891,11 @@ const addExtraSampleToGroup = async (group: TopicGroup) => {
   group.isGeneratingMore = true
   try {
     const vIdx = group.items.length + 1
-    // Mọi cột khởi tạo TRỐNG. Chỉ các cột được tick mới được AI điền.
     const colData: Record<string, string> = {}
     for (const h of activeHeaders.value) colData[h] = ''
 
-    const generated = await generateColumnsForTopic(group.topicName, `Mẫu bổ sung #${vIdx}`, colsToGen)
-    for (const [col, val] of Object.entries(generated)) {
+    const { columnData: genData, columnTranslations: genTrans } = await generateColumnsForTopic(group.topicName, `Mẫu bổ sung #${vIdx}`, colsToGen)
+    for (const [col, val] of Object.entries(genData)) {
       colData[col] = val
     }
 
@@ -869,6 +904,7 @@ const addExtraSampleToGroup = async (group: TopicGroup) => {
       selected: true,
       topicName: group.topicName,
       columnData: colData,
+      columnTranslations: genTrans,
       pushStatus: 'waiting'
     })
 
@@ -901,18 +937,21 @@ const pushSelectedRowsToSheet = async () => {
   let successCount = 0
 
   try {
+    const headerListToUse = activeRawHeaders.value.length > 0 ? activeRawHeaders.value : activeHeaders.value
     for (let i = 0; i < selectedItemsToPush.length; i++) {
       const item = selectedItemsToPush[i]
       item.pushStatus = 'pushing'
 
-      const rowData: string[] = activeHeaders.value.map(h => item.columnData[h] || '')
+      // Map dữ liệu theo đúng danh sách vị trí cột gốc (kể cả cột trống) để đẩy chính xác vào cột N, P...
+      const rowData: string[] = headerListToUse.map(h => (h ? (item.columnData[h] || '') : ''))
 
       try {
-        await PushGoogleSheetRow(webAppUrl.value, tabGid.value, tabName.value, rowData)
+        await PushGoogleSheetRow(webAppUrl.value, tabGid.value, tabName.value, rowData, headerListToUse)
         item.pushStatus = 'success'
         successCount++
       } catch (err) {
         console.error('Lỗi đẩy dòng:', err)
+        props.showToast(`Lỗi đẩy dòng #${i+1}: ${String(err)}`, 'error')
         item.pushStatus = 'error'
       }
     }
@@ -930,17 +969,97 @@ const pushSelectedRowsToSheet = async () => {
   }
 }
 
-onMounted(async () => {
-  loadSavedConfig()
-  await fetchSheetStructure(false)
+const openScriptModal = async () => {
   try {
     appsScriptCode.value = await GetGoogleAppsScriptTemplate()
-  } catch (e) {}
+  } catch (e) {
+    console.error('Lỗi nạp mã Apps Script:', e)
+  }
+  showScriptModal.value = true
+}
+
+onMounted(async () => {
+  await loadSavedConfig()
+  openScriptModal()
+  await fetchSheetStructure(false)
 })
 </script>
 
 <style scoped src="./BrowserAIPage.scoped.css"></style>
 <style scoped>
+
+/* Tooltip Hover Dịch Tiếng Việt */
+.cell-textarea-wrap {
+  position: relative;
+}
+
+.cell-textarea-wrap:hover .vi-translation-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.vi-translation-tooltip {
+  position: absolute;
+  left: 0;
+  width: 280px;
+  max-width: 90vw;
+  z-index: 10000;
+  background: rgba(15, 23, 42, 0.98);
+  border: 1px solid rgba(56, 189, 248, 0.6);
+  border-radius: 8px;
+  padding: 8px 10px;
+  box-shadow: 0 12px 28px -4px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  backdrop-filter: blur(12px);
+}
+
+.vi-translation-tooltip.position-below {
+  top: calc(100% + 4px);
+  bottom: auto;
+  transform: translateY(-4px);
+}
+
+.cell-textarea-wrap:hover .vi-translation-tooltip.position-below {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.vi-translation-tooltip.position-above {
+  bottom: calc(100% + 4px);
+  top: auto;
+  transform: translateY(4px);
+}
+
+.cell-textarea-wrap:hover .vi-translation-tooltip.position-above {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.vi-tooltip-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #38bdf8;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.vi-tooltip-body {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #f1f5f9;
+  font-weight: 500;
+  word-break: break-word;
+}
 
 /* Step Cards */
 .step-card {
@@ -976,27 +1095,33 @@ onMounted(async () => {
   background: color-mix(in srgb, var(--wx-brand-primary) 35%, transparent) !important;
 }
 
-/* Tab Select Pills Grid */
+/* Tab Select Pills Grid (Giới hạn chuẩn xác đúng 4 hàng nút giống hệt Bước 2) */
 .tab-pills-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  grid-template-columns: repeat(2, 1fr);
   gap: 6px;
   margin-top: 4px;
+  max-height: 148px !important;
+  overflow-y: auto !important;
+  padding-right: 4px;
 }
 
 .tab-select-pill {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
+  justify-content: flex-start;
+  gap: 8px;
   padding: 6px 10px;
-  font-size: 12px;
+  height: 32px;
+  min-height: 32px;
+  font-size: 11.5px;
   font-weight: 600;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--wx-text-muted);
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--wx-text-primary);
   border: 1px solid var(--wx-border-default);
   cursor: pointer;
+  box-sizing: border-box;
   transition: all 0.15s ease;
   white-space: nowrap;
   overflow: hidden;
@@ -1004,22 +1129,21 @@ onMounted(async () => {
 }
 
 .tab-select-pill:hover {
-  color: var(--wx-text-primary);
-  border-color: rgba(255,255,255,0.2);
+  border-color: rgba(255, 255, 255, 0.25);
 }
 
 .tab-select-pill.active {
   background: color-mix(in srgb, var(--wx-brand-primary) 20%, transparent);
   border-color: #8b5cf6;
-  color: #a855f7;
+  color: #38bdf8;
   font-weight: 700;
   box-shadow: 0 0 10px rgba(139, 92, 246, 0.25);
 }
 
-/* Column Chips Grid */
+/* Column Chips Grid (Đồng bộ 2 cột) */
 .column-chips-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  grid-template-columns: repeat(2, 1fr);
   gap: 6px;
   margin-top: 4px;
   max-height: 160px;
@@ -1070,35 +1194,66 @@ onMounted(async () => {
 .col-prompts-box {
   margin-top: 12px;
   padding: 10px;
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid var(--wx-border-default);
-  border-radius: 8px;
+  background: var(--wx-surface-sunken);
+  border: 1.5px solid var(--wx-border-default);
+  border-radius: var(--wx-radius-md);
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-height: 240px;
+  gap: 10px;
+  max-height: 280px;
   overflow-y: auto;
 }
 
 .col-prompts-title {
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  font-weight: 600;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
   color: #38bdf8;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--wx-border-default);
 }
 
 .col-prompt-item {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--wx-border-default);
+  border-radius: 6px;
+  padding: 8px 10px;
 }
 
 .col-prompt-label {
-  font-size: 11px;
-  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
   color: var(--wx-text-primary);
+}
+
+.col-prompt-textarea {
+  width: 100% !important;
+  box-sizing: border-box !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  padding: 8px 10px !important;
+  min-height: 54px !important;
+  background: #090d16 !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  border-radius: 6px !important;
+  color: #f8fafc !important;
+  outline: none;
+  resize: vertical;
+  font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.col-prompt-textarea:focus {
+  border-color: #38bdf8 !important;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.3) !important;
 }
 
 /* Nút thu/phóng cột trái */
@@ -1134,6 +1289,10 @@ onMounted(async () => {
   border: 1.5px solid var(--wx-border-default);
   border-radius: var(--wx-radius-md);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .topic-group-header {
@@ -1146,7 +1305,8 @@ onMounted(async () => {
 }
 
 .topic-group-table-wrap {
-  max-height: 400px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: auto;
   border-top: 1px solid var(--wx-border-default);

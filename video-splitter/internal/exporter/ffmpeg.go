@@ -494,22 +494,30 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, cardIdx, frameW
 	if e.Aspect.Enabled {
 		if t, ok := aspectTargets[e.Aspect.Ratio]; ok {
 			w, h := t[0], t[1]
+			px := e.Aspect.PanX
+			if px <= 0 && px != 0.5 {
+				px = 0.5
+			}
+			py := e.Aspect.PanY
+			if py <= 0 && py != 0.5 {
+				py = 0.5
+			}
 			switch e.Aspect.Mode {
 			case "pad":
 				vSteps = append(vSteps,
 					fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", w, h),
-					fmt.Sprintf("pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black", w, h))
+					fmt.Sprintf("pad=%d:%d:(ow-iw)*%s:(oh-ih)*%s:black", w, h, trimFloat(px), trimFloat(py)))
 			case "blur":
 				blurGraph = fmt.Sprintf(
 					"split=2[bg][fg];"+
 						"[bg]scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,gblur=sigma=20[bgb];"+
 						"[fg]scale=%d:%d:force_original_aspect_ratio=decrease[fgs];"+
-						"[bgb][fgs]overlay=(W-w)/2:(H-h)/2",
-					w, h, w, h, w, h)
+						"[bgb][fgs]overlay=(W-w)*%s:(H-h)*%s",
+					w, h, w, h, w, h, trimFloat(px), trimFloat(py))
 			default: // crop
 				vSteps = append(vSteps,
 					fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase", w, h),
-					fmt.Sprintf("crop=%d:%d", w, h))
+					fmt.Sprintf("crop=%d:%d:(in_w-%d)*%s:(in_h-%d)*%s", w, h, w, trimFloat(px), h, trimFloat(py)))
 			}
 		}
 	}
