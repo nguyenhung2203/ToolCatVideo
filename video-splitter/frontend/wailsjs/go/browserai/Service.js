@@ -10,6 +10,10 @@ export function CancelQueue() {
   return window['go']['browserai']['Service']['CancelQueue']();
 }
 
+export function CancelQueueSource(arg1) {
+  return window['go']['browserai']['Service']['CancelQueueSource'](arg1);
+}
+
 export function CheckLogin(arg1) {
   return window['go']['browserai']['Service']['CheckLogin'](arg1);
 }
@@ -28,6 +32,10 @@ export function CloseBrowser() {
 
 export function ConfirmSelectedImages(arg1, arg2, arg3, arg4) {
   return window['go']['browserai']['Service']['ConfirmSelectedImages'](arg1, arg2, arg3, arg4);
+}
+
+export function DeleteResultFiles(arg1) {
+  return window['go']['browserai']['Service']['DeleteResultFiles'](arg1);
 }
 
 export function EnqueueThumbnailTasks(arg1) {

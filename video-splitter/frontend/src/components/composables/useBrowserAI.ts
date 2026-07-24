@@ -176,6 +176,7 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
     showChrome: boolean
     model?: string
     batchSize?: string
+    duration?: string
     confirmBeforeCreate?: string
     resolution?: string
     delaySecond?: number
@@ -204,6 +205,7 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
         showChrome: req.showChrome,
         model: req.model || "",
         batchSize: req.batchSize || "",
+        duration: req.duration || "",
         confirmBeforeCreate: req.confirmBeforeCreate || "",
         resolution: req.resolution || "1K",
         delaySecond: req.delaySecond || 1.0,

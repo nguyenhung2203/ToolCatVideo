@@ -86,7 +86,7 @@ func resolveDebugLogPath() string {
 		if err != nil || dir == "" {
 			dir = os.TempDir()
 		}
-		appDir := filepath.Join(dir, "video-splitter")
+		appDir := filepath.Join(dir, "TrafficTool")
 		_ = os.MkdirAll(appDir, 0755)
 		debugLogPath = filepath.Join(appDir, debugLogFileName)
 	})
@@ -120,9 +120,17 @@ func getSettingsFilePath() string {
 	if err != nil || dir == "" {
 		dir = os.TempDir()
 	}
-	appDir := filepath.Join(dir, "video-splitter")
+	appDir := filepath.Join(dir, "TrafficTool")
 	_ = os.MkdirAll(appDir, 0755)
-	return filepath.Join(appDir, "settings.json")
+	
+	newSettings := filepath.Join(appDir, "settings.json")
+	if _, err := os.Stat(newSettings); os.IsNotExist(err) {
+		oldSettings := filepath.Join(dir, "video-splitter", "settings.json")
+		if _, errOld := os.Stat(oldSettings); errOld == nil {
+			_ = os.Rename(oldSettings, newSettings)
+		}
+	}
+	return newSettings
 }
 
 // GlobalConfigData biểu diễn thông số cấu hình tập trung liên quan tới AI

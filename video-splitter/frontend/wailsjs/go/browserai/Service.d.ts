@@ -7,6 +7,8 @@ export function Cancel(arg1:string):Promise<void>;
 
 export function CancelQueue():Promise<void>;
 
+export function CancelQueueSource(arg1:string):Promise<void>;
+
 export function CheckLogin(arg1:string):Promise<browserai.LoginStatus>;
 
 export function ClearBrowserProfile():Promise<void>;
@@ -16,6 +18,8 @@ export function ClearQueue():Promise<void>;
 export function CloseBrowser():Promise<void>;
 
 export function ConfirmSelectedImages(arg1:string,arg2:Array<string>,arg3:string,arg4:string):Promise<Array<string>>;
+
+export function DeleteResultFiles(arg1:Array<string>):Promise<Array<string>>;
 
 export function EnqueueThumbnailTasks(arg1:Array<browserai.ThumbnailTask>):Promise<void>;
 

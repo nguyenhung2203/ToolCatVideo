@@ -6,6 +6,14 @@ export function Analyze(arg1, arg2) {
   return window['go']['main']['App']['Analyze'](arg1, arg2);
 }
 
+export function ApplyManifestUpdate() {
+  return window['go']['main']['App']['ApplyManifestUpdate']();
+}
+
+export function AutoGenSubtitlesForClips(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AutoGenSubtitlesForClips'](arg1, arg2, arg3);
+}
+
 export function CancelAnalysis() {
   return window['go']['main']['App']['CancelAnalysis']();
 }
@@ -20,6 +28,10 @@ export function CancelExport() {
 
 export function CancelImageDownload() {
   return window['go']['main']['App']['CancelImageDownload']();
+}
+
+export function CheckForUpdates() {
+  return window['go']['main']['App']['CheckForUpdates']();
 }
 
 export function DeleteProject(arg1) {
@@ -38,8 +50,8 @@ export function DownloadOnlineVideos(arg1, arg2, arg3) {
   return window['go']['main']['App']['DownloadOnlineVideos'](arg1, arg2, arg3);
 }
 
-export function ExportClips(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
-  return window['go']['main']['App']['ExportClips'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+export function ExportClips(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['ExportClips'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
 }
 
 export function ExtractClipFrames(arg1, arg2, arg3) {
@@ -56,6 +68,10 @@ export function GenerateAIThumbnail(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
 
 export function GenerateThumbnail(arg1, arg2) {
   return window['go']['main']['App']['GenerateThumbnail'](arg1, arg2);
+}
+
+export function GetAppVersion() {
+  return window['go']['main']['App']['GetAppVersion']();
 }
 
 export function GetDefaultConfig() {
@@ -78,6 +94,10 @@ export function GetStreamURL(arg1) {
   return window['go']['main']['App']['GetStreamURL'](arg1);
 }
 
+export function GetSystemStats() {
+  return window['go']['main']['App']['GetSystemStats']();
+}
+
 export function GetVideoInfo(arg1) {
   return window['go']['main']['App']['GetVideoInfo'](arg1);
 }
@@ -92,6 +112,10 @@ export function LoadProjectBySource(arg1) {
 
 export function MergeClips(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['MergeClips'](arg1, arg2, arg3, arg4);
+}
+
+export function OpenWebURL(arg1) {
+  return window['go']['main']['App']['OpenWebURL'](arg1);
 }
 
 export function ProbeOnlineURL(arg1, arg2, arg3, arg4, arg5) {
@@ -128,4 +152,16 @@ export function SelectImageFile() {
 
 export function SelectImageFiles() {
   return window['go']['main']['App']['SelectImageFiles']();
+}
+
+export function SelectSubtitleFile() {
+  return window['go']['main']['App']['SelectSubtitleFile']();
+}
+
+export function TranscribeClips(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TranscribeClips'](arg1, arg2, arg3);
+}
+
+export function TranscribeSingleClip(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TranscribeSingleClip'](arg1, arg2, arg3);
 }

@@ -23,7 +23,7 @@
   --wx-text-secondary: #cbd5e1;    /* slate-300 — label, secondary copy */
   --wx-text-muted: #94a3b8;        /* slate-400 — caption, helper, timestamp */
   --wx-text-disabled: #64748b;     /* slate-500 — disabled chỉ, đủ phân biệt */
-  --wx-text-inverse: #0f172a;
+  --wx-text-inverse: #ffffff;      /* Cố định trắng — chữ trên nút màu (primary, danger, etc.) */
   --wx-text-link: #93c5fd;         /* blue-300, sáng hơn để nổi trên dark */
 
   /* ── Surface — dim sâu hơn cho table/card ───────────── */

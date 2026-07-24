@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
+
+	"video-splitter/internal/exporter"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -38,19 +41,48 @@ type ThumbnailTask struct {
 	Provider       Provider       `json:"provider"`
 	Model          string         `json:"model"`
 	AspectRatio    string         `json:"aspectRatio"`
+	BatchSize      string         `json:"batchSize"`
+	Duration       string         `json:"duration"`
 	Resolution     string         `json:"resolution"`
 	State          QueueTaskState `json:"state"`
 	ErrorMessage   string         `json:"errorMessage"`
 	ResultPath     string         `json:"resultPath"`
-	// Source: nguồn tạo task, dùng để lập lịch luân phiên công bằng giữa 2 nguồn.
+	ResultPaths    []string       `json:"resultPaths"`
+	// Source: nguồn tạo task, dùng để lập lịch luân phiên công bằng giữa các nguồn.
 	// "video-cut" = thumbnail tự sinh từ luồng cắt video; "ai-image" = tạo ảnh AI
-	// độc lập ở trang Tạo Ảnh. Rỗng → coi như "ai-image" (tương thích task cũ).
+	// độc lập ở trang Tạo Ảnh; "ai-video" = tạo video AI ở trang Tạo Video. Rỗng →
+	// coi như "ai-image" (tương thích task cũ).
 	Source string `json:"source"`
+
+	// MediaType: loại nội dung worker sẽ tạo trên Google Flow ("image"/"video").
+	// Rỗng → coi như "image" để tương thích task cũ (thumbnail từ cắt video + tạo ảnh).
+	MediaType MediaType `json:"mediaType"`
+
+	// === Luồng "tạo thumbnail trước → ghép vào đầu clip" (chỉ dùng cho video-cut) ===
+	// PrependToVideo=true: sau khi thumbnail tạo xong (hoặc thất bại → dùng frame
+	// gốc InputImagePath làm fallback), ghép ảnh đó thành đoạn intro tĩnh dài
+	// IntroDuration giây rồi nối vào ĐẦU clip đã cắt (ClipPath) → ghi ra FinalVideoPath.
+	PrependToVideo bool    `json:"prependToVideo"`
+	IntroDuration  float64 `json:"introDuration"`
+	// FinalVideoPath: đường dẫn video kết quả (intro + clip) mà người dùng nhận.
+	// ClipPath lúc này trỏ tới file clip TẠM (đã cắt nhưng chưa ghép intro).
+	FinalVideoPath string `json:"finalVideoPath"`
+	// Thông số encode để ghép intro cho khớp với cấu hình xuất của người dùng.
+	ExportPreset  string `json:"exportPreset"`
+	ExportCRF     int    `json:"exportCRF"`
+	ExportHWAccel string `json:"exportHWAccel"`
+	HWAccel      string `json:"hwAccel"`
+
+	// Hidden=true: task bị "ẩn" khỏi thống kê/hiển thị (đã kết thúc và bị dọn khi
+	// nguồn cùng loại enqueue job mới, hoặc bị Dừng theo nguồn). KHÔNG xóa phần tử
+	// khỏi slice qm.tasks để idx mà worker đang giữ không bị lệch — chỉ đánh dấu ẩn.
+	Hidden bool `json:"hidden"`
 }
 
 const (
 	SourceVideoCut = "video-cut"
 	SourceAIImage  = "ai-image"
+	SourceAIVideo  = "ai-video"
 )
 
 type QueueStatus struct {
@@ -75,6 +107,10 @@ type AIQueueManager struct {
 	spawnMu     sync.Mutex     // serialize việc mở browser + sinh thêm worker
 	service     *Service
 	concurrency int // số worker (tab) chạy song song, kẹp trong [1, MaxBrowserConcurrency]
+	// taskCancels: hàm hủy per-task theo task ID, để dừng ĐÚNG task đang chạy của
+	// MỘT nguồn (video-cut / ai-image) mà không đụng task nguồn kia. Worker đăng ký
+	// khi bắt đầu task và gỡ khi xong.
+	taskCancels map[string]context.CancelFunc
 }
 
 func NewAIQueueManager(service *Service) *AIQueueManager {
@@ -82,6 +118,7 @@ func NewAIQueueManager(service *Service) *AIQueueManager {
 		tasks:       make([]ThumbnailTask, 0),
 		service:     service,
 		concurrency: DefaultBrowserConcurrency,
+		taskCancels: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -108,6 +145,14 @@ func (qm *AIQueueManager) SetConcurrency(n int) {
 
 func (qm *AIQueueManager) Enqueue(tasks []ThumbnailTask) {
 	qm.mu.Lock()
+	// Tự dọn job CŨ đã kết thúc trước khi nạp job mới: nếu hàng đợi KHÔNG còn
+	// chạy (mọi task trước đã completed/failed/cancelled) thì các task cũ chỉ là
+	// "rác lịch sử" — xóa sạch để lần xuất mới đếm lại từ 0, tránh cộng dồn lỗi
+	// của lần trước. Nếu đang chạy (runCtx != nil) thì GỘP thêm để "vừa xuất vừa
+	// gửi" — worker đang sống sẽ tự nhặt task mới.
+	if qm.runCtx == nil {
+		qm.tasks = qm.tasks[:0]
+	}
 	for _, t := range tasks {
 		if t.State == "" {
 			t.State = QueueStatePending
@@ -135,8 +180,9 @@ func (qm *AIQueueManager) topUpWorkers() {
 	qm.spawnMu.Lock()
 	defer qm.spawnMu.Unlock()
 
-	if !qm.service.session.IsOpen() {
-		if err := qm.service.OpenGoogleAI(string(ProviderFlow), true); err != nil {
+	cfg := LoadGlobalSettingsConfig()
+	if !qm.service.session.IsOpen() || qm.service.session.IsHeadless() != !cfg.BrowserAIShowChrome {
+		if err := qm.service.OpenGoogleAI(string(ProviderFlow), cfg.BrowserAIShowChrome); err != nil {
 			qm.mu.Lock()
 			for i := range qm.tasks {
 				if qm.tasks[i].State == QueueStatePending || qm.tasks[i].State == QueueStateProcessing {
@@ -193,9 +239,37 @@ func (qm *AIQueueManager) Cancel() {
 	// chúng nil nhầm run-state mới.
 	qm.runCtx = nil
 	qm.cancel = nil
+	// Người dùng bấm Dừng → XÓA SẠCH task luôn (theo yêu cầu), không giữ lại task
+	// Cancelled lơ lửng để lần xuất/tạo sau bắt đầu hàng đợi trống hoàn toàn.
+	qm.tasks = make([]ThumbnailTask, 0)
+	qm.mu.Unlock()
+	qm.emitProgress()
+}
+
+// CancelSource dừng và ẩn CHỈ các task của một nguồn (video-cut / ai-image), giữ
+// nguyên nguồn kia. Dùng cho nút Dừng của mỗi trang: bấm Dừng ở trang Tạo Ảnh AI
+// không được giết luồng thumbnail đang chạy từ cắt video, và ngược lại.
+//
+// KHÔNG cancel runCtx (đó là ctx chung của mọi worker) — chỉ cancel per-task đang
+// chạy của nguồn này qua taskCancels, và đánh Hidden+Cancelled cho task pending của
+// nguồn này để claimNextTask bỏ qua và GetStatus không còn đếm. Worker vẫn sống,
+// tự claim task nguồn kia; nếu hết sạch task thì tự thoát qua retireWorker.
+func (qm *AIQueueManager) CancelSource(source string) {
+	qm.mu.Lock()
 	for i := range qm.tasks {
+		if qm.tasks[i].Source != source {
+			continue
+		}
+		// Task đang chạy của nguồn này → hủy ctx của đúng task đó để nó dừng ngay.
+		if qm.tasks[i].State == QueueStateProcessing {
+			if c, ok := qm.taskCancels[qm.tasks[i].ID]; ok && c != nil {
+				c()
+			}
+		}
+		// Ẩn khỏi hàng đợi (pending lẫn processing) để không claim lại/không đếm nữa.
 		if qm.tasks[i].State == QueueStatePending || qm.tasks[i].State == QueueStateProcessing {
 			qm.tasks[i].State = QueueStateCancelled
+			qm.tasks[i].Hidden = true
 		}
 	}
 	qm.mu.Unlock()
@@ -219,23 +293,29 @@ func (qm *AIQueueManager) GetStatus() QueueStatus {
 	qm.mu.Lock()
 	defer qm.mu.Unlock()
 
-	total := len(qm.tasks)
+	// Bỏ qua task Hidden (đã bị CancelSource ẩn đi) khỏi cả số đếm lẫn mảng Tasks.
+	// Frontend mỗi trang sẽ TỰ lọc Tasks theo Source của mình rồi tự tính số đếm —
+	// nên backend chỉ cần loại rác Hidden ra, không cần tách theo nguồn ở đây.
+	total := 0
 	completed := 0
 	failed := 0
 	current := 0
 
-	for i, t := range qm.tasks {
+	tasksCopy := make([]ThumbnailTask, 0, len(qm.tasks))
+	for _, t := range qm.tasks {
+		if t.Hidden {
+			continue
+		}
+		tasksCopy = append(tasksCopy, t)
+		total++
 		if t.State == QueueStateCompleted {
 			completed++
 		} else if t.State == QueueStateFailed {
 			failed++
 		} else if t.State == QueueStateProcessing {
-			current = i + 1
+			current++ // Đếm TẤT CẢ task đang xử lý (nhiều worker song song)
 		}
 	}
-
-	tasksCopy := make([]ThumbnailTask, len(qm.tasks))
-	copy(tasksCopy, qm.tasks)
 
 	return QueueStatus{
 		Total:     total,
@@ -272,7 +352,7 @@ func (qm *AIQueueManager) claimNextTask() (ThumbnailTask, int) {
 	firstPending := -1
 	altPending := -1 // task pending đầu tiên có nguồn KHÁC lastSource
 	for i := range qm.tasks {
-		if qm.tasks[i].State != QueueStatePending {
+		if qm.tasks[i].State != QueueStatePending || qm.tasks[i].Hidden {
 			continue
 		}
 		if firstPending == -1 {
@@ -319,28 +399,41 @@ func (qm *AIQueueManager) retireWorker(ctx context.Context, workerID int) {
 	// Worker cuối cùng thoát → dọn run-state để lần Enqueue sau khởi động lại sạch.
 	// Guard qm.runCtx == ctx: nếu Cancel/Clear đã tạo (hoặc xóa) một run mới thì
 	// worker cũ này KHÔNG được nil nhầm run-state mới.
+	//
+	// CỐ Ý GIỮ TRÌNH DUYỆT SỐNG (không Close session) khi hết worker: mỗi worker đã
+	// tự đóng cửa sổ riêng của nó, chỉ còn lại tab gốc (trang Flow mở kèm lúc
+	// OpenGoogleAI). Tab gốc này chính là "keep-alive" giữ browser sống để lần chạy
+	// kế tiếp topUpWorkers thấy IsOpen()==true nên KHÔNG phải khởi động lại Chrome +
+	// nạp lại profile/đăng nhập (rất chậm). Đổi lại chỉ tốn 1 tab nền im lặng.
 	if qm.activeWorkers == 0 && qm.runCtx == ctx {
 		qm.isRunning = false
 		qm.runCtx = nil
 		qm.cancel = nil
+		// Dọn Hidden tasks đã tích lũy: loại bỏ khỏi slice để tránh claimNextTask
+		// duyệt qua list ngày càng dài. Chỉ dọn khi mọi worker đã thoát an toàn.
+		clean := make([]ThumbnailTask, 0, len(qm.tasks))
+		for _, t := range qm.tasks {
+			if !t.Hidden {
+				clean = append(clean, t)
+			}
+		}
+		qm.tasks = clean
 	}
 	qm.mu.Unlock()
 	qm.emitProgress()
 }
 
-// worker mở một tab riêng và xử lý các task cho tới khi hết hoặc ctx bị hủy.
+// worker cấp tab (tận dụng tab gốc nếu workerID == 0) và xử lý các task cho tới khi hết hoặc ctx bị hủy.
 func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 	flowURL := "https://labs.google/fx/vi/tools/flow"
-	page, err := qm.service.session.NewPage(flowURL)
+	page, isRoot, err := qm.service.session.AcquirePageForWorker(workerID, flowURL)
 	if err != nil {
-		flowLogf("Worker #%d: không mở được tab mới: %v", workerID, err)
+		flowLogf("Worker #%d: không mở được tab: %v", workerID, err)
 		qm.retireWorker(ctx, workerID)
 		return
 	}
 	defer func() {
-		if page != nil {
-			_ = page.Close()
-		}
+		qm.service.session.ReleaseWorkerPage(page, isRoot)
 		qm.retireWorker(ctx, workerID)
 	}()
 
@@ -362,14 +455,37 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 		if provider == "" {
 			provider = ProviderFlow
 		}
+		// Loại nội dung: rỗng → coi như ảnh (tương thích task cũ từ cắt video/tạo ảnh).
+		mt := task.MediaType
+		if mt == "" {
+			mt = MediaTypeImage
+		}
 		model := task.Model
 		if model == "" {
-			model = "Nano Banana 2"
+			// Model mặc định theo loại: video dùng Veo, ảnh dùng Nano Banana.
+			if mt == MediaTypeVideo {
+				model = "Veo 3.1 - Lite [Lower Priority]"
+			} else {
+				model = "Nano Banana 2"
+			}
 		}
 		resolution := task.Resolution
 		if resolution == "" {
 			resolution = "1K"
 		}
+		batchSize := task.BatchSize
+		if batchSize == "" {
+			batchSize = "1x"
+		}
+		// Timeout mỗi task theo loại: video render lâu hơn ảnh nhiều.
+		taskTimeout := ImageGenerateTimeout
+		taskTimeoutSec := 180
+		if mt == MediaTypeVideo {
+			taskTimeout = VideoGenerateTimeout
+			taskTimeoutSec = int(VideoGenerateTimeout / time.Second)
+		}
+
+		cfg := LoadGlobalSettingsConfig()
 
 		// Ưu tiên danh sách nhiều ảnh (tối đa 3/prompt); fallback về ảnh đơn cũ.
 		inputImgPaths := []string{}
@@ -397,24 +513,33 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 
 		genReq := GenerateRequest{
 			Provider:            provider,
-			MediaType:           MediaTypeImage,
+			MediaType:           mt,
 			Prompt:              task.Prompt,
 			Model:               model,
 			AspectRatio:         task.AspectRatio,
-			BatchSize:           "1x",
+			BatchSize:           batchSize,
+			Duration:            task.Duration,
 			ConfirmBeforeCreate: "auto",
 			OutputDir:           task.OutputDir,
 			FileName:            task.FileName,
 			InputImagePath:      firstInputPath,
 			InputImagePaths:     inputImgPaths,
 			Resolution:          resolution,
-			TimeoutSecond:       180,
-			ShowChrome:          true,
+			TimeoutSecond:       taskTimeoutSec,
+			ShowChrome:          cfg.BrowserAIShowChrome,
 			LogPrefix:           fmt.Sprintf("[W%d %s] ", workerID+1, task.ClipName),
 		}
 
 		// emitLog phát 1 dòng log NGẮN GỌN ra card log ở giao diện (kèm nhãn W# + clip).
 		// level: "info" | "success" | "error" để frontend tô màu.
+		taskSource := task.Source
+		if taskSource == "" {
+			if task.MediaType == MediaTypeVideo {
+				taskSource = SourceAIVideo
+			} else {
+				taskSource = SourceAIImage
+			}
+		}
 		emitLog := func(level, step string) {
 			if qm.ctx != nil {
 				runtime.EventsEmit(qm.ctx, "browser-ai:queue-log", map[string]interface{}{
@@ -422,17 +547,26 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 					"name":   task.ClipName,
 					"level":  level,
 					"step":   step,
+					"source": taskSource,
 				})
 			}
 		}
 		emitLog("info", "Bắt đầu")
 
 		// Mỗi task chạy trong timeout riêng để một task treo không chặn worker mãi.
-		taskCtx, cancel := context.WithTimeout(ctx, ImageGenerateTimeout)
+		taskCtx, cancel := context.WithTimeout(ctx, taskTimeout)
+		// Đăng ký cancel theo task ID để CancelSource dừng đúng task đang chạy của
+		// một nguồn (video-cut / ai-image) mà không đụng nguồn kia.
+		qm.mu.Lock()
+		qm.taskCancels[task.ID] = cancel
+		qm.mu.Unlock()
 		filePaths, genErr := GenerateFlowVideo(taskCtx, qm.service.session, page, nil, genReq, func(step string) {
 			emitLog("info", step)
 		})
 		cancel()
+		qm.mu.Lock()
+		delete(qm.taskCancels, task.ID)
+		qm.mu.Unlock()
 		if cleanupTemp != nil {
 			cleanupTemp()
 		}
@@ -440,10 +574,69 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 		// TempDir) sau khi đã dùng xong. Chỉ xóa đúng file khớp mẫu này để KHÔNG
 		// đụng ảnh người dùng tự chọn ở trang Tạo Ảnh AI (những task đó không mang
 		// InputImagePath dạng clearframe).
-		if task.InputImagePath != "" &&
+		// HOÃN với task PrependToVideo: nhánh fallback (AI lỗi) cần chính frame gốc
+		// này làm ảnh intro, nên chỉ xóa SAU khi ghép xong (xử lý trong mergeIntroForTask).
+		if !task.PrependToVideo && task.InputImagePath != "" &&
 			strings.HasPrefix(filepath.Base(task.InputImagePath), "clearframe_") &&
 			strings.Contains(filepath.ToSlash(task.InputImagePath), "/video-splitter/") {
 			_ = os.Remove(task.InputImagePath)
+		}
+
+		// Với task PrependToVideo: AI lỗi KHÔNG phải là hỏng hẳn — ta fallback dùng
+		// chính frame gốc (InputImagePath) làm ảnh intro rồi vẫn ghép vào đầu clip.
+		// Nên xử lý ghép NGOÀI khóa (ffmpeg chạy lâu), rồi mới cập nhật state.
+		if task.PrependToVideo {
+			introImg := ""
+			usedFallback := false
+			if genErr == nil && len(filePaths) > 0 {
+				introImg = filePaths[0]
+			} else {
+				// AI thất bại → dùng frame gốc làm ảnh bìa intro.
+				introImg = task.InputImagePath
+				usedFallback = true
+				emitLog("info", "AI tạo ảnh lỗi → dùng frame gốc làm ảnh bìa")
+			}
+
+			mergeErr := qm.mergeIntroForTask(ctx, task, introImg, func(step string) { emitLog("info", step) })
+
+			// Dọn frame gốc tạm sau khi ghép xong (đã hoãn ở trên cho task này).
+			if task.InputImagePath != "" &&
+				strings.HasPrefix(filepath.Base(task.InputImagePath), "clearframe_") &&
+				strings.Contains(filepath.ToSlash(task.InputImagePath), "/video-splitter/") {
+				_ = os.Remove(task.InputImagePath)
+			}
+			// KHÔNG xóa ảnh thumbnail AI: nó được lưu vào outImageDir (thư mục người
+			// dùng) và chính là ảnh bìa họ muốn giữ song song với video đã ghép intro.
+
+			qm.mu.Lock()
+			if mergeErr != nil {
+				qm.tasks[idx].State = QueueStateFailed
+				qm.tasks[idx].ErrorMessage = mergeErr.Error()
+				failedTask := qm.tasks[idx]
+				flowLogf("[W%d %s] Ghép intro vào clip thất bại: %v", workerID+1, task.ClipName, mergeErr)
+				emitLog("error", "Ghép intro lỗi: "+mergeErr.Error())
+				qm.mu.Unlock()
+				if qm.ctx != nil {
+					runtime.EventsEmit(qm.ctx, "export_log", fmt.Sprintf("⚠ %s: Ghép ảnh bìa vào đầu video thất bại (%v).", task.ClipName, mergeErr))
+					runtime.EventsEmit(qm.ctx, "clip_ai_thumb_failed", failedTask)
+				}
+			} else {
+				qm.tasks[idx].State = QueueStateCompleted
+				qm.tasks[idx].ResultPath = introImg
+				qm.tasks[idx].ResultPaths = []string{introImg, task.FinalVideoPath}
+				completedTask := qm.tasks[idx]
+				qm.mu.Unlock()
+				if usedFallback {
+					emitLog("success", "Đã ghép ảnh bìa (frame gốc) vào đầu video")
+				} else {
+					emitLog("success", "Đã ghép ảnh bìa AI vào đầu video")
+				}
+				if qm.ctx != nil {
+					runtime.EventsEmit(qm.ctx, "clip_ai_thumb_completed", completedTask)
+				}
+			}
+			qm.emitProgress()
+			continue
 		}
 
 		qm.mu.Lock()
@@ -460,11 +653,16 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 			}
 		} else {
 			qm.tasks[idx].State = QueueStateCompleted
+			qm.tasks[idx].ResultPaths = filePaths
 			if len(filePaths) > 0 {
 				qm.tasks[idx].ResultPath = filePaths[0]
 			}
 			completedTask := qm.tasks[idx]
-			emitLog("success", "Đã tạo xong ảnh")
+			if task.MediaType == MediaTypeVideo {
+				emitLog("success", "Đã tạo xong video")
+			} else {
+				emitLog("success", "Đã tạo xong ảnh")
+			}
 			if qm.ctx != nil {
 				runtime.EventsEmit(qm.ctx, "clip_ai_thumb_completed", completedTask)
 			}
@@ -473,4 +671,45 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 
 		qm.emitProgress()
 	}
+}
+
+// mergeIntroForTask dựng đoạn intro từ ảnh (thumbnail AI hoặc frame gốc) rồi ghép
+// vào ĐẦU clip đã cắt (task.ClipPath) → ghi ra task.FinalVideoPath. Clip tạm bị
+// xóa sau khi ghép thành công. Chạy NGOÀI khóa qm.mu vì ffmpeg re-encode chậm.
+func (qm *AIQueueManager) mergeIntroForTask(ctx context.Context, task ThumbnailTask, introImg string, milestone func(string)) error {
+	if introImg == "" {
+		return fmt.Errorf("không có ảnh bìa để ghép intro")
+	}
+	if _, err := os.Stat(introImg); err != nil {
+		return fmt.Errorf("ảnh bìa không tồn tại: %w", err)
+	}
+	if task.ClipPath == "" {
+		return fmt.Errorf("thiếu đường dẫn clip đã cắt để ghép")
+	}
+	if _, err := os.Stat(task.ClipPath); err != nil {
+		return fmt.Errorf("clip đã cắt không tồn tại: %w", err)
+	}
+	if task.FinalVideoPath == "" {
+		return fmt.Errorf("thiếu đường dẫn video kết quả")
+	}
+
+	introDur := task.IntroDuration
+	if introDur <= 0 {
+		introDur = 2.0
+	}
+
+	if milestone != nil {
+		milestone(fmt.Sprintf("Đang ghép ảnh bìa (%.1fs) vào đầu video...", introDur))
+	}
+
+	if err := exporter.PrependThumbnailIntro(ctx, task.ClipPath, introImg, task.FinalVideoPath, introDur, task.ExportPreset, task.ExportCRF, task.ExportHWAccel); err != nil {
+		return err
+	}
+
+	// Ghép xong → xóa clip tạm (chỉ xóa file khớp mẫu clip tạm để tránh xóa nhầm).
+	if strings.Contains(filepath.ToSlash(task.ClipPath), "/video-splitter/") &&
+		strings.Contains(filepath.Base(task.ClipPath), "cliptmp_") {
+		_ = os.Remove(task.ClipPath)
+	}
+	return nil
 }

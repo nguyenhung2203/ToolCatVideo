@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -10,11 +11,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
-	"bufio"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,14 +23,16 @@ import (
 	"sync"
 	"time"
 	"video-splitter/internal/boundary"
+	"video-splitter/internal/browserai"
 	"video-splitter/internal/downloader"
 	"video-splitter/internal/exporter"
 	"video-splitter/internal/imagedownloader"
 	"video-splitter/internal/media"
 	"video-splitter/internal/project"
 	"video-splitter/internal/storage"
+	"video-splitter/internal/subtitle"
+	"video-splitter/internal/sysmonitor"
 	"video-splitter/internal/utils"
-	"video-splitter/internal/browserai"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"google.golang.org/genai"
@@ -86,6 +87,10 @@ func (a *App) startup(ctx context.Context) {
 	a.isDownloadCancelled = false
 	a.imageDownloadCancel = nil
 
+	// Dọn file *.old / *.new còn sót từ lần cập nhật trước (bản mới đã chạy nên
+	// file cũ không còn bị khóa). Chạy nền để không làm chậm khởi động.
+	go cleanupOldUpdateFiles()
+
 	// Mở kho lưu trữ SQLite (lưu project/clip/config để mở lại không mất việc).
 	// Lỗi mở db không nên chặn app khởi động — chỉ mất tính năng lưu.
 	if store, err := storage.Open(storage.DefaultDBPath()); err == nil {
@@ -115,7 +120,20 @@ func (a *App) startup(ctx context.Context) {
 				}
 				filePath := r.URL.Query().Get("path")
 				if filePath != "" {
-					http.ServeFile(w, r, filePath)
+					f, err := os.Open(filePath)
+					if err != nil {
+						http.Error(w, "file not found", http.StatusNotFound)
+						return
+					}
+					defer f.Close()
+
+					stat, err := f.Stat()
+					if err != nil || stat.IsDir() {
+						http.Error(w, "invalid file", http.StatusBadRequest)
+						return
+					}
+
+					http.ServeContent(w, r, stat.Name(), stat.ModTime(), f)
 				}
 			})
 			http.Serve(listener, mux)
@@ -227,7 +245,7 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 
 	// Thư mục tạm riêng theo từng video (hash đường dẫn).
 	key := hashPath(sourcePath)
-	workDir := filepath.Join(os.TempDir(), "video-splitter", key)
+	workDir := filepath.Join(os.TempDir(), "TrafficTool", key)
 	_ = os.MkdirAll(workDir, 0755)
 	proxyPath := filepath.Join(workDir, "proxy.mp4")
 	audioPath := filepath.Join(workDir, "audio.wav")
@@ -252,13 +270,28 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 	// fast mode: KHÔNG tạo proxy — chạy thẳng trên video gốc để tiết kiệm thời gian
 	// smart/precise: tạo proxy 320×180 4fps để phân tích nhanh hơn nhiều
 	needProxy := cfg.Mode != project.ModeFast
-	needAudio := cfg.Mode == project.ModePrecise // WAV chỉ cần cho Librosa (precise mode)
 
-	// Lấy thời lượng video gốc để tính tiến độ thời gian thực cho Bước 1
+	// smart dùng proxy theo cấu hình (mặc định 4 FPS); precise dùng tối thiểu 6 FPS
+	// để không bỏ qua các chuyển cảnh ngắn nằm giữa hai frame proxy.
+	proxyFPS := cfg.ProxyFPS
+	if proxyFPS <= 0 {
+		proxyFPS = 4
+	}
+	if cfg.Mode == project.ModePrecise && proxyFPS < 6 {
+		proxyFPS = 6
+	}
+
+	// Lấy thông tin video gốc (thời lượng + có audio hay không) cho Bước 1
 	var totalDuration float64
+	hasAudio := true
 	if vi, err := media.GetVideoInfo(sourcePath); err == nil && vi != nil {
 		totalDuration = vi.Duration
+		hasAudio = vi.HasAudio
 	}
+
+	// WAV cần cho smart (audio novelty + speech continuity) và precise (Librosa MFCC).
+	// Bỏ qua nếu video không có audio để tránh tạo WAV rỗng.
+	needAudio := cfg.Mode != project.ModeFast && hasAudio
 
 	var errProxy, errAudio error
 	if needProxy || needAudio {
@@ -269,9 +302,9 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 			gpuLabel = strings.ToUpper(gpuLabel)
 		}
 		if needProxy && needAudio {
-			runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 1/3: Đang tối ưu hóa video bằng %s (tạo proxy 320×180 4fps & trích xuất âm thanh song song)...", gpuLabel))
+			runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 1/3: Đang tối ưu hóa video bằng %s (tạo proxy 320×180 %dfps & trích xuất âm thanh song song)...", gpuLabel, proxyFPS))
 		} else if needProxy {
-			runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 1/3: Đang tối ưu hóa video bằng %s (tạo proxy 320×180 4fps)...", gpuLabel))
+			runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 1/3: Đang tối ưu hóa video bằng %s (tạo proxy 320×180 %dfps)...", gpuLabel, proxyFPS))
 		} else {
 			runtime.EventsEmit(a.ctx, "analyze_log", "Bước 1/3: Đang trích xuất âm thanh...")
 		}
@@ -283,9 +316,9 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				proxyFPS := strconv.Itoa(cfg.ProxyFPS)
+				proxyFPSArg := strconv.Itoa(proxyFPS)
 				// Truyền callback tiến độ: map % proxy (0-100) vào khoảng (1-14) trên thanh tổng
-				errProxy = media.GenerateProxy(ctx, sourcePath, proxyPath, proxyFPS, cfg.HardwareAccel, totalDuration, func(pct int) {
+				errProxy = media.GenerateProxy(ctx, sourcePath, proxyPath, proxyFPSArg, cfg.HardwareAccel, totalDuration, func(pct int) {
 					realProg := 1 + (pct * 13 / 100) // 1% → 14%
 					runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": realProg})
 				})
@@ -313,11 +346,10 @@ func (a *App) Analyze(sourcePath string, cfg project.AnalyzerConfig) ([]project.
 		runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": 15})
 	}
 
-
 	// 2. Chạy Python worker trên proxy (240p) và audio WAV (nếu có)
 	runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 2/3: Đang phân tích chuyển cảnh (scene=%.1f, minClip=%.0fs, maxClip=%.0fs)...", cfg.SceneThreshold, cfg.MinClipDuration, cfg.MaxClipDuration))
 	runtime.EventsEmit(a.ctx, "analyze_progress", map[string]interface{}{"path": sourcePath, "progress": 15})
-	
+
 	passedProxyPath := ""
 	if needProxy {
 		passedProxyPath = proxyPath
@@ -561,7 +593,7 @@ func (a *App) CancelAnalysis() {
 // đường dẫn ảnh. Dùng khi frontend chia/sửa clip và cần ảnh xem trước mới.
 // Ảnh lưu trong workDir theo video (giữ lại để UI hiển thị).
 func (a *App) GenerateThumbnail(sourcePath string, timeSec float64) (string, error) {
-	workDir := filepath.Join(os.TempDir(), "video-splitter", hashPath(sourcePath), "thumbnails")
+	workDir := filepath.Join(os.TempDir(), "TrafficTool", hashPath(sourcePath), "thumbnails")
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return "", err
 	}
@@ -631,15 +663,24 @@ func sanitizeFilename(s string) string {
 
 // ExportClips xuất nhiều clip song song sử dụng ffmpeg.
 // Tên video đầu ra được đặt theo định dạng: [Tên dự án]_[Tên video gốc]_[Số thứ tự clip].mp4
-func (a *App) ExportClips(projectName string, sourcePath string, clips []project.Clip, outDir string, outImageDir string, cfg project.AnalyzerConfig, jobs int) ([]ExportResult, error) {
+func (a *App) ExportClips(projectName string, sourcePath string, clips []project.Clip, outDir string, outImageDir string, cfg project.AnalyzerConfig, jobs int, introDuration float64) ([]ExportResult, error) {
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return nil, fmt.Errorf("không tạo được thư mục xuất: %v", err)
 	}
 	if jobs <= 0 {
 		jobs = 2
 	}
-	if jobs > 8 {
-		jobs = 8
+	if jobs > 32 {
+		jobs = 32
+	}
+
+	// prependMode: khi bật "Xuất kèm Thumbnail" (outImageDir != ""), đảo luồng — cắt
+	// clip ra file TẠM rồi enqueue task tạo thumbnail; worker sau khi tạo xong (hoặc
+	// fallback frame gốc nếu AI lỗi) sẽ ghép ảnh thành intro dài introDuration giây
+	// vào ĐẦU clip → ghi ra đích cuối. introDuration<=0 → mặc định 2s.
+	prependMode := outImageDir != ""
+	if introDuration <= 0 {
+		introDuration = 2.0
 	}
 
 	// Phân giải GPU tự động khi xuất
@@ -700,20 +741,42 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 				}
 			}
 			outPath := filepath.Join(outDir, outName)
+			// Tránh tuyệt đối việc trùng tên hoặc đè file đã có sẵn trong thư mục xuất
+			ext := filepath.Ext(outName)
+			baseNameWithoutExt := strings.TrimSuffix(outName, ext)
+			counter := 1
+			for {
+				if _, err := os.Stat(outPath); os.IsNotExist(err) {
+					break
+				}
+				outName = fmt.Sprintf("%s_%d%s", baseNameWithoutExt, counter, ext)
+				outPath = filepath.Join(outDir, outName)
+				counter++
+			}
 			res := ExportResult{ClipID: clip.ID, Index: clip.Index, OutPath: outPath}
 			threads := 0
 			if jobs > 1 {
 				threads = 2 // Giới hạn 2 threads mỗi clip để chạy song song mượt mà
 			}
+
+			// prependMode: cắt clip ra file TẠM (cliptmp_*) trong TempDir. Video đích
+			// cuối (outPath) sẽ do worker ghi ra sau khi ghép intro vào đầu clip tạm.
+			// Chế độ thường: cắt thẳng ra outPath như cũ.
+			cutTarget := outPath
+			if prependMode {
+				_ = os.MkdirAll(filepath.Join(os.TempDir(), "TrafficTool"), 0755)
+				cutTarget = filepath.Join(os.TempDir(), "TrafficTool", fmt.Sprintf("cliptmp_%s_%d.mp4", clip.ID, clip.Index))
+			}
+
 			runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Đang cắt video...", filepath.Base(sourcePath), clip.Index))
-			err := exporter.CutVideo(clipCtx, sourcePath, clip, outPath, cfg.ExportPreset, cfg.ExportCRF, threads, cfg.HardwareAccel, cfg.Mode)
+			err := exporter.CutVideo(clipCtx, sourcePath, clip, cutTarget, cfg.ExportPreset, cfg.ExportCRF, threads, cfg.HardwareAccel, cfg.Mode)
 			if err != nil {
 				if clipCtx.Err() != nil {
 					res.Error = "Tiến trình bị dừng"
 				} else {
 					res.Error = err.Error()
 				}
-			} else if dur, verr := exporter.VerifyOutput(outPath, clip.EndTime-clip.StartTime, 0.5); verr != nil {
+			} else if dur, verr := exporter.VerifyOutput(cutTarget, clip.EndTime-clip.StartTime, 0.5); verr != nil {
 				if dur <= 0 {
 					if clipCtx.Err() != nil {
 						res.Error = "Tiến trình bị dừng"
@@ -730,29 +793,49 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 				res.Duration = dur
 			}
 
-			// Copy hoặc tự sinh thumbnail sang outImageDir nếu có cấu hình và video xuất thành công
+			// prependMode (outImageDir != ""): đảo luồng — clip đã cắt ra file TẠM
+			// (cutTarget), giờ dựng ảnh bìa thành intro rồi ghép vào ĐẦU clip tạm để
+			// tạo ra video đích cuối (outPath). Ảnh bìa lấy từ: ảnh _ai chỉnh tay sẵn
+			// → ghép thẳng; hoặc trích frame gốc rồi enqueue task AI (worker tạo
+			// thumbnail rồi ghép, lỗi thì fallback dùng frame gốc). Nếu không có ảnh
+			// nào → chuyển clip tạm ra đích (video vẫn xuất, chỉ thiếu intro).
 			if res.OK && outImageDir != "" {
 				destThumbName := fmt.Sprintf("%s_%s_%d.jpg", cleanProjName, cleanVideoName, clip.Index)
-				destThumbPath := filepath.Join(outImageDir, destThumbName)
 				_ = os.MkdirAll(outImageDir, 0755)
 
-				// Nếu clip đã có sẵn ảnh bìa AI chỉnh tay (có chữ _ai trong tên file), chỉ cần copy sang
+				// moveTmpToFinal: khi không ghép được intro, đưa clip tạm ra đích cuối
+				// (copy+remove để an toàn khi TempDir và outDir khác ổ đĩa).
+				moveTmpToFinal := func() {
+					if cutTarget != outPath {
+						if err := copyFile(cutTarget, outPath); err == nil {
+							_ = os.Remove(cutTarget)
+						}
+					}
+				}
+
 				if clip.Thumbnail != "" && strings.Contains(clip.Thumbnail, "_ai") {
+					// Đã có ảnh bìa AI chỉnh tay sẵn → ghép thẳng vào đầu clip (không cần
+					// hàng đợi AI). Vẫn lưu 1 bản ảnh bìa vào thư mục image.
+					destThumbPath := filepath.Join(outImageDir, destThumbName)
 					if _, errStat := os.Stat(clip.Thumbnail); errStat == nil {
 						_ = copyFile(clip.Thumbnail, destThumbPath)
+						errMerge := exporter.PrependThumbnailIntro(clipCtx, cutTarget, clip.Thumbnail, outPath, introDuration, cfg.ExportPreset, cfg.ExportCRF, cfg.HardwareAccel)
+						if errMerge != nil {
+							moveTmpToFinal()
+							res.Error = "cảnh báo: ghép ảnh bìa vào đầu video lỗi: " + errMerge.Error()
+						} else {
+							_ = os.Remove(cutTarget)
+						}
+					} else {
+						moveTmpToFinal()
 					}
 				} else {
-					// Trích xuất 1 khung hình rõ nét (tự động lọc bỏ khung hình bị đen/tối)
+					// Trích 1 khung hình rõ nét từ VIDEO GỐC (lấy được trước cả khi cắt xong).
 					clipDuration := clip.EndTime - clip.StartTime
-					clearFramePath := filepath.Join(os.TempDir(), "video-splitter", fmt.Sprintf("clearframe_%s_%d.jpg", clip.ID, clip.Index))
-					extractedFrame, errFrame := media.ExtractClearFrame(clipCtx, sourcePath, clipDuration, clearFramePath)
+					clearFramePath := filepath.Join(os.TempDir(), "TrafficTool", fmt.Sprintf("clearframe_%s_%d.jpg", clip.ID, clip.Index))
+					extractedFrame, errFrame := media.ExtractClearFrame(clipCtx, sourcePath, clip.StartTime, clipDuration, clearFramePath)
 
 					if errFrame == nil && extractedFrame != "" {
-						// KHÔNG copy frame gốc vào thư mục image nữa (theo yêu cầu: chỉ giữ
-						// ảnh AI, không lẫn frame chưa có chữ). Đánh đổi: nếu AI tạo lỗi thì
-						// clip này KHÔNG có thumbnail nào trong thư mục — worker sẽ phát cảnh
-						// báo qua export_log để người dùng biết clip nào cần tạo lại.
-
 						theme := cfg.Prompt
 						if theme == "" {
 							theme = "Tạo ảnh thumbnail đẹp, ấn tượng và thu hút cho video ngắn"
@@ -774,7 +857,7 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 						task := browserai.ThumbnailTask{
 							ID:             fmt.Sprintf("task_thumb_%s_%d", clip.ID, clip.Index),
 							ClipName:       fmt.Sprintf("Clip #%d (%s)", clip.Index, cleanVideoName),
-							ClipPath:       outPath,
+							ClipPath:       cutTarget, // clip đã cắt (file tạm) để ghép intro
 							OutputDir:      outImageDir,
 							FileName:       strings.TrimSuffix(destThumbName, ".jpg"),
 							Prompt:         theme,
@@ -783,6 +866,14 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 							Model:          "Nano Banana 2",
 							AspectRatio:    aspectRatio,
 							Source:         "video-cut",
+							// Đảo luồng: worker sẽ ghép ảnh (AI hoặc fallback frame gốc)
+							// thành intro rồi nối vào đầu clip tạm → ghi ra outPath.
+							PrependToVideo: true,
+							IntroDuration:  introDuration,
+							FinalVideoPath: outPath,
+							ExportPreset:   cfg.ExportPreset,
+							ExportCRF:      cfg.ExportCRF,
+							ExportHWAccel:  cfg.HardwareAccel,
 						}
 
 						// Nạp task vào Hàng Đợi AI NGAY khi clip này cắt xong (vừa xuất
@@ -793,11 +884,14 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 							mu.Lock()
 							enqueuedCount++
 							mu.Unlock()
+						} else {
+							// Không có service AI → không ghép được, đưa clip tạm ra đích.
+							moveTmpToFinal()
 						}
-					} else if clip.Thumbnail != "" {
-						if _, errStat := os.Stat(clip.Thumbnail); errStat == nil {
-							_ = copyFile(clip.Thumbnail, destThumbPath)
-						}
+					} else {
+						// Trích frame lỗi → không có ảnh bìa để ghép. Video vẫn xuất (chỉ
+						// thiếu intro): đưa clip tạm ra đích cuối.
+						moveTmpToFinal()
 					}
 				}
 			}
@@ -854,7 +948,7 @@ func (a *App) MergeClips(sourcePath string, clips []project.Clip, outPath string
 		return "", fmt.Errorf("không tạo được thư mục xuất: %v", err)
 	}
 
-	tmpDir := filepath.Join(os.TempDir(), "video-splitter", hashPath(sourcePath), "merge")
+	tmpDir := filepath.Join(os.TempDir(), "TrafficTool", hashPath(sourcePath), "merge")
 	_ = os.MkdirAll(tmpDir, 0755)
 	defer os.RemoveAll(tmpDir)
 
@@ -919,6 +1013,427 @@ func (a *App) SelectAudioFile() (string, error) {
 	})
 }
 
+// SelectSubtitleFile mở hộp thoại chọn file phụ đề .srt/.ass để burn vào video.
+func (a *App) SelectSubtitleFile() (string, error) {
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Chọn file phụ đề (.srt / .ass)",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Phụ đề (*.srt;*.ass)", Pattern: "*.srt;*.ass"},
+		},
+	})
+}
+
+// === PHỤ ĐỀ TỰ ĐỘNG (Whisper nghe + Gemini dịch) ===
+
+// SubtitleGenConfig gom tham số tạo phụ đề tự động cho một hoặc nhiều clip.
+type SubtitleGenConfig struct {
+	Timing     string `json:"timing"`     // "whole" (nghe cả video 1 lần) / "per-clip" (nghe từng clip)
+	SourceLang string `json:"sourceLang"` // "auto" hoặc mã ISO ("vi","en"...) — ngôn ngữ nghe
+	TargetLang string `json:"targetLang"` // "" = giữ gốc; khác gốc → dịch bằng Gemini
+	Model      string `json:"model"`      // whisper model: base/small/medium/large-v3
+	APIKey     string `json:"apiKey"`     // Gemini API key (chỉ cần khi dịch)
+	FontSize   int    `json:"fontSize"`   // style burn (0 = mặc định 24)
+	MarginV    int    `json:"marginV"`    // lề dưới px (0 = mặc định 40)
+	FontColor  string `json:"fontColor"`  // "" = trắng
+	OutlineCol string `json:"outlineCol"` // "" = đen
+}
+
+// whisperModelDir trả về nơi cache model Whisper (tải tự động lần đầu).
+func whisperModelDir() string {
+	dir, err := os.UserConfigDir()
+	if err != nil || dir == "" {
+		dir = os.TempDir()
+	}
+	d := filepath.Join(dir, "TrafficTool", "whisper")
+	_ = os.MkdirAll(d, 0755)
+	return d
+}
+
+// subtitleWorkDir trả về thư mục ghi file .srt cho một video nguồn.
+func subtitleWorkDir(sourcePath string) string {
+	d := filepath.Join(os.TempDir(), "TrafficTool", hashPath(sourcePath), "subtitles")
+	_ = os.MkdirAll(d, 0755)
+	return d
+}
+
+// applySubtitleStyle set các field style burn từ config vào clip.Edit.Subtitle.
+func applySubtitleStyle(clip *project.Clip, srtPath string, cfg SubtitleGenConfig) {
+	clip.Edit.Subtitle.Enabled = true
+	clip.Edit.Subtitle.Path = srtPath
+	if cfg.FontSize > 0 {
+		clip.Edit.Subtitle.FontSize = cfg.FontSize
+	} else if clip.Edit.Subtitle.FontSize <= 0 {
+		clip.Edit.Subtitle.FontSize = 24
+	}
+	if cfg.MarginV > 0 {
+		clip.Edit.Subtitle.MarginV = cfg.MarginV
+	} else if clip.Edit.Subtitle.MarginV <= 0 {
+		clip.Edit.Subtitle.MarginV = 40
+	}
+	clip.Edit.Subtitle.FontColor = cfg.FontColor
+	clip.Edit.Subtitle.OutlineCol = cfg.OutlineCol
+}
+
+// genSubtitleForClip tạo phụ đề cho một clip từ danh sách segment đã có sẵn (chế độ
+// "whole" — nghe cả video) hoặc bằng cách nghe riêng đoạn clip (chế độ "per-clip").
+// wholeSegments != nil nghĩa là chế độ whole (cắt từ đó ra); ngược lại nghe riêng.
+func (a *App) genSubtitleForClip(ctx context.Context, sourcePath string, clip *project.Clip,
+	cfg SubtitleGenConfig, wholeSegments []subtitle.Segment, onProgress subtitle.ProgressFn) error {
+
+	var segs []subtitle.Segment
+	if wholeSegments != nil {
+		segs = subtitle.SliceForClip(wholeSegments, clip.StartTime, clip.EndTime)
+	} else {
+		s, _, err := subtitle.Transcribe(ctx, sourcePath, cfg.SourceLang, cfg.Model,
+			whisperModelDir(), clip.StartTime, clip.EndTime, onProgress)
+		if err != nil {
+			return err
+		}
+		segs = s
+	}
+
+	if len(segs) == 0 {
+		return nil // clip không có tiếng nói → bỏ qua, không bật phụ đề
+	}
+
+	// Dịch nếu cần.
+	if cfg.TargetLang != "" {
+		translated, err := a.translateSegments(segs, cfg.TargetLang, cfg.APIKey)
+		if err != nil {
+			return fmt.Errorf("lỗi dịch phụ đề: %v", err)
+		}
+		segs = translated
+	}
+
+	srtContent := subtitle.ToSRT(segs, 0)
+	if strings.TrimSpace(srtContent) == "" {
+		return nil
+	}
+	srtPath, err := subtitle.WriteSRTFile(subtitleWorkDir(sourcePath), clip.ID, srtContent)
+	if err != nil {
+		return err
+	}
+	applySubtitleStyle(clip, srtPath, cfg)
+	return nil
+}
+
+// TranscribeClips tạo phụ đề tự động cho nhiều clip (luồng hàng loạt). Trả về danh sách
+// clip đã cập nhật (mỗi clip có .srt riêng, đã set Edit.Subtitle để burn khi xuất).
+func (a *App) TranscribeClips(sourcePath string, clips []project.Clip, cfg SubtitleGenConfig) ([]project.Clip, error) {
+	if len(clips) == 0 {
+		return clips, nil
+	}
+	if cfg.Model == "" {
+		cfg.Model = "small"
+	}
+	if cfg.SourceLang == "" {
+		cfg.SourceLang = "auto"
+	}
+	ctx := context.Background()
+
+	emit := func(pct int, msg string) {
+		payload := map[string]interface{}{"path": sourcePath}
+		if pct >= 0 {
+			payload["progress"] = pct
+		}
+		if msg != "" {
+			payload["log"] = msg
+		}
+		runtime.EventsEmit(a.ctx, "subtitle_progress", payload)
+	}
+
+	// Chế độ "whole": nghe cả video 1 lần rồi cắt phụ đề theo từng clip.
+	var wholeSegments []subtitle.Segment
+	if cfg.Timing == "whole" {
+		emit(2, "Đang nghe toàn bộ video (1 lần)...")
+		segs, _, err := subtitle.Transcribe(ctx, sourcePath, cfg.SourceLang, cfg.Model,
+			whisperModelDir(), 0, 0, emit)
+		if err != nil {
+			return nil, err
+		}
+		wholeSegments = segs
+	}
+
+	out := make([]project.Clip, len(clips))
+	copy(out, clips)
+	for i := range out {
+		select {
+		case <-a.ctx.Done():
+			return out, a.ctx.Err()
+		default:
+		}
+		emit(-1, fmt.Sprintf("Tạo phụ đề clip #%d/%d...", i+1, len(out)))
+		if err := a.genSubtitleForClip(ctx, sourcePath, &out[i], cfg, wholeSegments, emit); err != nil {
+			emit(-1, fmt.Sprintf("Clip #%d lỗi: %v", i+1, err))
+			// Không dừng cả loạt vì 1 clip lỗi — tiếp tục các clip còn lại.
+			continue
+		}
+		emit(int((i+1)*100/len(out)), "")
+	}
+	emit(100, fmt.Sprintf("Hoàn tất tạo phụ đề cho %d clip.", len(out)))
+	return out, nil
+}
+
+// TranscribeSingleClip tạo phụ đề cho MỘT clip (luồng trong màn sửa clip).
+func (a *App) TranscribeSingleClip(sourcePath string, clip project.Clip, cfg SubtitleGenConfig) (project.Clip, error) {
+	if cfg.Model == "" {
+		cfg.Model = "small"
+	}
+	if cfg.SourceLang == "" {
+		cfg.SourceLang = "auto"
+	}
+	emit := func(pct int, msg string) {
+		payload := map[string]interface{}{"path": sourcePath, "clipId": clip.ID}
+		if pct >= 0 {
+			payload["progress"] = pct
+		}
+		if msg != "" {
+			payload["log"] = msg
+		}
+		runtime.EventsEmit(a.ctx, "subtitle_progress", payload)
+	}
+	// 1 clip → luôn nghe riêng đoạn clip (không cần chế độ whole).
+	if err := a.genSubtitleForClip(context.Background(), sourcePath, &clip, cfg, nil, emit); err != nil {
+		return clip, err
+	}
+	emit(100, "Xong.")
+	return clip, nil
+}
+
+// AutoGenSubtitlesForClips tạo phụ đề tự động cho các clip khi XUẤT (do kịch bản áp
+// vào với Subtitle.AutoGen=true). Đây là đường tối ưu tốc độ: thay vì nghe Whisper
+// từng clip (mỗi lần spawn worker + NẠP LẠI model ~vài giây), khi các clip cần phụ đề
+// phủ phần lớn video thì nghe CẢ VIDEO 1 LẦN rồi cắt segment theo mốc từng clip
+// (SliceForClip) — bỏ được (N-1) lần nạp model. Ngưỡng coverage 60%: dưới ngưỡng
+// (chỉ vài clip rải rác trong video dài) thì nghe cả video lại phí, nên nghe riêng
+// từng clip như cũ.
+//
+// Mỗi clip GIỮ NGUYÊN cấu hình phụ đề riêng của nó (targetLang dịch, cỡ chữ, lề) đọc
+// từ clip.Edit.Subtitle; model + apiKey lấy từ cfg chung. Trả về danh sách clip đã
+// điền Subtitle.Path. Clip lỗi được bỏ qua (không chặn cả loạt), xuất không phụ đề.
+func (a *App) AutoGenSubtitlesForClips(sourcePath string, clips []project.Clip, cfg SubtitleGenConfig) ([]project.Clip, error) {
+	out := make([]project.Clip, len(clips))
+	copy(out, clips)
+	if cfg.Model == "" {
+		cfg.Model = "small"
+	}
+
+	// Lọc index các clip cần tự nghe: AutoGen bật & chưa có sẵn file .srt.
+	var need []int
+	var needDur float64
+	for i := range out {
+		s := out[i].Edit.Subtitle
+		if s.AutoGen && s.Path == "" {
+			need = append(need, i)
+			needDur += out[i].EndTime - out[i].StartTime
+		}
+	}
+	if len(need) == 0 {
+		return out, nil
+	}
+
+	emit := func(pct int, msg string) {
+		payload := map[string]interface{}{"path": sourcePath}
+		if pct >= 0 {
+			payload["progress"] = pct
+		}
+		if msg != "" {
+			payload["log"] = msg
+		}
+		runtime.EventsEmit(a.ctx, "subtitle_progress", payload)
+	}
+
+	// Quyết định chế độ: nghe cả video 1 lần nếu phần cần phụ đề phủ ≥60% thời lượng.
+	var totalDur float64
+	if vi, err := media.GetVideoInfo(sourcePath); err == nil && vi != nil {
+		totalDur = vi.Duration
+	}
+	useWhole := totalDur > 0 && needDur >= totalDur*0.6
+
+	// perClipCfg dựng cfg riêng cho từng clip từ Edit.Subtitle của nó, kế thừa model
+	// + apiKey từ cfg chung. Thiếu key → không dịch (giữ gốc), tránh lỗi giữa chừng.
+	perClipCfg := func(c *project.Clip) SubtitleGenConfig {
+		s := c.Edit.Subtitle
+		target := s.TargetLang
+		if target != "" && cfg.APIKey == "" {
+			target = ""
+		}
+		src := s.SourceLang
+		if src == "" {
+			src = "auto"
+		}
+		fs := s.FontSize
+		mv := s.MarginV
+		return SubtitleGenConfig{
+			Timing:     "per-clip",
+			SourceLang: src,
+			TargetLang: target,
+			Model:      cfg.Model,
+			APIKey:     cfg.APIKey,
+			FontSize:   fs,
+			MarginV:    mv,
+		}
+	}
+
+	ctx := context.Background()
+
+	var wholeSegments []subtitle.Segment
+	if useWhole {
+		emit(2, fmt.Sprintf("Đang nghe toàn bộ video 1 lần (%d clip cần phụ đề)...", len(need)))
+		// Ngôn ngữ nghe: dùng của clip đầu tiên cần phụ đề (1 video ~ 1 ngôn ngữ nguồn).
+		srcLang := out[need[0]].Edit.Subtitle.SourceLang
+		if srcLang == "" {
+			srcLang = "auto"
+		}
+		segs, _, err := subtitle.Transcribe(ctx, sourcePath, srcLang, cfg.Model,
+			whisperModelDir(), 0, 0, emit)
+		if err != nil {
+			return out, err
+		}
+		wholeSegments = segs
+	}
+
+	for k, i := range need {
+		select {
+		case <-a.ctx.Done():
+			return out, a.ctx.Err()
+		default:
+		}
+		emit(-1, fmt.Sprintf("Tạo phụ đề clip #%d (%d/%d)...", out[i].Index, k+1, len(need)))
+		if err := a.genSubtitleForClip(ctx, sourcePath, &out[i], perClipCfg(&out[i]), wholeSegments, emit); err != nil {
+			emit(-1, fmt.Sprintf("Clip #%d lỗi: %v", out[i].Index, err))
+			continue
+		}
+		emit((k+1)*100/len(need), "")
+	}
+	emit(100, "Hoàn tất tạo phụ đề.")
+	return out, nil
+}
+
+// translateSegments dịch text của các segment sang targetLang bằng Gemini, giữ nguyên
+// start/end. Gộp mọi câu thành 1 request (đánh số dòng) để giữ mapping 1-1; nếu số dòng
+// trả về khác input thì giữ nguyên text gốc (an toàn hơn là dịch lệch dòng).
+func (a *App) translateSegments(segments []subtitle.Segment, targetLang, apiKey string) ([]subtitle.Segment, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("cần Gemini API key để dịch phụ đề")
+	}
+	if len(segments) == 0 {
+		return segments, nil
+	}
+
+	// Đánh số từng câu: "1|||text". Yêu cầu Gemini trả đúng định dạng, đúng số dòng.
+	var sb strings.Builder
+	for i, s := range segments {
+		fmt.Fprintf(&sb, "%d|||%s\n", i+1, strings.ReplaceAll(s.Text, "\n", " "))
+	}
+
+	langNames := map[string]string{
+		"vi": "tiếng Việt", "en": "tiếng Anh", "zh": "tiếng Trung", "ja": "tiếng Nhật",
+		"ko": "tiếng Hàn", "th": "tiếng Thái", "es": "tiếng Tây Ban Nha", "fr": "tiếng Pháp",
+	}
+	langLabel := langNames[targetLang]
+	if langLabel == "" {
+		langLabel = targetLang
+	}
+
+	prompt := fmt.Sprintf(
+		"Dịch các câu phụ đề sau sang %s. Mỗi dòng có định dạng SỐ|||NỘI DUNG.\n"+
+			"Yêu cầu BẮT BUỘC:\n"+
+			"- Giữ NGUYÊN số dòng và số thứ tự đầu dòng, đúng định dạng SỐ|||BẢN DỊCH.\n"+
+			"- KHÔNG gộp, KHÔNG tách, KHÔNG thêm bớt dòng.\n"+
+			"- Chỉ trả về các dòng đã dịch, không giải thích.\n\n%s",
+		langLabel, sb.String())
+
+	geminiPayload := map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{"parts": []map[string]interface{}{{"text": prompt}}},
+		},
+	}
+	payloadBytes, err := json.Marshal(geminiPayload)
+	if err != nil {
+		return nil, err
+	}
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	modelsToTry := []string{"gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"}
+	var respText string
+	var lastErr error
+	for _, modelName := range modelsToTry {
+		geminiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", modelName)
+		req, err := http.NewRequest("POST", geminiURL, bytes.NewBuffer(payloadBytes))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-goog-api-key", apiKey)
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("model %s lỗi %d: %s", modelName, resp.StatusCode, string(b))
+			continue
+		}
+		var gResp struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&gResp); err != nil {
+			resp.Body.Close()
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+		if len(gResp.Candidates) > 0 && len(gResp.Candidates[0].Content.Parts) > 0 {
+			respText = strings.TrimSpace(gResp.Candidates[0].Content.Parts[0].Text)
+			if respText != "" {
+				lastErr = nil
+				break
+			}
+		}
+	}
+	if respText == "" {
+		return nil, fmt.Errorf("Gemini không trả bản dịch (lỗi cuối: %v)", lastErr)
+	}
+
+	// Parse lại "SỐ|||BẢN DỊCH" về map index→text.
+	translated := make(map[int]string)
+	for _, line := range strings.Split(respText, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|||", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		idx, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil {
+			continue
+		}
+		translated[idx] = strings.TrimSpace(parts[1])
+	}
+
+	// Áp bản dịch; câu nào thiếu bản dịch thì giữ text gốc.
+	out := make([]subtitle.Segment, len(segments))
+	copy(out, segments)
+	for i := range out {
+		if t, ok := translated[i+1]; ok && t != "" {
+			out[i].Text = t
+		}
+	}
+	return out, nil
+}
+
 // === PERSISTENCE (SQLite) ===
 
 // SaveProject lưu (hoặc cập nhật) một phiên làm việc. ID dựa trên đường dẫn nguồn
@@ -981,7 +1496,7 @@ func (a *App) DeleteProject(id string) error {
 
 func (a *App) analyzeFixed(sourcePath string, cfg project.AnalyzerConfig) ([]project.Clip, error) {
 	key := hashPath(sourcePath)
-	workDir := filepath.Join(os.TempDir(), "video-splitter", key)
+	workDir := filepath.Join(os.TempDir(), "TrafficTool", key)
 	_ = os.MkdirAll(workDir, 0755)
 
 	ctx, cancel := context.WithCancel(a.ctx)
@@ -1017,22 +1532,22 @@ func (a *App) analyzeFixed(sourcePath string, cfg project.AnalyzerConfig) ([]pro
 		// Gộp đoạn cuối dư thừa nếu quá ngắn (dưới 50% thời lượng đích)
 		remainder := totalDuration - startTime
 		if len(clips) > 0 && remainder < fixedLen*0.5 {
-			clips[len(clips)-1].EndTime = math.Round(totalDuration)
-			clips[len(clips)-1].Duration = clips[len(clips)-1].EndTime - clips[len(clips)-1].StartTime
+			clips[len(clips)-1].EndTime = totalDuration
+			clips[len(clips)-1].Duration = totalDuration - clips[len(clips)-1].StartTime
 			break
 		}
 
 		clipID := fmt.Sprintf("%s_%d", key, index)
 		clip := project.Clip{
-			ID:         clipID,
-			Index:      index,
-			StartTime:  math.Round(startTime),
-			EndTime:    math.Round(endTime),
-			Duration:   math.Round(endTime) - math.Round(startTime),
-			Status:     "pending",
-			Tier:       project.TierAuto,
-			Reason:     "Cắt đều theo thời lượng",
-			Edit:       project.DefaultEditOps(),
+			ID:        clipID,
+			Index:     index,
+			StartTime: startTime,
+			EndTime:   endTime,
+			Duration:  endTime - startTime,
+			Status:    "pending",
+			Tier:      project.TierAuto,
+			Reason:    "Cắt đều theo thời lượng",
+			Edit:      project.DefaultEditOps(),
 		}
 		clips = append(clips, clip)
 
@@ -1051,7 +1566,7 @@ func (a *App) analyzeFixed(sourcePath string, cfg project.AnalyzerConfig) ([]pro
 			return nil, ctx.Err()
 		}
 		runtime.EventsEmit(a.ctx, "analyze_log", fmt.Sprintf("Bước 2/2: Đang trích xuất ảnh thumbnail %d/%d (Clip #%d)...", i+1, len(clips), clips[i].Index))
-		
+
 		thumbPath := filepath.Join(thumbDir, fmt.Sprintf("thumb_%s_%d.jpg", clips[i].ID, i))
 		_ = media.ExtractFrame(ctx, sourcePath, clips[i].StartTime, thumbPath)
 		clips[i].Thumbnail = thumbPath
@@ -1079,9 +1594,17 @@ func getSettingsFilePath() string {
 	if err != nil || dir == "" {
 		dir = os.TempDir()
 	}
-	appDir := filepath.Join(dir, "video-splitter")
+	appDir := filepath.Join(dir, "TrafficTool")
 	_ = os.MkdirAll(appDir, 0755)
-	return filepath.Join(appDir, "settings.json")
+
+	newSettings := filepath.Join(appDir, "settings.json")
+	if _, err := os.Stat(newSettings); os.IsNotExist(err) {
+		oldSettings := filepath.Join(dir, "video-splitter", "settings.json")
+		if _, errOld := os.Stat(oldSettings); errOld == nil {
+			_ = os.Rename(oldSettings, newSettings)
+		}
+	}
+	return newSettings
 }
 
 // SaveGlobalSettings lưu cấu hình cài đặt chung của người dùng vào file settings.json
@@ -1110,7 +1633,7 @@ func (a *App) ExtractClipFrames(videoPath string, startTime float64, endTime flo
 	if err != nil || dir == "" {
 		dir = os.TempDir()
 	}
-	tempDir := filepath.Join(dir, "video-splitter", "temp_frames")
+	tempDir := filepath.Join(dir, "TrafficTool", "temp_frames")
 	_ = os.MkdirAll(tempDir, 0755)
 
 	// Dọn dẹp các frame cũ
@@ -1413,7 +1936,7 @@ Return only the final English image prompt without headings, explanations, markd
 	if err != nil || dirUser == "" {
 		dirUser = os.TempDir()
 	}
-	workDir := filepath.Join(dirUser, "video-splitter", "projects", h)
+	workDir := filepath.Join(dirUser, "TrafficTool", "projects", h)
 	aiThumbDir := filepath.Join(workDir, "ai_thumbnails")
 	_ = os.MkdirAll(aiThumbDir, 0755)
 
@@ -1591,7 +2114,7 @@ func (a *App) GetDefaultDownloadDir() string {
 	if err != nil {
 		home = os.TempDir()
 	}
-	dir := filepath.Join(home, "Videos", "VideoSplitter_Downloads")
+	dir := filepath.Join(home, "Videos", "TrafficTool_Downloads")
 	_ = os.MkdirAll(dir, 0755)
 	return dir
 }
@@ -1708,7 +2231,12 @@ func (a *App) GetDefaultImageDownloadDir() string {
 	if err != nil {
 		home = os.TempDir()
 	}
-	dir := filepath.Join(home, "Pictures", "VideoSplitter_Images")
+	dir := filepath.Join(home, "Pictures", "TrafficTool_Images")
 	_ = os.MkdirAll(dir, 0755)
 	return dir
+}
+
+// GetSystemStats trả về thông số CPU, RAM, GPU và các tiến trình tác vụ đang chạy.
+func (a *App) GetSystemStats() sysmonitor.SystemStats {
+	return sysmonitor.GetStats()
 }

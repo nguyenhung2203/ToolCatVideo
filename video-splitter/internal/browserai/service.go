@@ -127,6 +127,12 @@ func (s *Service) ClearQueue() {
 	s.qm.Clear()
 }
 
+// CancelQueueSource dừng + ẩn CHỈ task của một nguồn ("video-cut" hoặc "ai-image"),
+// giữ nguyên nguồn kia đang chạy. Dùng cho nút Dừng ở mỗi trang.
+func (s *Service) CancelQueueSource(source string) {
+	s.qm.CancelSource(source)
+}
+
 func (s *Service) GetQueueStatus() QueueStatus {
 	return s.qm.GetStatus()
 }
@@ -202,8 +208,10 @@ func (s *Service) Generate(req GenerateRequest) (TaskInfo, error) {
 
 	_ = os.MkdirAll(req.OutputDir, 0755)
 
-	// Ensure Browser is open
-	if !s.session.IsOpen() {
+	// Ensure Browser is open ĐÚNG chế độ ẩn/hiện người dùng vừa chọn. Nếu Chrome đã
+	// mở sẵn nhưng ở chế độ ngược lại (ví dụ đang hiện mà vừa bỏ tick để ẩn), phải mở
+	// lại — nếu không toggle sẽ "lúc được lúc không" vì giữ nguyên cửa sổ cũ.
+	if !s.session.IsOpen() || s.session.IsHeadless() != !req.ShowChrome {
 		err := s.OpenGoogleAI(string(req.Provider), req.ShowChrome)
 		if err != nil {
 			return TaskInfo{}, err
@@ -389,6 +397,27 @@ func (s *Service) OpenOutputFolder(path string) error {
 	cmd := exec.Command("explorer", cleanPath)
 	utils.HideCmdWindow(cmd)
 	return cmd.Start()
+}
+
+// DeleteResultFiles xóa các file ảnh kết quả mà người dùng bỏ chọn trong lưới
+// Hàng Đợi AI (chế độ tắt tự-tải-giữ-lại: tải hết rồi cho xóa sau). Chỉ xóa file
+// thường đang tồn tại; bỏ qua path rỗng/không tồn tại. Trả về danh sách đã xóa.
+func (s *Service) DeleteResultFiles(paths []string) ([]string, error) {
+	var deleted []string
+	for _, p := range paths {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		clean := filepath.Clean(p)
+		info, err := os.Stat(clean)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if err := os.Remove(clean); err == nil {
+			deleted = append(deleted, clean)
+		}
+	}
+	return deleted, nil
 }
 
 func (s *Service) CloseBrowser() error {

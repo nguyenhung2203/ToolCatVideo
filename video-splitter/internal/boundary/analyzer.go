@@ -23,12 +23,15 @@ import (
 )
 
 // CandidateSignals chứa cường độ (0-100) của từng loại tín hiệu do Python phát hiện.
+// SpeechBreak (0-100) đo mức độ NGẮT giọng nói tại điểm cắt: 100 = có khoảng lặng
+// giọng nói rõ ràng (ranh giới hợp lệ), 0 = giọng nói xuyên qua liền mạch (nên phạt).
 type CandidateSignals struct {
 	VisualChange int `json:"visual_change"`
 	BlackFrame   int `json:"black_frame"`
 	Silence      int `json:"silence"`
 	LayoutChange int `json:"layout_change"`
 	AudioChange  int `json:"audio_change"`
+	SpeechBreak  int `json:"speech_break"`
 }
 
 // Candidate đại diện cho một điểm cắt tiềm năng nhận từ Python
@@ -78,6 +81,16 @@ func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, 
 		"--scene-threshold", fmt.Sprintf("%.1f", cfg.SceneThreshold),
 		"--silence-db", fmt.Sprintf("%.0f", cfg.SilenceThreshold),
 		"--silence-duration", fmt.Sprintf("%.2f", cfg.SilenceDuration),
+	}
+
+	// Chỉ báo worker khi video KHÔNG có audio để nó bỏ nhánh phân tích âm thanh
+	// (tránh tạo/đọc WAV rỗng). VFR được worker xử lý gốc qua pts_time thật của
+	// showinfo (không cần cờ); start_time không cần vì refine dùng hệ 0-based
+	// nhất quán với lệnh cắt (-ss không -copyts). Probe rẻ (1 lần ffprobe).
+	if vi, err := media.GetVideoInfo(sourcePath); err == nil && vi != nil {
+		if !vi.HasAudio {
+			analyzeArgs = append(analyzeArgs, "--no-audio")
+		}
 	}
 
 	// Quyết định exe để chạy Python worker:
@@ -221,44 +234,90 @@ func AnalyzeVideo(ctx context.Context, sourcePath, proxyPath, audioPath string, 
 // đây là chuyển cảnh minh họa trong cùng một video ngắn, không phải ranh giới thật.
 //
 // Trả về điểm đã kẹp trong [0, 100] và danh sách tín hiệu đã phát hiện.
+// COOccurBonus: điểm thưởng khi có từ 3 họ tín hiệu độc lập cùng bật tại một điểm.
+// Nhiều tín hiệu độc lập đồng thời → khả năng cao là ranh giới thật, không phải nhiễu.
+const COOccurBonus = 10.0
+
+// norm chuẩn hoá cường độ tín hiệu (0-100 từ Python) về hệ số [0,1] để nhân trọng số.
+func norm(intensity int) float64 {
+	v := float64(intensity) / 100.0
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
 func boundaryScore(c Candidate, w project.SignalWeights) (int, []string) {
 	var score float64
 	var signals []string
 
-	hasVisual := c.Signals.VisualChange > 0
-	hasBlack := c.Signals.BlackFrame > 0
-	hasSilence := c.Signals.Silence > 0
-	hasLayout := c.Signals.LayoutChange > 0
-	hasAudio := c.Signals.AudioChange > 0
+	// Tính điểm theo CƯỜNG ĐỘ (không nhị phân on/off): mỗi tín hiệu đóng góp
+	// trọng số × mức độ mạnh thực tế. Một scene-change mờ nhạt (intensity 20)
+	// đóng góp ít hơn hẳn một hard-cut rõ (intensity 95).
+	nVisual := norm(c.Signals.VisualChange)
+	nBlack := norm(c.Signals.BlackFrame)
+	nSilence := norm(c.Signals.Silence)
+	nLayout := norm(c.Signals.LayoutChange)
+	nAudio := norm(c.Signals.AudioChange)
 
-	if hasVisual {
-		score += w.VisualChange
+	families := 0
+	if nVisual > 0 {
+		score += w.VisualChange * nVisual
 		signals = append(signals, "visual")
+		families++
 	}
-	if hasBlack {
-		score += w.BlackFrame
+	if nBlack > 0 {
+		score += w.BlackFrame * nBlack
 		signals = append(signals, "black")
+		families++
 	}
-	if hasSilence {
-		score += w.Silence
+	if nSilence > 0 {
+		score += w.Silence * nSilence
 		signals = append(signals, "silence")
+		families++
 	}
-	if hasLayout {
-		score += w.LayoutChange
+	if nLayout > 0 {
+		score += w.LayoutChange * nLayout
 		signals = append(signals, "layout")
+		families++
 	}
-	if hasAudio {
-		score += w.AudioChange
+	if nAudio > 0 {
+		score += w.AudioChange * nAudio
 		signals = append(signals, "audio")
+		families++
 	}
 
-	// Continuity Penalty: có chuyển cảnh hình ảnh nhưng không có bất kỳ dấu hiệu
-	// ngắt mạch nào (im lặng / đổi âm thanh / màn hình đen) → nhiều khả năng chỉ là
-	// đổi góc quay trong cùng một video. Trừ điểm để tránh cắt nhầm.
-	audioBreak := hasSilence || hasAudio
-	if hasVisual && !audioBreak && !hasBlack {
-		score -= w.ContinuityPen
-		signals = append(signals, "continuity-penalty")
+	// Co-occurrence bonus: ≥3 họ tín hiệu độc lập cùng bật → ranh giới rất đáng tin.
+	if families >= 3 {
+		score += COOccurBonus
+		signals = append(signals, "cooccur")
+	}
+
+	// Continuity Penalty (đo thật qua SpeechBreak): chỉ áp khi có chuyển cảnh hình ảnh
+	// mà KHÔNG có màn hình đen. Mức phạt tỉ lệ nghịch với SpeechBreak — giọng nói xuyên
+	// qua điểm cắt càng liền mạch (SpeechBreak thấp) thì phạt càng mạnh (nhiều khả năng
+	// chỉ là đổi góc quay trong cùng một clip, không phải ranh giới thật).
+	// SpeechBreak = 0 khi không có dữ liệu audio (no-audio / fast mode) → giữ hành vi
+	// bảo thủ: nếu không có bất kỳ dấu hiệu ngắt mạch audio nào, vẫn phạt như cũ.
+	hasVisual := nVisual > 0
+	hasBlack := nBlack > 0
+	hasAudioBreak := nSilence > 0 || nAudio > 0
+	if hasVisual && !hasBlack {
+		if hasAudioBreak {
+			// Có tín hiệu audio: phạt theo mức độ liền mạch giọng nói.
+			penaltyFactor := 1.0 - norm(c.Signals.SpeechBreak)
+			if penaltyFactor > 0 {
+				score -= w.ContinuityPen * penaltyFactor
+				signals = append(signals, "continuity-penalty")
+			}
+		} else {
+			// Không có tín hiệu audio nào (visual đơn độc) → phạt toàn phần như cũ.
+			score -= w.ContinuityPen
+			signals = append(signals, "continuity-penalty")
+		}
 	}
 
 	if score < 0 {
@@ -281,17 +340,66 @@ func tierFor(score int, cfg project.AnalyzerConfig) string {
 	return project.TierReject
 }
 
+// effectiveScoringConfig tạo bộ chấm điểm nội bộ theo chế độ mà không sửa cấu hình
+// người dùng đã lưu. Tự động giữ nguyên để cân bằng. Nhanh chỉ nới đủ cho hard-cut
+// rõ từ FFmpeg được giữ lại. Kỹ tăng vai trò hình ảnh/layout và giảm continuity
+// penalty để không loại nhầm ranh giới thật khi nhạc hoặc lời nói chạy xuyên qua cut.
+func effectiveScoringConfig(cfg project.AnalyzerConfig) (project.SignalWeights, int) {
+	w := cfg.Weights
+	reviewMin := cfg.ReviewMinScore
+
+	switch cfg.Mode {
+	case project.ModeSmart:
+		// Tự động là chế độ lai: hard cut hình ảnh cực rõ (100/100) phải vừa đủ
+		// qua ngưỡng review mặc định, còn scene vừa/yếu vẫn cần audio/black/layout
+		// bổ trợ để tránh cắt nhầm khi chỉ đổi góc quay.
+		if w.ContinuityPen > 10 {
+			w.ContinuityPen = 10
+		}
+	case project.ModeFast:
+		if w.VisualChange < 50 {
+			w.VisualChange = 50
+		}
+		if w.ContinuityPen > 10 {
+			w.ContinuityPen = 10
+		}
+		if reviewMin > 25 {
+			reviewMin = 25
+		}
+	case project.ModePrecise:
+		if w.VisualChange < 55 {
+			w.VisualChange = 55
+		}
+		if w.LayoutChange < 30 {
+			w.LayoutChange = 30
+		}
+		if w.AudioChange < 25 {
+			w.AudioChange = 25
+		}
+		if w.ContinuityPen > 5 {
+			w.ContinuityPen = 5
+		}
+		if reviewMin > 25 {
+			reviewMin = 25
+		}
+	}
+
+	return w, reviewMin
+}
+
 // CalculateBoundaries tính Boundary Score cho từng candidate, loại bỏ điểm dưới ngưỡng,
 // gom cụm điểm gần nhau (giữ điểm mạnh nhất), rồi dựng danh sách clip kèm confidence/tier/reason.
 // sourcePath dùng để snap boundary sang keyframe gần nhất (tối ưu cho stream-copy).
 func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, totalDuration float64, sourcePath string) []project.Clip {
-	w := cfg.Weights
+	w, reviewMin := effectiveScoringConfig(cfg)
+	tierCfg := cfg
+	tierCfg.ReviewMinScore = reviewMin
 
 	// === BƯỚC 1: Tính Boundary Score, loại điểm dưới ngưỡng review (tier reject) ===
 	var scored []scoredBoundary
 	for _, c := range candidates {
 		score, signals := boundaryScore(c, w)
-		tier := tierFor(score, cfg)
+		tier := tierFor(score, tierCfg)
 		if tier == project.TierReject {
 			continue // dưới ReviewMinScore → không dùng làm ranh giới
 		}
@@ -310,17 +418,13 @@ func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, tot
 	})
 
 	// === BƯỚC 1.5: Snap boundary sang keyframe gần nhất (nếu biết sourcePath) ===
-	// Mục đích: đảm bảo điểm cắt nằm tại I-frame để stream-copy không bị artifact.
-	// Quy tắc snap theo mode:
-	//   - fast:    snap tối đa 2.0s (độ chính xác thấp hơn, ưu tiên tốc độ xuất)
-	//   - smart:   snap tối đa 1.0s
-	//   - precise: KHÔNG snap — AI đã phát hiện chính xác đến mili-giây, giữ nguyên
-	snapLimit := 1.0
+	// Chỉ Tự động snap nhẹ sang I-frame để tối ưu stream-copy mà không kéo lệch
+	// ranh giới đáng kể. Nhanh giữ nguyên timestamp scene FFmpeg; Kỹ giữ nguyên
+	// timestamp refine ở fps gốc và lúc xuất sẽ re-encode để cắt đúng từng khung.
+	snapLimit := 0.3
 	switch cfg.Mode {
-	case project.ModeFast:
-		snapLimit = 2.0
-	case project.ModePrecise:
-		snapLimit = 0.0 // tắt snap hoàn toàn cho precise
+	case project.ModeFast, project.ModePrecise:
+		snapLimit = 0.0
 	}
 
 	if sourcePath != "" && snapLimit > 0 {

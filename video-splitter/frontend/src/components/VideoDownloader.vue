@@ -139,15 +139,6 @@ const failedThumbs = ref<Set<string>>(new Set())
 <template>
   <div class="dl-page">
 
-    <!-- ── Header ──────────────────────────────────── -->
-    <div class="dl-page-header">
-      <h2 class="dl-page-title">
-        <Globe :size="20" class="dl-title-icon" />
-        Tải Video Online
-        <span class="dl-title-sub">YouTube · TikTok · Facebook · Douyin</span>
-      </h2>
-    </div>
-
     <!-- ── Scrollable body ──────────────────────────────── -->
     <div class="dl-body">
 

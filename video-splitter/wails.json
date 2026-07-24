@@ -1,13 +1,13 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "Smart Video Splitter",
-  "outputfilename": "SmartVideoSplitter",
+  "name": "TrafficTool",
+  "outputfilename": "TrafficTool",
   "frontend:install": "npm install",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "author": {
-    "name": "nguyenhung2203",
-    "email": "nguyenhung22032006@gmail.com"
+    "name": "TrafficTool Team",
+    "email": "support@traffictool.app"
   }
 }

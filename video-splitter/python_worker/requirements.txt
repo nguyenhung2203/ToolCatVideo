@@ -2,7 +2,12 @@
 scenedetect==0.6.2
 opencv-python-headless==4.8.1.78
 numpy==1.26.2
+scipy==1.11.4
+soundfile==0.12.1
 librosa==0.10.1
+
+# === Whisper offline (nghe tiếng ra phụ đề có timestamp) ===
+faster-whisper==1.0.3
 
 # === Build dependency (chỉ cần khi đóng gói worker.exe bằng build_worker.bat) ===
 pyinstaller==6.11.1

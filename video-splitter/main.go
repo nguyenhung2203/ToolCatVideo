@@ -17,9 +17,10 @@ func main() {
 	app := NewApp(browserAIService)
 
 	err := wails.Run(&options.App{
-		Title:  "Video Splitter",
-		Width:  1280,
-		Height: 800,
+		Title:                    "TrafficTool",
+		Width:                    1280,
+		Height:                   800,
+		EnableDefaultContextMenu: false,
 		AssetServer: &assetserver.Options{
 			Assets:  assets,
 		},

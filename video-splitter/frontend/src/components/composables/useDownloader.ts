@@ -241,7 +241,7 @@ export function useDownloader(
         cookieBrowser.value,
         maxCount,
         sortOrder,
-        downloadMode.value === 'link' ? "" : searchSource.value,
+        downloadMode.value === 'link' ? effectiveLinkType.value : searchSource.value,
       )
       probeResult.value = result
       if (result.type === 'video' && result.entries.length === 1) {

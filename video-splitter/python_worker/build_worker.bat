@@ -29,6 +29,13 @@ if errorlevel 1 (
     pip install pyinstaller || goto :error
 )
 
+echo === Kiem tra faster-whisper (phu de tu dong) ===
+python -c "import faster_whisper" >nul 2>&1
+if errorlevel 1 (
+    echo faster-whisper chua duoc cai. Dang cai lan dau, co the mat vai phut...
+    pip install faster-whisper==1.0.3 || goto :error
+)
+
 echo === Bat dau dong goi worker.exe ===
 REM --onefile: 1 file duy nhat, de phan phoi (chap nhan khoi dong cham hon chut).
 REM --collect-all: gom TAT CA data file + hidden import cho cac thu vien kho dong goi.
@@ -48,6 +55,10 @@ python -m PyInstaller ^
     --collect-all soundfile ^
     --collect-all lazy_loader ^
     --collect-all soxr ^
+    --collect-all faster_whisper ^
+    --collect-all ctranslate2 ^
+    --collect-all tokenizers ^
+    --collect-all onnxruntime ^
     --hidden-import sklearn.utils._typedefs ^
     "%SCRIPT_DIR%main.py" || goto :error
 
