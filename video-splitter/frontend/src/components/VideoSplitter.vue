@@ -519,6 +519,23 @@ const namingConfig = reactive({
   customPrefix: ''  // Khi bỏ tick = Nhập tên tùy chỉnh (vd: Short_Tiktok_)
 })
 
+const getClipThumbImage = (clip: any) => {
+  if (!clip) return ''
+  if (clip.thumbnail && !failedThumbs.value.has(clip.thumbnail)) {
+    return clip.thumbnail
+  }
+  if (clip.coverPath && !failedThumbs.value.has(clip.coverPath)) {
+    return clip.coverPath
+  }
+  if (clip.exportedPath) {
+    const jpg = clip.exportedPath.replace(/\.[^/.]+$/, '.jpg')
+    if (!failedThumbs.value.has(jpg)) {
+      return jpg
+    }
+  }
+  return ''
+}
+
 const loadNamingConfig = () => {
   const saved = localStorage.getItem('splitter_naming_config')
   if (saved) {
@@ -4035,9 +4052,7 @@ const formatSize = (bytes: number) => {
                   :style="{ width: ((clip.endTime - clip.startTime) / videoInfo.Duration * 100) + '%', flexShrink: 0 }"
                   @click="jumpToTime(clip.startTime)"
                   :title="`Clip #${clip.index}: ${clip.startTime}s - ${clip.endTime}s`"
-                >
-                  <span>#{{ clip.index }}</span>
-                </div>
+                ></div>
               </template>
               <div v-else class="timeline-segment-placeholder">
                 <span>Chưa có phân đoạn video được cắt</span>
@@ -4131,26 +4146,27 @@ const formatSize = (bytes: number) => {
                   </button>
                 </div>
 
-                <!-- 2. Khung ảnh đại diện / Thumbnail (Tự động fallback trích ảnh từ video) -->
+                <!-- 2. Khung ảnh đại diện / Thumbnail (Tự động hiển thị sắc nét) -->
                 <div v-else class="thumb-box-single" @click="togglePlayCardClip(clip)" :title="clip.exportedPath ? 'Bấm để phát trực tiếp video đã xuất ngay tại đây' : 'Bấm để xem thử đoạn video này ngay tại đây'">
                   <!-- Ảnh thumbnail chính (nếu có và tải thành công) -->
                   <img
-                    v-if="clip.thumbnail && !failedThumbs.has(clip.id)"
-                    :src="getThumbUrl(clip.thumbnail)"
-                    @error="handleThumbError(clip.id)"
+                    v-if="getClipThumbImage(clip)"
+                    :src="getThumbUrl(getClipThumbImage(clip))"
+                    @error="handleThumbError(getClipThumbImage(clip))"
+                    style="width: 100%; height: 100%; object-fit: cover;"
                   />
-                  <!-- Fallback 1: Dùng video đã xuất (nếu có) -->
+                  <!-- Fallback 1: Dùng video đã xuất (nếu có) kèm offset #t=0.5 để hiện ảnh xem trước sắc nét -->
                   <video
                     v-else-if="clip.exportedPath"
-                    :src="getThumbUrl(clip.exportedPath)"
-                    preload="metadata"
+                    :src="getThumbUrl(clip.exportedPath) + '#t=0.5'"
+                    preload="auto"
                     style="width: 100%; height: 100%; object-fit: cover; pointer-events: none;"
                   ></video>
                   <!-- Fallback 2: Trích khung hình tại mốc startTime của video gốc -->
                   <video
                     v-else-if="clip._videoPath || activeVideoPath"
-                    :src="getThumbUrl(clip._videoPath || activeVideoPath) + '#t=' + clip.startTime"
-                    preload="metadata"
+                    :src="getThumbUrl(clip._videoPath || activeVideoPath) + '#t=' + (clip.startTime || 0.1)"
+                    preload="auto"
                     style="width: 100%; height: 100%; object-fit: cover; pointer-events: none;"
                   ></video>
                   <div v-else class="thumb-placeholder-box" style="display: flex; align-items: center; justify-content: center; height: 100%; background: rgba(0,0,0,0.3); border-radius: 8px;">

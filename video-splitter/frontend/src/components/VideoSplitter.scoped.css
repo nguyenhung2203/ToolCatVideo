@@ -1419,14 +1419,10 @@
 
 .timeline-segment {
   height: 100%;
+  min-width: 0;
+  overflow: hidden;
   border-right: 1px solid var(--bg-panel);
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: var(--wx-fs-12);
-  font-weight: var(--wx-fw-bold);
-  color: var(--wx-text-inverse);
   background-color: color-mix(in srgb, var(--accent-color) 40%, transparent);
   transition: all var(--d-fast) var(--ease-std);
 }

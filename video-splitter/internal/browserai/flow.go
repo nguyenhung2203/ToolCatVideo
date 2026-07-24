@@ -760,7 +760,8 @@ func GenerateFlowVideo(
 
 			deadlineImg := time.Now().Add(ImageGenerateTimeout)
 			pollCount := 0
-			
+			allErrorPolls := 0 // số poll liên tiếp thấy thẻ lỗi mà KHÔNG có ảnh thành công nào
+
 			for {
 				select {
 				case <-ctx.Done():
@@ -823,20 +824,16 @@ func GenerateFlowVideo(
 					return nil, NewError(ErrQuotaExceeded, quotaMsg)
 				}
 
-				// Chỉ kiểm tra thẻ báo lỗi sau ít nhất 6 giây (pollCount >= 3) để đảm bảo thẻ ảnh mới đã được nạo vào DOM
+				// Chỉ kiểm tra thẻ báo lỗi sau ít nhất 6 giây (pollCount >= 3) để đảm bảo thẻ ảnh mới đã được nạo vào DOM.
+				// Quét toàn bộ nhóm thẻ MỚI (kể từ ảnh cũ đầu tiên) để đếm số ảnh THÀNH CÔNG và số thẻ LỖI.
+				// Chỉ retry cả batch khi toàn bộ đều lỗi (0 ảnh thành công); nếu có ít nhất 1 ảnh thành công
+				// thì bỏ qua thẻ lỗi và để luồng gom ảnh xử lý batch thiếu (Google lọc bớt vài ảnh vi phạm).
 				if pollCount >= 3 {
-					isError, _ := page.Eval(`() => {
+					batchStateObj, _ := page.Eval(`(lastGroupUrls) => {
 						const tiles = Array.from(document.querySelectorAll('div[data-tile-id], div[role="button"][aria-roledescription="draggable"]'));
-						if (tiles.length === 0) return false;
+						if (tiles.length === 0) return { errorTiles: 0, successImgs: 0, generating: false };
 
-						const firstTile = tiles[0];
-						const txt = firstTile.textContent.trim().toLowerCase();
-
-						// Nếu thẻ mới nhất đang hiển thị phần trăm % loading (ví dụ 10%, 43%, 80%), chắc chắn ĐANG TẠO BÌNH THƯỜNG!
-						if (/\d{1,2}%/.test(txt)) {
-							return false;
-						}
-
+						const lastSet = new Set(lastGroupUrls || []);
 						const errorKeywords = [
 							'lượt tạo này có thể vi phạm',
 							'vi phạm các chính sách',
@@ -845,18 +842,65 @@ func GenerateFlowVideo(
 							'thử một câu lệnh khác'
 						];
 
-						const hasErrorTxt = errorKeywords.some(kw => txt.includes(kw));
-						const warningEl = Array.from(firstTile.querySelectorAll('i, span')).find(el => {
-							return el.textContent.trim().toLowerCase() === 'warning';
-						});
+						let errorTiles = 0;
+						let successImgs = 0;
+						let generating = false;
 
-						return hasErrorTxt || (warningEl !== undefined && warningEl !== null);
-					}`)
-					if isError != nil && isError.Value.Bool() {
-						logDebug("Phát hiện thẻ báo lỗi / vi phạm chính sách thực sự trên thẻ ảnh MỚI NHẤT. Đang kích hoạt thử lại tự động (Tối đa 3 lần)...")
-						finalErr = NewError(ErrGenerationFailed, "Google Flow báo lỗi / vi phạm chính sách tạo hình ảnh.")
-						generationFailed = true
-						break
+						// Chỉ xét các thẻ MỚI ở đầu danh sách: dừng khi chạm thẻ chứa ảnh cũ.
+						for (const tile of tiles) {
+							const txt = tile.textContent.trim().toLowerCase();
+
+							// Thẻ đang loading (%) → vẫn đang tạo, chưa kết luận.
+							if (/\d{1,2}%/.test(txt) || txt.includes('đang tạo') || txt.includes('generating')) {
+								generating = true;
+								continue;
+							}
+
+							const img = tile.querySelector('img[src*="getMediaUrl"], img[src*="/fx/api/"]');
+							if (img) {
+								let src = img.getAttribute('src') || '';
+								if (src.startsWith('/')) src = 'https://labs.google' + src;
+								// Chạm ảnh cũ đã có từ trước → hết nhóm mới, dừng quét.
+								if (lastSet.size > 0 && lastSet.has(src)) break;
+								successImgs++;
+								continue;
+							}
+
+							const hasErrorTxt = errorKeywords.some(kw => txt.includes(kw));
+							const warningEl = Array.from(tile.querySelectorAll('i, span')).find(el => {
+								return el.textContent.trim().toLowerCase() === 'warning';
+							});
+							if (hasErrorTxt || warningEl) {
+								errorTiles++;
+							}
+						}
+
+						return { errorTiles, successImgs, generating };
+					}`, lastGroupUrls)
+
+					errorTiles := 0
+					successImgs := 0
+					generating := false
+					if batchStateObj != nil {
+						errorTiles = batchStateObj.Value.Get("errorTiles").Int()
+						successImgs = batchStateObj.Value.Get("successImgs").Int()
+						generating = batchStateObj.Value.Get("generating").Bool()
+					}
+
+					// Có ảnh thành công → không retry dù có thẻ lỗi. Reset bộ đếm lỗi.
+					if successImgs > 0 {
+						allErrorPolls = 0
+					} else if errorTiles > 0 && !generating {
+						// Toàn bộ batch lỗi, không còn thẻ đang tạo → xác nhận qua 2 poll liên tiếp
+						// (tránh chốt lỗi khi DOM đang render dở), rồi mới retry.
+						allErrorPolls++
+						logDebug("Batch chỉ có thẻ lỗi, chưa có ảnh thành công (%d poll liên tiếp, %d thẻ lỗi).", allErrorPolls, errorTiles)
+						if allErrorPolls >= 2 {
+							logDebug("Xác nhận TOÀN BỘ batch lỗi / vi phạm chính sách (0 ảnh thành công). Kích hoạt thử lại tự động.")
+							finalErr = NewError(ErrGenerationFailed, "Google Flow báo lỗi / vi phạm chính sách tạo hình ảnh (toàn bộ batch).")
+							generationFailed = true
+							break
+						}
 					}
 				}
 				
