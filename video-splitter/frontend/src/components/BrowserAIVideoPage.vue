@@ -198,12 +198,12 @@
           <div style="flex: 1; overflow-y: auto; min-height: 0; padding: 10px 0; width: 100%; display: flex; flex-direction: column; gap: 12px;">
             
             <!-- Tiến trình tổng quan nếu đang chạy -->
-            <div v-if="queueStatus.isRunning" style="background: rgba(0,0,0,0.25); border: 1px solid var(--wx-border-default); border-radius: 8px; padding: 10px 14px;">
+            <div v-if="queueStatus.isRunning" style="background: var(--wx-surface-sunken); border: 1px solid var(--wx-border-default); border-radius: 8px; padding: 10px 14px;">
               <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; margin-bottom: 6px;">
                 <span>Đang xử lý {{ queueStatus.completed + queueStatus.failed }}/{{ queueStatus.total }} video...</span>
                 <span>{{ Math.round((queueStatus.completed + queueStatus.failed) / (queueStatus.total || 1) * 100) }}%</span>
               </div>
-              <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;">
+              <div style="width: 100%; height: 6px; background: color-mix(in srgb, var(--wx-text-primary) 12%, transparent); border-radius: 3px; overflow: hidden;">
                 <div :style="{ width: Math.round((queueStatus.completed + queueStatus.failed) / (queueStatus.total || 1) * 100) + '%' }" style="height: 100%; background: linear-gradient(90deg, #6366f1, #06b6d4); transition: width 0.3s ease;"></div>
               </div>
             </div>
@@ -322,7 +322,7 @@
 
         <!-- Card log tiến trình (ĐỘC LẬP): hiện bất kể trạng thái trang -->
         <div v-if="queueLogs.length > 0" style="width: 100%; flex-shrink: 0; margin-top: 8px; border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); background: var(--wx-surface-sunken, #0e1626); overflow: hidden;">
-          <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 6px 10px; background: rgba(0,0,0,0.15); border-bottom: 1px solid var(--wx-border-subtle, rgba(255,255,255,0.05));">
+          <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 6px 10px; background: var(--wx-surface-base); border-bottom: 1px solid var(--wx-border-default);">
             <span style="font-size: 11.5px; font-weight: 700; color: var(--wx-brand-accent); display: inline-flex; align-items: center; gap: 6px;">
               Nhật ký tiến trình ({{ queueLogs.length }})
             </span>
@@ -388,9 +388,14 @@ import { SelectFolder, GetStreamURL, GetGlobalSettings, SaveGlobalSettings, Sele
 // @ts-ignore
 import { OpenOutputFolder, EnqueueThumbnailTasks, CancelQueueSource, DeleteResultFiles } from '../../wailsjs/go/browserai/Service'
 // @ts-ignore
-import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 
 const mediaType = 'video'
+
+// Hàm hủy listener do EventsOn trả về — hủy đúng listener của trang này,
+// không đụng listener cùng tên của trang khác.
+let offQueueProgress: (() => void) | null = null
+let offQueueLog: (() => void) | null = null
 
 const props = defineProps<{
   defaultOutputDir: string
@@ -644,13 +649,18 @@ onUnmounted(() => {
     clearInterval(timerId)
     timerId = null
   }
-  EventsOff('browser-ai:queue-progress')
-  EventsOff('browser-ai:queue-log')
+  // Chỉ hủy ĐÚNG listener của trang này. EventsOff xóa TẤT CẢ listener cùng tên
+  // trên toàn app, nên trước đây rời trang này là tắt luôn listener queue-progress
+  // mà VideoSplitter.vue (tab Cắt Video) đã đăng ký → thumbnail AI mất tiến trình.
+  offQueueProgress?.()
+  offQueueLog?.()
+  offQueueProgress = null
+  offQueueLog = null
 })
 
 // Queue event listeners
 onMounted(() => {
-  EventsOn('browser-ai:queue-progress', (st: any) => {
+  offQueueProgress = EventsOn('browser-ai:queue-progress', (st: any) => {
     if (!st) return
     const mine = Array.isArray(st.tasks)
       ? st.tasks.filter((t: any) => t && t.source === 'ai-video')
@@ -675,7 +685,7 @@ onMounted(() => {
     }
   })
 
-  EventsOn('browser-ai:queue-log', (e: any) => {
+  offQueueLog = EventsOn('browser-ai:queue-log', (e: any) => {
     if (!e) return
     if (e.source && e.source !== 'ai-video') return
     const d = new Date()

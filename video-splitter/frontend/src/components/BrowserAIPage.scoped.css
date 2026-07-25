@@ -335,7 +335,7 @@
   width: 100%;
   flex: 1;
   min-height: 220px;
-  background: #090d16;
+  background: var(--wx-surface-sunken);
   border: 1.5px solid var(--wx-border-default);
   border-radius: var(--wx-radius-md);
   overflow: hidden;

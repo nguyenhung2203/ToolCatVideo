@@ -448,11 +448,35 @@ func DownloadVideo(
 ) (*DownloadResult, error) {
 	_ = os.MkdirAll(outputDir, 0755)
 
-	// Template output: giữ tên video gốc, luôn xuất mp4
-	outputTemplate := filepath.Join(outputDir, "%(title)s.%(ext)s")
+	// Thư mục tạm RIÊNG cho mỗi lượt tải. yt-dlp ghi .part/.ytdl/track rời vào đây
+	// rồi mới move file hoàn chỉnh sang outputDir. Nhờ vậy hủy giữa dòng chỉ cần xóa
+	// cả thư mục là sạch rác, không để lại .part lẫn trong thư mục video người dùng.
+	tempDir, tmpErr := os.MkdirTemp(outputDir, ".tt_dl_")
+	if tmpErr != nil {
+		// Không tạo được thư mục tạm (ổ chỉ đọc?) → chấp nhận tải trực tiếp như cũ.
+		tempDir = ""
+	}
+	cleanTemp := func() {
+		if tempDir != "" {
+			_ = os.RemoveAll(tempDir)
+		}
+	}
+	defer cleanTemp()
+
+	// File nhận ĐƯỜNG DẪN THẬT của video sau khi yt-dlp move/merge xong. Đây là nguồn
+	// sự thật duy nhất: yt-dlp tự ghi ra, không phải ta đoán từ log. Trước đây parse
+	// regex trên stdout/stderr rồi fallback findNewestFile — khi tải song song 2 video
+	// thì fallback trả về file của video KIA, gây gán sai/trùng đường dẫn.
+	pathListFile := ""
+	if tempDir != "" {
+		pathListFile = filepath.Join(tempDir, "final_path.txt")
+	} else if f, ferr := os.CreateTemp("", "tt_dlpath_*.txt"); ferr == nil {
+		pathListFile = f.Name()
+		_ = f.Close()
+		defer os.Remove(pathListFile)
+	}
 
 	args := []string{
-		"-o", outputTemplate,
 		"--merge-output-format", "mp4",
 		"--no-playlist",           // luôn tải 1 video (không cả playlist)
 		"--newline",               // mỗi update progress trên 1 dòng (dễ parse)
@@ -468,6 +492,24 @@ func DownloadVideo(
 		"--no-write-thumbnail",    // không tải thumbnail riêng
 		"--no-write-info-json",    // không ghi file info json
 		"--clean-info-json",       // dọn dẹp info json
+	}
+
+	// -o phải là đường dẫn TƯƠNG ĐỐI để --paths có hiệu lực (yt-dlp bỏ qua --paths
+	// khi -o là đường dẫn tuyệt đối).
+	if tempDir != "" {
+		args = append(args,
+			"-o", "%(title)s.%(ext)s",
+			"--paths", "home:"+outputDir,
+			"--paths", "temp:"+tempDir,
+		)
+	} else {
+		args = append(args, "-o", filepath.Join(outputDir, "%(title)s.%(ext)s"))
+	}
+
+	// after_move:filepath = đường dẫn CUỐI CÙNG sau khi merge + move xong. Ghi ra file
+	// thay vì stdout để không lẫn với dòng progress và không cần parse regex.
+	if pathListFile != "" {
+		args = append(args, "--print-to-file", "after_move:filepath", pathListFile)
 	}
 
 	// Chọn format tốt nhất KHÔNG có watermark
@@ -506,19 +548,37 @@ func DownloadVideo(
 		return nil, fmt.Errorf("không tạo được stdout pipe: %v", err)
 	}
 
+	// Mốc thời gian trước khi tải: dùng để giới hạn findNewestFileAfter chỉ xét file
+	// sinh ra TRONG lượt này. Trừ 2s cho lệch đồng hồ/độ phân giải mtime của filesystem.
+	startedAt := time.Now().Add(-2 * time.Second)
+
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("không chạy được yt-dlp: %v", err)
 	}
 
-	var filePath string
+	// filePath chỉ là ĐƯỜNG DẪN DỰ PHÒNG parse từ log, dùng khi --print-to-file không
+	// khả dụng. Cả 2 goroutine đọc log đều ghi vào biến này nên PHẢI có mutex, và phải
+	// chờ chúng kết thúc (wgLog) trước khi đọc — trước đây thiếu cả hai nên vừa là data
+	// race vừa có thể đọc giá trị chưa kịp ghi.
+	var (
+		logMu        sync.Mutex
+		fallbackPath string
+		wgLog        sync.WaitGroup
+	)
+	setFallback := func(p string) {
+		logMu.Lock()
+		fallbackPath = strings.TrimSpace(p)
+		logMu.Unlock()
+	}
 
-	// Đọc stderr (yt-dlp ghi progress + info vào stderr)
-	go func() {
-		sc := bufio.NewScanner(stderr)
+	// scanLog đọc 1 stream, bắn progress và ghi nhận đường dẫn dự phòng.
+	scanLog := func(r io.Reader) {
+		defer wgLog.Done()
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for sc.Scan() {
 			line := sc.Text()
 
-			// Parse progress
 			if m := progressRegex.FindStringSubmatch(line); len(m) >= 4 {
 				pct, _ := strconv.ParseFloat(m[1], 64)
 				if progressCb != nil {
@@ -532,56 +592,59 @@ func DownloadVideo(
 				}
 			}
 
-			// Parse destination file
 			if m := destRegex.FindStringSubmatch(line); len(m) >= 2 {
-				filePath = strings.TrimSpace(m[1])
+				setFallback(m[1])
 			}
 			if m := mergeRegex.FindStringSubmatch(line); len(m) >= 2 {
-				filePath = strings.TrimSpace(m[1])
+				setFallback(m[1])
 			}
 			if m := alreadyRegex.FindStringSubmatch(line); len(m) >= 2 {
-				filePath = strings.TrimSpace(m[1])
+				setFallback(m[1])
 			}
 		}
-	}()
+	}
 
-	// Đọc stdout (yt-dlp --newline cũng ghi progress vào stdout)
-	go func() {
-		sc := bufio.NewScanner(stdout)
-		for sc.Scan() {
-			line := sc.Text()
-			if m := progressRegex.FindStringSubmatch(line); len(m) >= 4 {
-				pct, _ := strconv.ParseFloat(m[1], 64)
-				if progressCb != nil {
-					progressCb(DownloadProgress{
-						Percent: pct,
-						Speed:   m[2],
-						ETA:     m[3],
-						VideoID: videoID,
-						Title:   videoTitle,
-					})
-				}
-			}
-			if m := destRegex.FindStringSubmatch(line); len(m) >= 2 {
-				filePath = strings.TrimSpace(m[1])
-			}
-			if m := mergeRegex.FindStringSubmatch(line); len(m) >= 2 {
-				filePath = strings.TrimSpace(m[1])
-			}
-			if m := alreadyRegex.FindStringSubmatch(line); len(m) >= 2 {
-				filePath = strings.TrimSpace(m[1])
-			}
-		}
-	}()
+	wgLog.Add(2)
+	go scanLog(stderr)
+	go scanLog(stdout)
 
-	if err := cmd.Wait(); err != nil {
+	waitErr := cmd.Wait()
+	// Chờ 2 goroutine đọc hết stream ĐÃ đóng trước khi đọc fallbackPath.
+	wgLog.Wait()
+
+	if waitErr != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("yt-dlp tải thất bại: %v", err)
+		return nil, fmt.Errorf("yt-dlp tải thất bại: %v", waitErr)
 	}
 
-	// Emit 100%
+	// Ưu tiên tuyệt đối đường dẫn yt-dlp tự ghi ra (after_move:filepath).
+	filePath := readFinalPath(pathListFile)
+
+	if filePath == "" {
+		logMu.Lock()
+		filePath = fallbackPath
+		logMu.Unlock()
+	}
+
+	// Đường dẫn parse từ log có thể sai do encoding OEM/ANSI trên Windows. Chỉ khi
+	// KHÔNG xác định được file nào tồn tại mới dùng findNewestFile — và giới hạn ở file
+	// vừa tạo trong lượt này để không bắt trúng video của lượt tải song song khác.
+	if filePath != "" {
+		if _, statErr := os.Stat(filePath); statErr != nil {
+			filePath = ""
+		}
+	}
+	if filePath == "" {
+		filePath = findNewestFileAfter(outputDir, startedAt)
+	}
+
+	if filePath == "" {
+		return nil, fmt.Errorf("không xác định được file đã tải — kiểm tra thư mục %s", outputDir)
+	}
+
+	// Emit 100% CHỈ khi đã chắc chắn có file thật, tránh báo hoàn tất rồi lại lỗi.
 	if progressCb != nil {
 		progressCb(DownloadProgress{
 			Percent: 100,
@@ -592,47 +655,70 @@ func DownloadVideo(
 		})
 	}
 
-	if filePath == "" {
-		filePath = findNewestFile(outputDir)
-	} else {
-		// Kiểm tra xem file có thực sự tồn tại với đường dẫn đã parse không.
-		// Trên Windows, yt-dlp ghi log ra stdout/stderr bằng encoding hệ thống (OEM/ANSI)
-		// nên khi Go đọc bằng UTF-8 sẽ bị mất dấu hoặc sai ký tự, dẫn đến file không tìm thấy.
-		if _, err := os.Stat(filePath); os.IsNotExist(err) {
-			if fallback := findNewestFile(outputDir); fallback != "" {
-				filePath = fallback
-			}
-		}
-	}
-
-	if filePath == "" {
-		return nil, fmt.Errorf("không xác định được file đã tải — kiểm tra thư mục %s", outputDir)
-	}
-
 	return &DownloadResult{
 		FilePath: filePath,
 		Title:    videoTitle,
 	}, nil
 }
 
-// findNewestFile tìm file mới nhất trong thư mục (fallback khi không parse được path).
-func findNewestFile(dir string) string {
+// readFinalPath đọc đường dẫn video cuối cùng do yt-dlp tự ghi ra qua
+// --print-to-file after_move:filepath. Đây là nguồn sự thật chính xác nhất: không
+// phụ thuộc encoding console, không cần parse regex, không bị nhiễu khi tải song song.
+// File có thể chứa nhiều dòng (VD tải kèm phụ đề) → lấy dòng cuối tồn tại thật.
+func readFinalPath(pathListFile string) string {
+	if pathListFile == "" {
+		return ""
+	}
+	data, err := os.ReadFile(pathListFile)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		p := strings.TrimSpace(lines[i])
+		if p == "" {
+			continue
+		}
+		if info, statErr := os.Stat(p); statErr == nil && !info.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
+// findNewestFileAfter tìm file mới nhất trong dir được tạo SAU mốc after. Chỉ dùng làm
+// phương án cuối khi cả --print-to-file lẫn log đều không cho đường dẫn dùng được.
+//
+// Mốc thời gian là điểm khác biệt quan trọng so với bản cũ (findNewestFile quét cả
+// thư mục): khi tải song song nhiều video vào cùng thư mục, quét không lọc thời gian
+// sẽ trả về video của lượt tải KHÁC, khiến 2 entry cùng trỏ 1 file. Bỏ qua file tạm
+// (.part/.ytdl) và thư mục tạm để không trả về file chưa hoàn chỉnh.
+func findNewestFileAfter(dir string, after time.Time) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""
 	}
 	var newest string
-	var newestTime int64
+	var newestTime time.Time
 	for _, e := range entries {
 		if e.IsDir() {
+			continue
+		}
+		name := strings.ToLower(e.Name())
+		if strings.HasSuffix(name, ".part") || strings.HasSuffix(name, ".ytdl") ||
+			strings.HasSuffix(name, ".temp") || strings.HasPrefix(e.Name(), ".tt_dl_") {
 			continue
 		}
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
-		if info.ModTime().Unix() > newestTime {
-			newestTime = info.ModTime().Unix()
+		mt := info.ModTime()
+		if mt.Before(after) {
+			continue
+		}
+		if mt.After(newestTime) {
+			newestTime = mt
 			newest = filepath.Join(dir, e.Name())
 		}
 	}

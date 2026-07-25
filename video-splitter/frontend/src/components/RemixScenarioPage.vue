@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, reactive, computed, watch } from 'vue'
-import { Plus, Trash2, Save, Copy, Music, Image as ImageIcon, FileText, Layers, SlidersHorizontal, Film, Check, Wand2, Palette, Volume2, Type, Sparkles, Play, Pause, RotateCcw, Video, Folder, X, Square, Loader2, ArrowUp, ArrowDown, GripVertical } from 'lucide-vue-next'
+import { Plus, Trash2, Save, Copy, Music, Image as ImageIcon, FileText, Layers, SlidersHorizontal, Film, Check, Wand2, Palette, Volume2, Type, Sparkles, Play, Pause, RotateCcw, Video, Folder, X, Square, Loader2, ArrowUp, ArrowDown, GripVertical, ZoomIn, ZoomOut, Maximize2, Magnet, Grid } from 'lucide-vue-next'
 import { SelectImageFile, SelectAudioFile, SelectFolder, GetStreamURL, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
 import BaseButton from './common/BaseButton.vue'
 
@@ -49,6 +49,7 @@ interface DraftText {
   endTime: number
   bgBox: boolean
   selected?: boolean
+  trackRow?: number
 }
 
 type DragTarget = 'video-pan' | 'watermark' | 'subtitle' | 'card' | `text:${string}` | null
@@ -153,7 +154,6 @@ const draft = reactive({
   wmPath: '',
   wmScale: 0.2,
   wmOpacity: 1.0,
-  wmPos: 'br',
   wmX: 0.97,
   wmY: 0.97,
   wmStartTime: 0,
@@ -162,6 +162,8 @@ const draft = reactive({
   musicPath: '',
   musicVolume: 0.3,
   musicLoop: false,
+  musicStartTime: 0,
+  musicEndTime: 0,
   subEnabled: false,
   subPath: '',
   subFontSize: 24,
@@ -177,7 +179,6 @@ const draft = reactive({
   subTargetLang: '',
   textEnabled: false,
   texts: [] as DraftText[],
-  randomText: false,
   cardEnabled: false,
   cardAboveText: false, // false = Text nằm trên Card (mặc định); true = Card nằm trên Text
   cardMode: 'preset' as 'preset' | 'color' | 'image',
@@ -203,32 +204,45 @@ let timelineRAF = 0
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0))
 
+// Rút gọn số thành chuỗi ngắn cho biểu thức ffmpeg (0.5 chứ không 0.5000).
+const fracStr = (v: number) => String(Number(clamp01(v).toFixed(4)))
+
+// coordExpr đổi toạ độ chuẩn hoá 0..1 thành biểu thức vị trí cho ffmpeg, NEO THEO
+// TỈ LỆ: 0 = sát mép đầu, 1 = sát mép cuối, 0.5 = chính giữa.
+// - Watermark: khớp TUYỆT ĐỐI với preview (preview cũng dùng left = X*(khung - vật thể)).
+// - Text: preview neo tâm (translate(-50%,-50%)) nên hai bên trùng nhau ở giữa khung,
+//   còn sát mép thì bản xuất giữ chữ nằm trong khung thay vì để tràn ra ngoài như
+//   preview. Chọn dạng này vì biểu thức không chứa dấu phẩy (dấu phẩy sẽ bị
+//   filtergraph hiểu là ngăn cách filter) và thống nhất với cách Card đang neo.
 const coordExpr = (axis: 'x' | 'y', val: number, targetType: 'text' | 'watermark') => {
-  const norm = clamp01(val)
+  const f = fracStr(val)
   if (targetType === 'watermark') {
-    if (axis === 'x') return norm > 0.5 ? 'main_w-overlay_w-20' : '20'
-    return norm > 0.5 ? 'main_h-overlay_h-20' : '20'
+    // Trong filter overlay: W/H = khung nền, w/h = ảnh watermark.
+    return axis === 'x' ? `(W-w)*${f}` : `(H-h)*${f}`
   }
-  if (axis === 'x') return '(w-text_w)/2'
-  if (norm <= 0.2) return '0.08*h'
-  if (norm >= 0.7) return 'h-text_h-0.08*h'
-  return '(h-text_h)/2'
+  // Trong filter drawtext: w/h = khung, text_w/text_h = kích thước chữ.
+  return axis === 'x' ? `(w-text_w)*${f}` : `(h-text_h)*${f}`
 }
 
 const parseNormalizedExpr = (expr: unknown, axis: 'x' | 'y', targetType: 'text' | 'watermark', fallback: number) => {
   const raw = String(expr || '').trim()
   if (!raw) return fallback
   const num = Number.parseFloat(raw)
-  if (!Number.isNaN(num)) return clamp01(num)
+  if (!Number.isNaN(num) && /^[\d.]+$/.test(raw)) return clamp01(num)
 
+  // Dạng mới: "(w-text_w)*0.32" / "(W-w)*0.75" → lấy hệ số tỉ lệ ở cuối.
+  const frac = raw.match(/\*\s*([0-9]*\.?[0-9]+)\s*$/)
+  if (frac) return clamp01(Number.parseFloat(frac[1]))
+
+  // Dạng cũ (kịch bản lưu trước khi sửa): chỉ có mép/giữa nên map về mốc gần nhất.
   if (targetType === 'watermark') {
-    if (axis === 'x') return raw.includes('main_w-overlay_w') ? 0.97 : 0.03
-    if (axis === 'y') return raw.includes('main_h-overlay_h') ? 0.97 : 0.03
+    if (axis === 'x') return raw.includes('main_w-overlay_w') || raw.includes('W-w') ? 0.97 : 0.03
+    if (axis === 'y') return raw.includes('main_h-overlay_h') || raw.includes('H-h') ? 0.97 : 0.03
   } else {
     if (axis === 'x') return 0.5
-    if (axis === 'y' && raw.includes('0.08*h')) return raw.includes('h-text_h') ? 0.9 : 0.08
-    if (axis === 'y' && /^\d+(\.\d+)?$/.test(raw)) return 0.08
     if (axis === 'y' && raw.includes('h-text_h-')) return 0.9
+    if (axis === 'y' && raw.includes('0.08*h')) return 0.08
+    if (axis === 'y' && /^\d+(\.\d+)?$/.test(raw)) return 0.08
   }
   return fallback
 }
@@ -261,7 +275,33 @@ const toggleTextSelected = (text: DraftText) => {
 const addText = () => {
   draft.textEnabled = true
   const id = `text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-  draft.texts.push({ id, content: 'Nội dung chữ', fontSize: 48, color: '#ffffff', font: 'Arial', x: 0.5, y: 0.82, startTime: 0, endTime: 0, bgBox: true, selected: true })
+
+  let newStart = 0
+  let newEnd = 0
+  const activeTexts = selectedTextsList.value
+  if (activeTexts.length > 0) {
+    const last = activeTexts[activeTexts.length - 1]
+    const lastEnd = last.endTime > 0 ? last.endTime : (last.startTime + 2.0)
+    newStart = Math.round(lastEnd * 10) / 10
+    const total = durationSec.value > 0 ? durationSec.value : 10
+    if (newStart + 3.0 < total) {
+      newEnd = Math.round((newStart + 3.0) * 10) / 10
+    }
+  }
+
+  draft.texts.push({
+    id,
+    content: 'Nội dung chữ',
+    fontSize: 48,
+    color: '#ffffff',
+    font: 'Arial',
+    x: 0.5,
+    y: 0.82,
+    startTime: newStart,
+    endTime: newEnd,
+    bgBox: true,
+    selected: true,
+  })
   selectedTextId.value = id
 }
 
@@ -324,16 +364,23 @@ const onTrackDrop = (e: DragEvent, targetType: string) => {
     return
   }
 
-  // 2. Kéo hoán đổi vị trí giữa các dòng Text với nhau
+  // 2. Kéo thả giữa các dòng Text với nhau: tự động gộp hàng (nếu chỉnh thời gian) hoặc đổi thứ tự
   if (sourceType.startsWith('text:') && targetType.startsWith('text:')) {
     const srcId = sourceType.replace('text:', '')
     const tgtId = targetType.replace('text:', '')
-    const srcIdx = draft.texts.findIndex(t => t.id === srcId)
-    const tgtIdx = draft.texts.findIndex(t => t.id === tgtId)
-    if (srcIdx >= 0 && tgtIdx >= 0 && srcIdx !== tgtIdx) {
-      const temp = draft.texts[srcIdx]
-      draft.texts[srcIdx] = draft.texts[tgtIdx]
-      draft.texts[tgtIdx] = temp
+    const srcText = draft.texts.find(t => t.id === srcId)
+    const tgtText = draft.texts.find(t => t.id === tgtId)
+
+    if (srcText && tgtText && srcId !== tgtId) {
+      const tgtEnd = tgtText.endTime > 0 ? tgtText.endTime : (tgtText.startTime + 2.0)
+      srcText.startTime = Math.round((tgtEnd + 0.1) * 10) / 10
+      const total = durationSec.value > 0 ? durationSec.value : 10
+      if (srcText.endTime > 0 && srcText.endTime <= srcText.startTime) {
+        srcText.endTime = Math.min(total, Math.round((srcText.startTime + 3.0) * 10) / 10)
+      }
+      currentSec.value = srcText.startTime
+      currentTimeStr.value = formatSeconds(srcText.startTime)
+      performVideoSeek(srcText.startTime)
     }
   }
 }
@@ -499,6 +546,16 @@ const wmBlockStyle = computed(() => {
   }
 })
 
+const audioBlockStyle = computed(() => {
+  const total = Math.max(0.001, durationSec.value > 0 ? durationSec.value : 10)
+  const start = Math.min(total, Math.max(0, draft.musicStartTime || 0))
+  const end = draft.musicEndTime > start ? Math.min(total, draft.musicEndTime) : total
+  return {
+    left: `${(start / total) * 100}%`,
+    width: `${Math.max(1.2, ((end - start) / total) * 100)}%`,
+  }
+})
+
 const textTrackRows = computed(() => {
   const texts = selectedTextsList.value
   if (!texts.length) return []
@@ -509,6 +566,16 @@ const textTrackRows = computed(() => {
   for (const t of texts) {
     const st = Math.max(0, t.startTime || 0)
     const et = t.endTime > st ? Math.min(total, t.endTime) : total
+
+    // Hỗ trợ kéo thả lên/xuống tách hàng riêng hoặc gộp hàng theo chỉ số trackRow
+    if (t.trackRow !== undefined && t.trackRow >= 0) {
+      const rIdx = t.trackRow
+      while (rows.length <= rIdx) {
+        rows.push([])
+      }
+      rows[rIdx].push(t)
+      continue
+    }
     
     let placed = false
     for (const row of rows) {
@@ -527,7 +594,7 @@ const textTrackRows = computed(() => {
       rows.push([t])
     }
   }
-  return rows
+  return rows.filter(r => r && r.length > 0)
 })
 
 // Live Video Controls
@@ -540,6 +607,7 @@ const togglePlay = () => {
     videoRef.value.pause()
     isPlaying.value = false
   }
+  syncMusicPlayback()
 }
 
 const restartVideo = () => {
@@ -547,6 +615,7 @@ const restartVideo = () => {
   videoRef.value.currentTime = 0
   videoRef.value.play()
   isPlaying.value = true
+  syncMusicPlayback()
 }
 
 const formatSeconds = (sec: number) => {
@@ -597,24 +666,77 @@ const videoBlockStyle = computed(() => {
   }
 })
 
+const musicAudioRef = ref<HTMLAudioElement | null>(null)
+const musicStreamUrl = ref('')
+
+watch(() => draft.musicPath, async (p) => {
+  if (!p) { musicStreamUrl.value = ''; return }
+  try {
+    musicStreamUrl.value = await GetStreamURL(p)
+  } catch (e) {
+    musicStreamUrl.value = ''
+  }
+}, { immediate: true })
+
+watch(musicStreamUrl, (url) => {
+  if (musicAudioRef.value) {
+    musicAudioRef.value.src = url
+    musicAudioRef.value.load()
+  }
+})
+
+watch(() => draft.muteOriginal, (muted) => {
+  if (videoRef.value) {
+    videoRef.value.muted = muted
+  }
+}, { immediate: true })
+
+watch(() => draft.musicVolume, (vol) => {
+  if (musicAudioRef.value) {
+    musicAudioRef.value.volume = Math.max(0, Math.min(1, vol))
+  }
+}, { immediate: true })
+
+const syncMusicPlayback = () => {
+  if (!musicAudioRef.value || !musicStreamUrl.value) return
+  const st = Math.max(0, draft.musicStartTime || 0)
+  const et = draft.musicEndTime > st ? draft.musicEndTime : Number.POSITIVE_INFINITY
+  const inRange = currentSec.value >= st && currentSec.value <= et
+
+  if (inRange && videoRef.value && !videoRef.value.paused) {
+    const offset = currentSec.value - st
+    if (Math.abs(musicAudioRef.value.currentTime - offset) > 0.3) {
+      musicAudioRef.value.currentTime = offset
+    }
+    if (musicAudioRef.value.paused) {
+      void musicAudioRef.value.play().catch(() => {})
+    }
+  } else {
+    if (!musicAudioRef.value.paused) {
+      musicAudioRef.value.pause()
+    }
+  }
+}
+
 const onTimeUpdate = () => {
   if (videoRef.value) {
+    videoRef.value.muted = draft.muteOriginal
     currentSec.value = videoRef.value.currentTime
     currentTimeStr.value = formatSeconds(videoRef.value.currentTime)
+    syncMusicPlayback()
   }
 }
 
 const onMetadataLoaded = () => {
   if (videoRef.value) {
+    videoRef.value.muted = draft.muteOriginal
     durationSec.value = videoRef.value.duration
     durationTimeStr.value = formatSeconds(videoRef.value.duration)
     videoRef.value.playbackRate = draft.speed
+    syncMusicPlayback()
   }
 }
 
-// Tua video theo % vị trí click trên timeline. Đồng bộ lớp nền blur (nỗi có) theo cùng mốc.
-// Bề rộng cột nhãn track (🎬 Video V1...) bên trái — vùng KHÔNG tua được. Phải khớp
-// .track-head width trong CSS (84px) để playhead + click quy đổi cùng một mốc gốc.
 const TRACK_HEAD_W = 84
 
 const tracksRef = ref<HTMLElement | null>(null)
@@ -709,6 +831,137 @@ const cancelTimelineDrag = () => {
   isTimelineDragging.value = false
 }
 
+// === PREVIEW MONITOR ZOOM & CANVA SMART GUIDES STATE ===
+const previewZoom = ref(1.0)
+const enableSnapGuides = ref(true)
+
+const changeZoom = (delta: number) => {
+  let next = Math.round((previewZoom.value + delta) * 100) / 100
+  if (next < 0.5) next = 0.5
+  if (next > 3.0) next = 3.0
+  previewZoom.value = next
+}
+
+const resetZoom = () => {
+  previewZoom.value = 1.0
+}
+
+const screenWrapStyle = computed(() => {
+  if (previewZoom.value > 1.0) {
+    return {
+      overflow: 'auto',
+      alignItems: 'flex-start',
+      justifyContent: 'center',
+      padding: '24px'
+    }
+  }
+  return {
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '16px'
+  }
+})
+
+const frameStyle = computed(() => {
+  const ratio = draft.aspectEnabled ? draft.aspectRatio.replace(':', '/') : '16/9'
+  const styleObj: Record<string, string> = {
+    aspectRatio: ratio
+  }
+  if (previewZoom.value !== 1.0) {
+    const scale = previewZoom.value
+    styleObj.transform = `scale(${scale})`
+    styleObj.transformOrigin = 'top center'
+    styleObj.flexShrink = '0'
+    styleObj.marginTop = `${Math.round((scale - 1) * 30)}px`
+    styleObj.marginBottom = `${Math.round((scale - 1) * 320)}px`
+  }
+  return styleObj
+})
+
+const activeGuides = reactive({
+  verticalCenter: false,  // x = 0.5
+  horizontalCenter: false,// y = 0.5
+  vThird1: false,         // x = 0.333
+  vThird2: false,         // x = 0.666
+  hThird1: false,         // y = 0.333
+  hThird2: false,         // y = 0.666
+  safeTop: false,         // y = 0.08
+  safeBottom: false,      // y = 0.90
+})
+
+const resetActiveGuides = () => {
+  activeGuides.verticalCenter = false
+  activeGuides.horizontalCenter = false
+  activeGuides.vThird1 = false
+  activeGuides.vThird2 = false
+  activeGuides.hThird1 = false
+  activeGuides.hThird2 = false
+  activeGuides.safeTop = false
+  activeGuides.safeBottom = false
+}
+
+const checkAndSnapCoords = (rawX: number, rawY: number, targetType: 'text' | 'watermark' | 'card' | 'subtitle') => {
+  let snappedX = rawX
+  let snappedY = rawY
+
+  resetActiveGuides()
+
+  if (!enableSnapGuides.value) {
+    return { x: snappedX, y: snappedY }
+  }
+
+  const SNAP_THRESHOLD = 0.02
+
+  let centerX = rawX
+  let centerY = rawY
+
+  if (targetType === 'subtitle') {
+    centerX = rawX
+    centerY = rawY
+  } else if (targetType === 'card') {
+    const cardWNorm = (draft.cardWidth || 82) / 100
+    const cardHNorm = (draft.cardHeight || 22) / 100
+    centerX = rawX + cardWNorm / 2
+    centerY = rawY + cardHNorm / 2
+  } else {
+    centerX = rawX
+    centerY = rawY
+  }
+
+  // 1. Check Vertical Center (X = 0.5)
+  if (Math.abs(centerX - 0.5) < SNAP_THRESHOLD) {
+    activeGuides.verticalCenter = true
+    snappedX = rawX + (0.5 - centerX)
+  } else if (Math.abs(centerX - 0.333) < SNAP_THRESHOLD) {
+    activeGuides.vThird1 = true
+    snappedX = rawX + (0.333 - centerX)
+  } else if (Math.abs(centerX - 0.666) < SNAP_THRESHOLD) {
+    activeGuides.vThird2 = true
+    snappedX = rawX + (0.666 - centerX)
+  }
+
+  // 2. Check Horizontal Center (Y = 0.5)
+  if (Math.abs(centerY - 0.5) < SNAP_THRESHOLD) {
+    activeGuides.horizontalCenter = true
+    snappedY = rawY + (0.5 - centerY)
+  } else if (Math.abs(centerY - 0.333) < SNAP_THRESHOLD) {
+    activeGuides.hThird1 = true
+    snappedY = rawY + (0.333 - centerY)
+  } else if (Math.abs(centerY - 0.666) < SNAP_THRESHOLD) {
+    activeGuides.hThird2 = true
+    snappedY = rawY + (0.666 - centerY)
+  } else if (Math.abs(centerY - 0.08) < SNAP_THRESHOLD) {
+    activeGuides.safeTop = true
+    snappedY = rawY + (0.08 - centerY)
+  } else if (Math.abs(centerY - 0.90) < SNAP_THRESHOLD) {
+    activeGuides.safeBottom = true
+    snappedY = rawY + (0.90 - centerY)
+  }
+
+  return { x: snappedX, y: snappedY }
+}
+
 let dragPointerId = -1
 let dragOffsetX = 0
 let dragOffsetY = 0
@@ -759,18 +1012,15 @@ const beginOverlayDrag = (target: Exclude<DragTarget, null>, e: PointerEvent) =>
 }
 
 const updateOverlayDrag = (e: PointerEvent) => {
+  if (e.buttons === 0) {
+    finishOverlayDrag(e)
+    return
+  }
   if (!dragTarget.value || e.pointerId !== dragPointerId || !playerFrameRef.value) return
   e.preventDefault()
   e.stopPropagation()
 
   if (dragTarget.value === 'video-pan') {
-    // Tự động bật aspect & zoom nhẹ nếu chưa bật để thao tác kéo lọt khung có hiệu lực tức thì
-    if (!draft.aspectEnabled) draft.aspectEnabled = true
-    if (!draft.zoomEnabled) {
-      draft.zoomEnabled = true
-      if (draft.zoomFactor < 1.05) draft.zoomFactor = 1.05
-    }
-
     const deltaX = e.clientX - panStartX
     const deltaY = e.clientY - panStartY
     // Hệ số độ nhạy chuột (0.35) giúp kéo trượt chuẩn xác từng mm, không bị giật nhanh
@@ -787,15 +1037,22 @@ const updateOverlayDrag = (e: PointerEvent) => {
   if (dragTarget.value === 'watermark' || dragTarget.value === 'card' || dragTarget.value.startsWith('text:')) {
     const usableW = Math.max(1, frame.width - dragElementW)
     const usableH = Math.max(1, frame.height - dragElementH)
-    const x = left / usableW
-    const y = top / usableH
-    if (dragTarget.value === 'watermark') setWatermarkPosition(x, y)
+    const rawX = left / usableW
+    const rawY = top / usableH
+
+    let targetType: 'card' | 'watermark' | 'text' = 'text'
+    if (dragTarget.value === 'watermark') targetType = 'watermark'
+    else if (dragTarget.value === 'card') targetType = 'card'
+
+    const snapped = checkAndSnapCoords(rawX, rawY, targetType)
+
+    if (dragTarget.value === 'watermark') setWatermarkPosition(snapped.x, snapped.y)
     else if (dragTarget.value === 'card') {
-      draft.cardX = clamp01(x)
-      draft.cardY = clamp01(y)
+      draft.cardX = clamp01(snapped.x)
+      draft.cardY = clamp01(snapped.y)
     } else {
       const text = draft.texts.find(t => t.id === dragTarget.value?.slice(5))
-      if (text) setTextPosition(text, x, y)
+      if (text) setTextPosition(text, snapped.x, snapped.y)
     }
   } else {
     // Phụ đề dùng tâm làm neo, trùng với ASS \pos(x,y).
@@ -805,9 +1062,11 @@ const updateOverlayDrag = (e: PointerEvent) => {
     const maxX = 1 - minX
     const minY = halfH / Math.max(1, frame.height)
     const maxY = 1 - minY
-    const x = Math.min(maxX, Math.max(minX, (left + halfW) / Math.max(1, frame.width)))
-    const y = Math.min(maxY, Math.max(minY, (top + halfH) / Math.max(1, frame.height)))
-    setSubtitlePosition(x, y)
+    const rawX = Math.min(maxX, Math.max(minX, (left + halfW) / Math.max(1, frame.width)))
+    const rawY = Math.min(maxY, Math.max(minY, (top + halfH) / Math.max(1, frame.height)))
+
+    const snapped = checkAndSnapCoords(rawX, rawY, 'subtitle')
+    setSubtitlePosition(snapped.x, snapped.y)
   }
 }
 
@@ -818,6 +1077,13 @@ const finishOverlayDrag = (e: PointerEvent) => {
   if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
   dragTarget.value = null
   dragPointerId = -1
+  resetActiveGuides()
+}
+
+const cancelOverlayDrag = (e: PointerEvent) => {
+  dragTarget.value = null
+  dragPointerId = -1
+  resetActiveGuides()
 }
 
 const selectCardPreset = (id: string) => {
@@ -972,12 +1238,7 @@ const finishResizeHandle = (e: PointerEvent) => {
   resizeSession = null
 }
 
-const cancelOverlayDrag = () => {
-  dragTarget.value = null
-  dragPointerId = -1
-}
-
-// Giữ Ctrl + Cuộn chuột để phóng to / thu nhỏ phần tử overlay (Watermark, Subtitle, Text)
+// Giữ Ctrl + Cuộn chuột để phóng to / thu nhỏ phần tử overlay (Watermark, Subtitle, Text) hoặc toàn bộ Preview
 const onOverlayWheel = (e: WheelEvent, targetType: string) => {
   if (!e.ctrlKey && !e.metaKey) return
   e.preventDefault()
@@ -1010,7 +1271,7 @@ const onOverlayWheel = (e: WheelEvent, targetType: string) => {
 }
 
 const onFrameWheel = (e: WheelEvent) => {
-  if (!e.ctrlKey && !e.metaKey) return
+  if (!e.ctrlKey && !e.metaKey && !e.altKey) return
   e.preventDefault()
 
   if (dragTarget.value) {
@@ -1026,14 +1287,23 @@ const onFrameWheel = (e: WheelEvent) => {
     onOverlayWheel(e, 'watermark')
     return
   }
+
+  // Cuộn zoom màn hình live preview
+  if (e.deltaY < 0) {
+    changeZoom(0.15)
+  } else {
+    changeZoom(-0.15)
+  }
 }
 
 // Timeline Card Block Dragging & Resizing Logic
 interface TimelineBlockDragSession {
-  type: 'card' | 'watermark' | 'text'
+  type: 'card' | 'watermark' | 'text' | 'audio'
   textObj?: DraftText
   action: 'move' | 'resize-left' | 'resize-right'
   startPointerX: number
+  startPointerY: number
+  initialTrackRow: number
   initialStartTime: number
   initialEndTime: number
   totalDuration: number
@@ -1044,7 +1314,7 @@ interface TimelineBlockDragSession {
 const blockDragSession = ref<TimelineBlockDragSession | null>(null)
 
 const onBlockPointerDown = (
-  type: 'card' | 'watermark' | 'text',
+  type: 'card' | 'watermark' | 'text' | 'audio',
   action: 'move' | 'resize-left' | 'resize-right',
   e: PointerEvent,
   textObj?: DraftText
@@ -1058,6 +1328,7 @@ const onBlockPointerDown = (
   const totalDuration = durationSec.value > 0 ? durationSec.value : 10
   let initialStartTime = 0
   let initialEndTime = totalDuration
+  let initialTrackRow = 0
 
   if (type === 'card') {
     initialStartTime = draft.cardStartTime || 0
@@ -1065,10 +1336,16 @@ const onBlockPointerDown = (
   } else if (type === 'watermark') {
     initialStartTime = draft.wmStartTime || 0
     initialEndTime = draft.wmEndTime > 0 ? draft.wmEndTime : totalDuration
+  } else if (type === 'audio') {
+    initialStartTime = draft.musicStartTime || 0
+    initialEndTime = draft.musicEndTime > 0 ? draft.musicEndTime : totalDuration
   } else if (type === 'text' && textObj) {
     selectedTextId.value = textObj.id
     initialStartTime = textObj.startTime || 0
     initialEndTime = textObj.endTime > 0 ? textObj.endTime : totalDuration
+
+    const foundRow = textTrackRows.value.findIndex(r => r.some(item => item.id === textObj.id))
+    initialTrackRow = foundRow >= 0 ? foundRow : 0
   }
 
   blockDragSession.value = {
@@ -1076,6 +1353,8 @@ const onBlockPointerDown = (
     textObj,
     action,
     startPointerX: e.clientX,
+    startPointerY: e.clientY,
+    initialTrackRow,
     initialStartTime,
     initialEndTime,
     totalDuration,
@@ -1084,7 +1363,49 @@ const onBlockPointerDown = (
   }
 }
 
+// Lấy toàn bộ danh sách các khối trên Timeline để hỗ trợ hiệu ứng Khựng Nhẹ khi khít mép giữa các tính năng khác nhau
+const getAllTimelineBlocks = (excludeId?: string) => {
+  const blocks: { id: string, start: number, end: number }[] = []
+  const total = durationSec.value > 0 ? durationSec.value : 10
+
+  for (const t of selectedTextsList.value) {
+    if (t.id === excludeId) continue
+    const st = Math.max(0, t.startTime || 0)
+    const et = t.endTime > st ? Math.min(total, t.endTime) : total
+    blocks.push({ id: t.id, start: st, end: et })
+  }
+
+  if (draft.cardEnabled && excludeId !== 'card') {
+    const st = Math.max(0, draft.cardStartTime || 0)
+    const et = draft.cardEndTime > st ? Math.min(total, draft.cardEndTime) : total
+    blocks.push({ id: 'card', start: st, end: et })
+  }
+
+  if (draft.wmEnabled && draft.wmPath && excludeId !== 'watermark') {
+    const st = Math.max(0, draft.wmStartTime || 0)
+    const et = draft.wmEndTime > st ? Math.min(total, draft.wmEndTime) : total
+    blocks.push({ id: 'watermark', start: st, end: et })
+  }
+
+  if ((draft.musicPath || draft.muteOriginal) && excludeId !== 'audio') {
+    const st = Math.max(0, draft.musicStartTime || 0)
+    const et = draft.musicEndTime > st ? Math.min(total, draft.musicEndTime) : total
+    blocks.push({ id: 'audio', start: st, end: et })
+  }
+
+  return blocks
+}
+
 const onBlockPointerMove = (e: PointerEvent) => {
+  if (e.buttons === 0) {
+    if (blockDragSession.value) {
+      if (blockDragSession.value.targetEl && blockDragSession.value.targetEl.hasPointerCapture(e.pointerId)) {
+        blockDragSession.value.targetEl.releasePointerCapture(e.pointerId)
+      }
+      blockDragSession.value = null
+    }
+    return
+  }
   if (!blockDragSession.value) return
   const session = blockDragSession.value
   if (e.pointerId !== session.pointerId) return
@@ -1117,6 +1438,59 @@ const onBlockPointerMove = (e: PointerEvent) => {
     } else {
       newEnd = 0
     }
+
+    // Kéo thả dọc (Y): Di chuyển khối chữ LÊN hoặc XUỐNG để tách thành hàng riêng hay gộp về hàng trên!
+    if (session.type === 'text' && session.textObj) {
+      const dy = e.clientY - session.startPointerY
+      const rowDelta = Math.round(dy / 28)
+      const targetRow = session.initialTrackRow + rowDelta
+
+      if (targetRow <= 0) {
+        // Kéo lên trên cùng: Tự động gộp vào hàng cao nhất có thể (Text T1)
+        delete session.textObj.trackRow
+      } else {
+        // Kéo xuống dưới: Ép tách ra hàng riêng biệt theo vị trí chuột
+        session.textObj.trackRow = targetRow
+      }
+    }
+
+    // Hiệu ứng "Khựng nhẹ cảm nhận khít mép" (Tactile Notch) áp dụng TOÀN BỘ các loại khối (Text, Card, Logo, Audio)
+    const currentBlockId = session.type === 'text' && session.textObj ? session.textObj.id : session.type
+    const allOtherBlocks = getAllTimelineBlocks(currentBlockId)
+    const touchThreshold = Math.max(0.22, session.totalDuration * 0.012)
+
+    for (const other of allOtherBlocks) {
+      const ost = other.start
+      const oet = other.end
+
+      // 1. Khựng khi đầu khối chạm khít đuôi khối khác (Nối tiếp 0s gap)
+      if (Math.abs(newStart - oet) <= touchThreshold) {
+        newStart = Math.round(oet * 10) / 10
+        if (session.initialEndTime > 0 && session.initialEndTime < session.totalDuration) {
+          newEnd = Math.round((newStart + blockLen) * 10) / 10
+        }
+        break
+      }
+
+      // 2. Khựng khi đuôi khối chạm khít đầu khối khác
+      const curEndVal = newEnd > 0 ? newEnd : (newStart + blockLen)
+      if (Math.abs(curEndVal - ost) <= touchThreshold) {
+        newStart = Math.max(0, Math.round((ost - blockLen) * 10) / 10)
+        if (session.initialEndTime > 0 && session.initialEndTime < session.totalDuration) {
+          newEnd = Math.round((newStart + blockLen) * 10) / 10
+        }
+        break
+      }
+
+      // 3. Khựng khi đầu khối trùng khít đầu khối khác (Cùng mốc bắt đầu)
+      if (Math.abs(newStart - ost) <= touchThreshold) {
+        newStart = Math.round(ost * 10) / 10
+        if (session.initialEndTime > 0 && session.initialEndTime < session.totalDuration) {
+          newEnd = Math.round((newStart + blockLen) * 10) / 10
+        }
+        break
+      }
+    }
   }
 
   if (session.type === 'card') {
@@ -1125,6 +1499,9 @@ const onBlockPointerMove = (e: PointerEvent) => {
   } else if (session.type === 'watermark') {
     draft.wmStartTime = newStart
     draft.wmEndTime = newEnd
+  } else if (session.type === 'audio') {
+    draft.musicStartTime = newStart
+    draft.musicEndTime = newEnd
   } else if (session.type === 'text' && session.textObj) {
     session.textObj.startTime = newStart
     session.textObj.endTime = newEnd
@@ -1150,8 +1527,33 @@ const onCardBlockPointerMove = (e: PointerEvent) => onBlockPointerMove(e)
 const onCardBlockPointerUp = (e: PointerEvent) => onBlockPointerUp(e)
 
 const onGlobalKeyDown = (e: KeyboardEvent) => {
+  const activeEl = document.activeElement as HTMLElement | null
+  if (
+    activeEl && (
+      activeEl.tagName === 'INPUT' ||
+      activeEl.tagName === 'TEXTAREA' ||
+      activeEl.tagName === 'SELECT' ||
+      activeEl.isContentEditable
+    )
+  ) {
+    return
+  }
+
   if (e.key === 'Escape') {
     selectedTextId.value = ''
+  } else if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (selectedTextId.value) {
+      e.preventDefault()
+      removeText(selectedTextId.value)
+    } else if (dragTarget.value === 'watermark') {
+      e.preventDefault()
+      draft.wmEnabled = false
+      dragTarget.value = null
+    } else if (dragTarget.value === 'card') {
+      e.preventDefault()
+      draft.cardEnabled = false
+      dragTarget.value = null
+    }
   }
 }
 
@@ -1260,25 +1662,32 @@ const wmStyle = computed(() => ({
   zIndex: '5',
 } as Record<string, string>))
 
-const subStyle = computed(() => ({
-  position: 'absolute',
-  left: `${clamp01(draft.subX) * 100}%`,
-  top: `${clamp01(draft.subY) * 100}%`,
-  transform: 'translate(-50%, -50%)',
-  fontSize: `${Math.max(10, draft.subFontSize)}px`,
-  fontFamily: cssFontFamily(draft.subFont),
-  color: draft.subFontColor || '#ffffff',
-  WebkitTextStroke: `1px ${draft.subOutlineColor || '#000000'}`,
-  textShadow: `0 1px 3px ${draft.subOutlineColor || '#000000'}`,
-  fontWeight: '700',
-  whiteSpace: 'nowrap',
-  pointerEvents: 'auto',
-  cursor: dragTarget.value === 'subtitle' ? 'grabbing' : 'grab',
-  touchAction: 'none',
-  zIndex: '6',
-  maxWidth: '92%',
-  textAlign: 'center',
-} as Record<string, string>))
+const subStyle = computed(() => {
+  const fontSize = Math.max(10, draft.subFontSize)
+  const strokeW = Math.max(0.5, Math.min(2.5, Number((fontSize * 0.045).toFixed(1))))
+  const outlineCol = draft.subOutlineColor || '#000000'
+  return {
+    position: 'absolute',
+    left: `${clamp01(draft.subX) * 100}%`,
+    top: `${clamp01(draft.subY) * 100}%`,
+    transform: 'translate(-50%, -50%)',
+    fontSize: `${fontSize}px`,
+    fontFamily: cssFontFamily(draft.subFont),
+    color: draft.subFontColor || '#ffffff',
+    WebkitTextStroke: `${strokeW}px ${outlineCol}`,
+    paintOrder: 'stroke fill',
+    WebkitPaintOrder: 'stroke fill',
+    textShadow: `0 1px 2px ${outlineCol}`,
+    fontWeight: '700',
+    whiteSpace: 'nowrap',
+    pointerEvents: 'auto',
+    cursor: dragTarget.value === 'subtitle' ? 'grabbing' : 'grab',
+    touchAction: 'none',
+    zIndex: '6',
+    maxWidth: '92%',
+    textAlign: 'center',
+  } as Record<string, string>
+})
 
 const textStyle = (text: DraftText) => ({
   position: 'absolute',
@@ -1327,11 +1736,11 @@ const resetDraft = () => {
     noiseEnabled: false, noiseStrength: 10,
     trimStart: 0, trimEnd: 0, pitch: 0, stripMeta: false,
     wmEnabled: false, wmPath: '', wmScale: 0.2, wmOpacity: 1.0, wmX: 0.97, wmY: 0.97, wmStartTime: 0, wmEndTime: 0,
-    muteOriginal: false, musicPath: '', musicVolume: 0.3, musicLoop: false,
+    muteOriginal: false, musicPath: '', musicVolume: 0.3, musicLoop: false, musicStartTime: 0, musicEndTime: 0,
     subEnabled: false, subPath: '', subFontSize: 24, subFontColor: '#ffffff', subOutlineColor: '#000000', subMarginV: 40, subFont: 'Arial',
     subX: 0.5, subY: 0.9, subHasCustomPosition: false,
     subAutoGen: false, subSourceLang: 'auto', subTargetLang: '', textEnabled: false, texts: [],
-    randomText: false, cardEnabled: false, cardAboveText: false, cardMode: 'preset', cardPreset: 'glass', cardImgPath: '',
+    cardEnabled: false, cardAboveText: false, cardMode: 'preset', cardPreset: 'glass', cardImgPath: '',
     cardColor: '#0f172a', cardColor2: '#1e293b', cardOpacity: 0.85, cardX: 0.5, cardY: 0.75,
     cardWidth: 82, cardHeight: 22, cardBorderRadius: 12, cardStartTime: 0, cardEndTime: 0,
   })
@@ -1351,7 +1760,6 @@ const draftToEdit = (): any => ({
   trimEnd: draft.trimEnd,
   pitch: draft.pitch,
   stripMeta: draft.stripMeta,
-  randomText: draft.randomText,
   textEnabled: draft.textEnabled,
   texts: draft.texts.map(t => ({
     content: t.content,
@@ -1364,6 +1772,8 @@ const draftToEdit = (): any => ({
     endTime: t.endTime > 0 ? Math.max(t.startTime || 0, t.endTime) : 0,
     bgBox: !!t.bgBox,
     selected: t.selected !== false,
+    // Hàng timeline người dùng kéo text vào (chỉ dùng để hiển thị lại, Go bỏ qua field này).
+    ...(t.trackRow !== undefined && t.trackRow >= 0 ? { trackRow: t.trackRow } : {}),
   })),
   card: {
     enabled: draft.cardEnabled,
@@ -1392,9 +1802,20 @@ const draftToEdit = (): any => ({
     startTime: Math.max(0, draft.wmStartTime || 0),
     endTime: draft.wmEndTime > 0 ? Math.max(draft.wmStartTime || 0, draft.wmEndTime) : 0,
   },
-  audio: { mute: draft.muteOriginal, musicPath: draft.musicPath, musicVolume: draft.musicVolume, musicLoop: draft.musicLoop, musicTracks: draft.musicPath ? [draft.musicPath] : [], volume: 1, fadeIn: 0, fadeOut: 0 },
+  audio: {
+    mute: draft.muteOriginal,
+    musicPath: draft.musicPath,
+    musicVolume: draft.musicVolume,
+    musicLoop: draft.musicLoop,
+    musicTracks: draft.musicPath ? [draft.musicPath] : [],
+    musicStartTime: Math.max(0, draft.musicStartTime || 0),
+    musicEndTime: draft.musicEndTime > 0 ? Math.max(draft.musicStartTime || 0, draft.musicEndTime) : 0,
+    volume: 1,
+    fadeIn: 0,
+    fadeOut: 0,
+  },
   subtitle: {
-    enabled: draft.subEnabled,
+    enabled: draft.subEnabled || draft.subAutoGen,
     path: draft.subPath,
     fontSize: draft.subFontSize,
     fontColor: cssToASSColor(draft.subFontColor, '&Hffffff'),
@@ -1435,7 +1856,14 @@ const editToDraft = (e: any) => {
     draft.wmStartTime = Math.max(0, e.watermark.startTime || 0)
     draft.wmEndTime = Math.max(0, e.watermark.endTime || 0)
   }
-  if (e.audio) { draft.muteOriginal = !!e.audio.mute; draft.musicPath = e.audio.musicPath || (e.audio.musicTracks && e.audio.musicTracks[0]) || ''; draft.musicVolume = e.audio.musicVolume ?? 0.3; draft.musicLoop = !!e.audio.musicLoop }
+  if (e.audio) {
+    draft.muteOriginal = !!e.audio.mute
+    draft.musicPath = e.audio.musicPath || (e.audio.musicTracks && e.audio.musicTracks[0]) || ''
+    draft.musicVolume = e.audio.musicVolume ?? 0.3
+    draft.musicLoop = !!e.audio.musicLoop
+    draft.musicStartTime = Math.max(0, e.audio.musicStartTime || 0)
+    draft.musicEndTime = Math.max(0, e.audio.musicEndTime || 0)
+  }
   if (e.card) {
     draft.cardEnabled = !!e.card.enabled
     draft.cardMode = e.card.mode || 'preset'
@@ -1468,7 +1896,6 @@ const editToDraft = (e: any) => {
     draft.subSourceLang = e.subtitle.sourceLang || 'auto'
     draft.subTargetLang = e.subtitle.targetLang || ''
   }
-  draft.randomText = !!e.randomText
   draft.textEnabled = e.textEnabled !== undefined ? !!e.textEnabled : (Array.isArray(e.texts) && e.texts.length > 0)
   draft.texts = Array.isArray(e.texts) ? e.texts.map((t: any, index: number) => ({
     id: `text-${Date.now()}-${index}`,
@@ -1482,6 +1909,8 @@ const editToDraft = (e: any) => {
     endTime: Math.max(0, t.endTime || 0),
     bgBox: !!t.bgBox,
     selected: t.selected !== false,
+    // trackRow: hàng timeline người dùng đã kéo. Chỉ nhận số >= 0; thiếu = tự xếp hàng.
+    ...(typeof t.trackRow === 'number' && t.trackRow >= 0 ? { trackRow: t.trackRow } : {}),
   })) : []
   selectedTextId.value = ''
 }
@@ -1615,7 +2044,7 @@ onMounted(load)
             @change="onScenarioChange"
             class="capcut-preset-select"
           >
-            <option v-for="s in scenarios" :key="s.id" :value="s.id" style="background-color: #0f172a; color: #f8fafc;">
+            <option v-for="s in scenarios" :key="s.id" :value="s.id" style="background-color: var(--wx-surface-base); color: var(--wx-text-primary);">
               {{ s.name }}
             </option>
           </select>
@@ -1659,7 +2088,7 @@ onMounted(load)
           <Save :size="14" /> {{ editingId === 'new' ? 'Lưu Kịch Bản Mới' : 'Lưu Thay Đổi' }}
         </BaseButton>
         <!-- Widget xuất video gọn đẹp ngay trên thanh header -->
-        <div v-if="isExporting" style="display: flex; align-items: center; gap: 10px; background: rgba(99, 102, 241, 0.15); border: 1.5px solid var(--wx-brand-primary, #6366f1); border-radius: 8px; padding: 4px 10px; height: 34px;">
+        <div v-if="isExporting" style="display: flex; align-items: center; gap: 10px; background: #4338ca; border: 1.5px solid var(--wx-brand-primary, #6366f1); border-radius: 8px; padding: 4px 10px; height: 34px;">
           <div style="display: flex; align-items: center; gap: 8px;">
             <Loader2 :size="14" class="spin-hourglass" style="color: #c084fc; flex-shrink: 0;" />
             <div style="display: flex; flex-direction: column; justify-content: center; gap: 2px;">
@@ -1748,7 +2177,7 @@ onMounted(load)
               <span class="switch-slider"></span>
               <span class="lbl-txt">Zoom &amp; Vị trí góc quay ({{ draft.zoomFactor }}x)</span>
             </label>
-            <div v-if="draft.zoomEnabled" style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 8px;">
+            <div v-if="draft.zoomEnabled" style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px; background: var(--wx-surface-sunken); border: 1px solid var(--wx-border-default); border-radius: 8px; padding: 8px;">
               <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
                 <span>Phóng to: <strong>{{ draft.zoomFactor }}x</strong></span>
                 <div class="quick-speed-pills">
@@ -1776,7 +2205,7 @@ onMounted(load)
                   <button
                     type="button"
                     @click="draft.videoPanX = 0.5; draft.videoPanY = 0.5"
-                    style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #fff; border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer;"
+                    style="background: var(--wx-surface-base); border: 1px solid var(--wx-border-default); color: var(--wx-text-primary); border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer;"
                     title="Đặt lại vị trí góc quay về chính giữa tâm"
                   >
                     🔄 Reset về tâm
@@ -1931,18 +2360,37 @@ onMounted(load)
               <span class="switch-slider"></span>
               <span class="lbl-txt">Ghép file phụ đề .SRT / .ASS</span>
             </label>
-            <div v-if="draft.subEnabled" class="sub-fields-group">
+            <div v-if="draft.subEnabled" class="sub-fields-group" style="margin-bottom: 6px;">
               <div class="inline-field-row">
                 <BaseButton variant="secondary" size="sm" @click="pickSubtitle">Chọn File Sub</BaseButton>
                 <span class="file-name-hint">{{ fileName(draft.subPath) || 'Chưa chọn' }}</span>
               </div>
+            </div>
+
+            <label class="toggle-switch-lbl" style="margin-top: 10px;">
+              <input type="checkbox" v-model="draft.subAutoGen" />
+              <span class="switch-slider"></span>
+              <span class="lbl-txt">Tự nghe Whisper AI tạo sub khi xuất</span>
+            </label>
+            <div v-if="draft.subAutoGen" class="sub-fields-group auto-gen-box" style="margin-bottom: 6px;">
+              <p class="auto-gen-hint">Whisper AI tự nghe giọng trong video khi xuất và ghép phụ đề.</p>
+              <div class="inline-field-row">
+                <span>Dịch sang:</span>
+                <select v-model="draft.subTargetLang" class="scenario-select" style="flex: 1; min-width: 0;">
+                  <option v-for="l in targetLangs" :key="l.code" :value="l.code">{{ l.name }}</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Bảng tùy chỉnh Định dạng & Font chữ Phụ đề (Hiện khi bật ghép file Sub hoặc Whisper AI Sub) -->
+            <div v-if="draft.subEnabled || draft.subAutoGen" class="sub-fields-group" style="margin-top: 8px;">
               <div class="inline-field-row editor-compact-row">
                 <label>Cỡ chữ <input v-model.number="draft.subFontSize" type="number" min="10" max="160" class="scenario-input-num" /></label>
                 <label>Màu <input v-model="draft.subFontColor" type="color" class="color-input" /></label>
                 <label>Viền <input v-model="draft.subOutlineColor" type="color" class="color-input" /></label>
               </div>
               <div class="inline-field-row" style="margin-top: 6px;">
-                <span style="font-size: 11.5px;">Kiểu chữ:</span>
+                <span style="font-size: 11.5px; font-weight: 700;">Kiểu chữ (Font):</span>
                 <select v-model="draft.subFont" class="scenario-select" style="flex: 1; min-width: 0;" :style="{ fontFamily: cssFontFamily(draft.subFont) }">
                   <option v-for="f in fontOptions" :key="f.name" :value="f.name" :style="{ fontFamily: f.cssFamily }">{{ f.name }}</option>
                 </select>
@@ -1953,22 +2401,7 @@ onMounted(load)
                 <button type="button" class="pos-mini-btn" @click="setSubtitlePosition(0.5, 0.88)">Dưới</button>
                 <button type="button" class="pos-mini-btn" @click="draft.subHasCustomPosition = false; draft.subX = 0.5; draft.subY = 0.9">Đặt lại</button>
               </div>
-              <p class="drag-help">Kéo dòng phụ đề mẫu trực tiếp trên video; vị trí này được giữ khi xuất.</p>
-            </div>
-
-            <label class="toggle-switch-lbl" style="margin-top: 12px;">
-              <input type="checkbox" v-model="draft.subAutoGen" />
-              <span class="switch-slider"></span>
-              <span class="lbl-txt">Tự nghe Whisper AI tạo sub khi xuất</span>
-            </label>
-            <div v-if="draft.subAutoGen" class="sub-fields-group auto-gen-box">
-              <p class="auto-gen-hint">Whisper AI tự nghe giọng trong video khi xuất và ghép phụ đề.</p>
-              <div class="inline-field-row">
-                <span>Dịch sang:</span>
-                <select v-model="draft.subTargetLang" class="scenario-select" style="flex: 1; min-width: 0;">
-                  <option v-for="l in targetLangs" :key="l.code" :value="l.code">{{ l.name }}</option>
-                </select>
-              </div>
+              <p class="drag-help">Kéo dòng phụ đề mẫu trực tiếp trên video; kiểu chữ &amp; vị trí này được áp dụng cho phụ đề khi xuất.</p>
             </div>
 
             <div class="text-editor-section" style="margin-bottom: 12px;">
@@ -1983,49 +2416,51 @@ onMounted(load)
               </div>
 
               <div v-if="draft.cardEnabled" class="sub-fields-group">
-                <!-- Chọn Mode: Mẫu hoa văn / Tự chọn màu / Tải ảnh -->
-                <div class="preset-color-chips">
-                  <button class="c-chip" :class="{ active: draft.cardMode === 'preset' }" @click="draft.cardMode = 'preset'">Mẫu Có Sẵn</button>
-                  <button class="c-chip" :class="{ active: draft.cardMode === 'color' }" @click="draft.cardMode = 'color'">Tự Chọn Màu Nền</button>
+                <!-- Chọn Mode: Mẫu & Màu Nền Card / Tải Ảnh Nền -->
+                <div class="preset-color-chips" style="margin-bottom: 8px;">
+                  <button class="c-chip" :class="{ active: draft.cardMode === 'preset' || draft.cardMode === 'color' }" @click="draft.cardMode = 'preset'">Mẫu &amp; Màu Nền Card</button>
                   <button class="c-chip" :class="{ active: draft.cardMode === 'image' }" @click="draft.cardMode = 'image'">Tải Ảnh Nền</button>
                 </div>
 
-                <!-- Mode Presets (Clean Text Chips, No Checkboxes) -->
-                <div v-if="draft.cardMode === 'preset'" class="card-presets-grid">
-                  <button
-                    v-for="p in patternPresets"
-                    :key="p.id"
-                    type="button"
-                    class="card-preset-chip"
-                    :class="{ active: draft.cardPreset === p.id }"
-                    @click="selectCardPreset(p.id)"
-                  >
-                    {{ p.name }}
-                  </button>
+                <!-- Chế độ 1: Mẫu Hoa Văn + Bảng Chọn Màu Nền -->
+                <div v-if="draft.cardMode === 'preset' || draft.cardMode === 'color'">
+                  <!-- Mẫu Card Có Sẵn -->
+                  <div class="card-presets-grid">
+                    <button
+                      v-for="p in patternPresets"
+                      :key="p.id"
+                      type="button"
+                      class="card-preset-chip"
+                      :class="{ active: draft.cardMode === 'preset' && draft.cardPreset === p.id }"
+                      @click="selectCardPreset(p.id)"
+                    >
+                      {{ p.name }}
+                    </button>
+                  </div>
+
+                  <!-- Tự Chọn Màu Nền / Gradient Card -->
+                  <div class="card-color-picker-group" style="margin-top: 8px;">
+                    <div class="inline-field-row editor-compact-row">
+                      <label>Màu 1: <input type="color" v-model="draft.cardColor" class="color-picker-input" @input="draft.cardMode = 'color'; draft.cardEnabled = true" /></label>
+                      <label>Màu 2 (Gradient): <input type="color" v-model="draft.cardColor2" class="color-picker-input" @input="draft.cardMode = 'color'; draft.cardEnabled = true" /></label>
+                    </div>
+                    <div class="quick-swatches" style="margin-top: 6px;">
+                      <button type="button" class="swatch-btn" style="background: #000000" title="Đen" @click="setCardColor('#000000', '#000000')"></button>
+                      <button type="button" class="swatch-btn" style="background: #0f172a" title="Xanh Đen" @click="setCardColor('#0f172a', '#1e293b')"></button>
+                      <button type="button" class="swatch-btn" style="background: #dc2626" title="Đỏ" @click="setCardColor('#dc2626', '#991b1b')"></button>
+                      <button type="button" class="swatch-btn" style="background: #eab308" title="Vàng Gold" @click="setCardColor('#eab308', '#ca8a04')"></button>
+                      <button type="button" class="swatch-btn" style="background: #9333ea" title="Tím Neon" @click="setCardColor('#9333ea', '#7e22ce')"></button>
+                      <button type="button" class="swatch-btn" style="background: #2563eb" title="Xanh Dương" @click="setCardColor('#2563eb', '#1d4ed8')"></button>
+                      <button type="button" class="swatch-btn" style="background: #059669" title="Xanh Lá" @click="setCardColor('#059669', '#047857')"></button>
+                      <button type="button" class="swatch-btn" style="background: #f97316" title="Cam Nắng" @click="setCardColor('#f97316', '#c2410c')"></button>
+                      <button type="button" class="swatch-btn" style="background: #ec4899" title="Hồng Cánh Sen" @click="setCardColor('#ec4899', '#be185d')"></button>
+                      <button type="button" class="swatch-btn" style="background: #ffffff" title="Trắng" @click="setCardColor('#ffffff', '#e2e8f0')"></button>
+                    </div>
+                  </div>
                 </div>
 
-                <!-- Mode Color (Color Pickers & Auto-seek Swatches) -->
-                <div v-else-if="draft.cardMode === 'color'" class="card-color-picker-group">
-                  <div class="inline-field-row editor-compact-row">
-                    <label>Màu 1: <input type="color" v-model="draft.cardColor" class="color-picker-input" @input="draft.cardEnabled = true" /></label>
-                    <label>Màu 2 (Gradient): <input type="color" v-model="draft.cardColor2" class="color-picker-input" @input="draft.cardEnabled = true" /></label>
-                  </div>
-                  <div class="quick-swatches">
-                    <button type="button" class="swatch-btn" style="background: #000000" title="Đen" @click="setCardColor('#000000', '#000000')"></button>
-                    <button type="button" class="swatch-btn" style="background: #0f172a" title="Xanh Đen" @click="setCardColor('#0f172a', '#1e293b')"></button>
-                    <button type="button" class="swatch-btn" style="background: #dc2626" title="Đỏ" @click="setCardColor('#dc2626', '#991b1b')"></button>
-                    <button type="button" class="swatch-btn" style="background: #eab308" title="Vàng Gold" @click="setCardColor('#eab308', '#ca8a04')"></button>
-                    <button type="button" class="swatch-btn" style="background: #9333ea" title="Tím Neon" @click="setCardColor('#9333ea', '#7e22ce')"></button>
-                    <button type="button" class="swatch-btn" style="background: #2563eb" title="Xanh Dương" @click="setCardColor('#2563eb', '#1d4ed8')"></button>
-                    <button type="button" class="swatch-btn" style="background: #059669" title="Xanh Lá" @click="setCardColor('#059669', '#047857')"></button>
-                    <button type="button" class="swatch-btn" style="background: #f97316" title="Cam Nắng" @click="setCardColor('#f97316', '#c2410c')"></button>
-                    <button type="button" class="swatch-btn" style="background: #ec4899" title="Hồng Cánh Sen" @click="setCardColor('#ec4899', '#be185d')"></button>
-                    <button type="button" class="swatch-btn" style="background: #ffffff" title="Trắng" @click="setCardColor('#ffffff', '#e2e8f0')"></button>
-                  </div>
-                </div>
-
-                <!-- Mode Image -->
-                <div v-else class="inline-field-row">
+                <!-- Chế độ 2: Tải Ảnh Nền -->
+                <div v-else class="inline-field-row" style="margin-top: 6px;">
                   <BaseButton variant="secondary" size="sm" @click="pickCardImage">Chọn File Ảnh Nền</BaseButton>
                   <span class="file-name-hint">{{ fileName(draft.cardImgPath) || 'Chưa chọn ảnh' }}</span>
                 </div>
@@ -2135,19 +2570,63 @@ onMounted(load)
       <!-- PANEL 2: Center Player Preview Monitor -->
       <div class="capcut-center-panel">
         <div class="player-monitor-header">
-          <span class="monitor-title">Màn Hình Live Preview</span>
+          <div class="monitor-header-left">
+            <span class="monitor-title">Màn Hình Live Preview</span>
+            <span class="monitor-ratio-badge">{{ draft.aspectEnabled ? draft.aspectRatio : '16:9' }}</span>
+          </div>
+
+          <div class="preview-controls-right">
+            <!-- Snap Guides Toggle Button -->
+            <button
+              type="button"
+              class="preview-tool-btn"
+              :class="{ active: enableSnapGuides }"
+              @click="enableSnapGuides = !enableSnapGuides"
+              title="Bật/tắt đường kẻ & hít căn chỉnh thông minh (Canva Smart Guides)"
+            >
+              <Magnet :size="13" />
+              <span>Căn chuẩn</span>
+            </button>
+
+            <!-- Zoom Controls -->
+            <div class="preview-zoom-group">
+              <button type="button" class="zoom-btn" @click="changeZoom(-0.25)" title="Thu nhỏ (-25%)" :disabled="previewZoom <= 0.5">
+                <ZoomOut :size="13" />
+              </button>
+              <span class="zoom-text" @click="resetZoom" title="Nhấp để reset về 100%">{{ Math.round(previewZoom * 100) }}%</span>
+              <button type="button" class="zoom-btn" @click="changeZoom(0.25)" title="Phóng to (+25%)" :disabled="previewZoom >= 3.0">
+                <ZoomIn :size="13" />
+              </button>
+              <button v-if="previewZoom !== 1.0" type="button" class="zoom-btn reset-btn" @click="resetZoom" title="Về 100%">
+                <Maximize2 :size="12" />
+              </button>
+            </div>
+          </div>
         </div>
 
-        <div class="player-monitor-screen-wrap">
+        <div
+          class="player-monitor-screen-wrap"
+          :style="screenWrapStyle"
+        >
           <div
             ref="playerFrameRef"
             class="player-monitor-frame"
             :class="{ 'is-overlay-dragging': !!dragTarget }"
-            :style="{
-              aspectRatio: draft.aspectEnabled ? draft.aspectRatio.replace(':', '/') : '16/9'
-            }"
+            :style="frameStyle"
             @wheel.prevent="onFrameWheel"
           >
+            <!-- CANVA SMART ALIGNMENT GUIDES -->
+            <div v-if="!!dragTarget && enableSnapGuides" class="canva-smart-guides">
+              <div class="guide-line guide-v-center" :class="{ active: activeGuides.verticalCenter }"></div>
+              <div class="guide-line guide-h-center" :class="{ active: activeGuides.horizontalCenter }"></div>
+              <div class="guide-line guide-v-third-1" :class="{ active: activeGuides.vThird1 }"></div>
+              <div class="guide-line guide-v-third-2" :class="{ active: activeGuides.vThird2 }"></div>
+              <div class="guide-line guide-h-third-1" :class="{ active: activeGuides.hThird1 }"></div>
+              <div class="guide-line guide-h-third-2" :class="{ active: activeGuides.hThird2 }"></div>
+              <div class="guide-line guide-h-safe-top" :class="{ active: activeGuides.safeTop }"></div>
+              <div class="guide-line guide-h-safe-bottom" :class="{ active: activeGuides.safeBottom }"></div>
+            </div>
+
             <!-- Nền blur (mode 'blur'): video phủ full khung, làm mờ mạnh, nằm dưới video chính.
                  Khớp cách ffmpeg: split → gblur nền + overlay video chính co giữa. -->
             <video
@@ -2159,7 +2638,7 @@ onMounted(load)
               playsinline
             ></video>
 
-            <!-- Video chính phát xem trực tiếp (Hỗ trợ nhấp giữ & kéo trực tiếp trên video để căn vị trí như avatar FB) -->
+            <!-- Video chính phát xem trực tiếp -->
             <video
               v-if="activeVideoSrc"
               ref="videoRef"
@@ -2167,7 +2646,6 @@ onMounted(load)
               class="real-capcut-video"
               :class="{ 'is-panning': dragTarget === 'video-pan' }"
               :style="videoStyle"
-              title="Nhấp giữ và kéo trực tiếp trên video để căn chỉnh vị trí khung hình (Avatar FB style)"
               @pointerdown="beginVideoPanDrag"
               @pointermove="updateOverlayDrag"
               @pointerup="finishOverlayDrag"
@@ -2186,6 +2664,9 @@ onMounted(load)
               <span class="sub-hint">(Thêm video ở tab "Cắt &amp; Xuất Video" để phát và xem hiệu ứng lật/màu sắc trực tiếp tại đây!)</span>
             </div>
 
+            <!-- Player âm thanh nhạc nền phát song song xem trước -->
+            <audio ref="musicAudioRef" style="display: none;"></audio>
+
             <!-- Card Nền Overlay (nằm phía sau text) -->
             <div
               v-if="draft.cardEnabled && isCardVisible"
@@ -2203,6 +2684,17 @@ onMounted(load)
               @wheel.prevent="onOverlayWheel($event, 'card')"
             >
               <img v-if="draft.cardMode === 'image' && cardStreamUrl" :src="cardStreamUrl" class="card-bg-img" alt="card" />
+
+              <!-- Nút xóa nhanh Khung Nền (Delete) -->
+              <button
+                v-if="dragTarget === 'card'"
+                type="button"
+                class="overlay-quick-del-btn"
+                title="Ẩn khung bìa (Phím Delete)"
+                @pointerdown.stop="draft.cardEnabled = false; dragTarget = null"
+              >
+                <X :size="10" />
+              </button>
 
               <!-- 8 Resize Handles (4 Góc + 4 Cạnh) -->
               <div class="overlay-resize-handle handle-nw" title="Kéo dài/rộng góc trên-trái" @pointerdown.stop="beginResizeHandle('card', 'nw', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
@@ -2229,6 +2721,17 @@ onMounted(load)
               @wheel.prevent="onOverlayWheel($event, 'watermark')"
             >
               <img :src="wmStreamUrl" class="overlay-img-content" alt="logo" />
+
+              <!-- Nút xóa nhanh Logo Watermark (Delete) -->
+              <button
+                v-if="dragTarget === 'watermark'"
+                type="button"
+                class="overlay-quick-del-btn"
+                title="Ẩn logo watermark (Phím Delete)"
+                @pointerdown.stop="draft.wmEnabled = false; dragTarget = null"
+              >
+                <X :size="10" />
+              </button>
 
               <!-- 8 Resize Handles (4 Góc + 4 Cạnh) -->
               <div class="overlay-resize-handle handle-nw" title="Phóng to/thu nhỏ góc trên-trái" @pointerdown.stop="beginResizeHandle('watermark', 'nw', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
@@ -2276,6 +2779,18 @@ onMounted(load)
               @wheel.prevent="onOverlayWheel($event, `text:${text.id}`)"
             >
               <span>{{ text.content }}</span>
+
+              <!-- Nút xóa nhanh chữ khi chọn (Delete) -->
+              <button
+                v-if="selectedTextId === text.id"
+                type="button"
+                class="overlay-quick-del-btn"
+                title="Xóa nhanh chữ này (Phím Delete)"
+                @pointerdown.stop="removeText(text.id)"
+              >
+                <X :size="10" />
+              </button>
+
               <div class="overlay-resize-handle handle-nw" title="Tăng/giảm cỡ chữ" @pointerdown.stop="beginResizeHandle(`text:${text.id}`, 'nw', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
               <div class="overlay-resize-handle handle-ne" title="Tăng/giảm cỡ chữ" @pointerdown.stop="beginResizeHandle(`text:${text.id}`, 'ne', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
               <div class="overlay-resize-handle handle-sw" title="Tăng/giảm cỡ chữ" @pointerdown.stop="beginResizeHandle(`text:${text.id}`, 'sw', $event)" @pointermove="updateResizeHandle" @pointerup="finishResizeHandle" @pointercancel="finishResizeHandle"></div>
@@ -2388,9 +2903,28 @@ onMounted(load)
         <!-- Track 2: Audio -->
         <div class="timeline-track audio-track" v-if="draft.musicPath || draft.muteOriginal">
           <div class="track-head">Audio A1</div>
-          <div class="track-content">
-            <div class="track-block audio-block">
-              <span>{{ draft.musicPath ? fileName(draft.musicPath) : 'Tắt tiếng video gốc' }}</span>
+          <div class="track-content audio-track-content">
+            <div
+              class="track-block audio-block"
+              :style="audioBlockStyle"
+              title="Nhạc nền / Âm thanh"
+              @pointerdown.stop="onBlockPointerDown('audio', 'move', $event)"
+              @pointermove="onBlockPointerMove"
+              @pointerup="onBlockPointerUp"
+              @pointercancel="onBlockPointerUp"
+            >
+              <div
+                class="block-handle left"
+                title="Kéo để chỉnh thời gian Bắt đầu"
+                @pointerdown.stop="onBlockPointerDown('audio', 'resize-left', $event)"
+              ></div>
+              <span class="block-text-label">{{ draft.musicPath ? fileName(draft.musicPath) : 'Tắt tiếng video gốc' }}</span>
+              <span class="block-time-range">{{ formatTimelineMark(draft.musicStartTime || 0) }} - {{ draft.musicEndTime > 0 ? formatTimelineMark(draft.musicEndTime) : 'hết' }}</span>
+              <div
+                class="block-handle right"
+                title="Kéo để chỉnh thời gian Kết thúc"
+                @pointerdown.stop="onBlockPointerDown('audio', 'resize-right', $event)"
+              ></div>
             </div>
           </div>
         </div>

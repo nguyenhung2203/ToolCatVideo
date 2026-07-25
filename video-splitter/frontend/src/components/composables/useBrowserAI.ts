@@ -1,5 +1,5 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime'
+import { EventsOn } from '../../../wailsjs/runtime/runtime'
 // @ts-ignore
 import * as BrowserAIService from '../../../wailsjs/go/browserai/Service'
 
@@ -118,23 +118,29 @@ export function useBrowserAI(showToast: (msg: string, type: 'success' | 'error' 
     browserProvider.value = ""
   }
 
+  // Hàm hủy RIÊNG cho từng listener do EventsOn trả về. Bắt buộc phải dùng thay
+  // EventsOff: composable này được cả trang Tạo Ảnh AI và Tạo Video AI gọi, mà
+  // EventsOff xóa MỌI listener cùng tên trên toàn app — trang nào unmount trước
+  // sẽ tắt luôn listener của trang còn lại, khiến trang đó treo ở "đang xử lý".
+  let unsubscribers: Array<() => void> = []
+
   onMounted(() => {
-    EventsOn("browser-ai:status", handleStatus)
-    EventsOn("browser-ai:result", handleResult)
-    EventsOn("browser-ai:error", handleError)
-    EventsOn("browser-ai:login-required", handleLoginRequired)
-    EventsOn("browser-ai:selection-required", handleSelectionRequired)
-    EventsOn("browser-ai:browser-closed", handleBrowserClosed)
+    unsubscribers = [
+      EventsOn("browser-ai:status", handleStatus),
+      EventsOn("browser-ai:result", handleResult),
+      EventsOn("browser-ai:error", handleError),
+      EventsOn("browser-ai:login-required", handleLoginRequired),
+      EventsOn("browser-ai:selection-required", handleSelectionRequired),
+      EventsOn("browser-ai:browser-closed", handleBrowserClosed),
+    ]
     updateBrowserStatus()
   })
 
   onUnmounted(() => {
-    EventsOff("browser-ai:status")
-    EventsOff("browser-ai:result")
-    EventsOff("browser-ai:error")
-    EventsOff("browser-ai:login-required")
-    EventsOff("browser-ai:selection-required")
-    EventsOff("browser-ai:browser-closed")
+    for (const off of unsubscribers) {
+      try { off?.() } catch (_) { }
+    }
+    unsubscribers = []
   })
 
   // Action methods

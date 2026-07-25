@@ -2,6 +2,7 @@ package imagedownloader
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -54,6 +55,12 @@ type ImageDownloadProgress struct {
 	Percent float64 `json:"percent"`
 	Done    int     `json:"done"`
 	Total   int     `json:"total"`
+	// Status cho biết KẾT QUẢ của riêng ảnh này: "downloading" | "done" | "error".
+	// Thiếu trường này thì UI chỉ biết tổng số đã xử lý, không phân biệt được ảnh
+	// tải thành công với ảnh lỗi — người dùng thấy mọi ảnh "đang tải" mãi mãi.
+	Status   string `json:"status"`
+	Error    string `json:"error"`
+	FilePath string `json:"filePath"`
 }
 
 // ─── HTTP CLIENT ───────────────────────────────────────────────────────────────
@@ -1070,6 +1077,7 @@ func DownloadImages(
 					Percent: 0,
 					Done:    done,
 					Total:   total,
+					Status:  "downloading",
 				})
 			}
 			mu.Unlock()
@@ -1080,12 +1088,19 @@ func DownloadImages(
 			done++
 			results[idx] = result
 			if progressCb != nil {
+				status := "error"
+				if result.OK {
+					status = "done"
+				}
 				progressCb(ImageDownloadProgress{
-					ID:      e.ID,
-					Title:   e.Title,
-					Percent: float64(done) / float64(total) * 100,
-					Done:    done,
-					Total:   total,
+					ID:       e.ID,
+					Title:    e.Title,
+					Percent:  float64(done) / float64(total) * 100,
+					Done:     done,
+					Total:    total,
+					Status:   status,
+					Error:    result.Error,
+					FilePath: result.FilePath,
 				})
 			}
 			mu.Unlock()
@@ -1108,6 +1123,14 @@ func downloadSingleImage(ctx context.Context, entry ImageEntry, outputDir string
 	// Xác định tên file từ URL
 	fileName := generateFileName(entry)
 	filePath := filepath.Join(outputDir, fileName)
+
+	// Tên file đã gồm hash URL nên trùng tên = ĐÚNG ảnh đó đã tải trước đó. Bỏ qua
+	// luôn, khỏi tốn băng thông và khỏi sinh bản sao "_1, _2" của cùng một ảnh.
+	if st, err := os.Stat(filePath); err == nil && st.Size() >= 512 {
+		result.FilePath = filePath
+		result.OK = true
+		return result
+	}
 
 	client := newHTTPClient()
 	req, err := http.NewRequestWithContext(ctx, "GET", entry.URL, nil)
@@ -1134,13 +1157,24 @@ func downloadSingleImage(ctx context.Context, entry ImageEntry, outputDir string
 		return result
 	}
 
-	// Xác định extension từ Content-Type
+	// Chặn trang HTML: nhiều CDN trả về trang "chặn bot" / trang lỗi kèm status 200.
+	// Nếu cứ lưu, người dùng nhận file .jpg mở không được mà tưởng tải thành công.
 	ct := resp.Header.Get("Content-Type")
+	lowerCT := strings.ToLower(ct)
+	if strings.Contains(lowerCT, "text/") || strings.Contains(lowerCT, "html") || strings.Contains(lowerCT, "json") {
+		result.Error = "server trả về trang web thay vì ảnh (có thể bị chặn bot)"
+		return result
+	}
+
+	// Xác định extension từ Content-Type
 	ext := extensionFromContentType(ct)
 	if ext != "" && !strings.HasSuffix(fileName, ext) {
 		fileName = strings.TrimSuffix(fileName, filepath.Ext(fileName)) + ext
 		filePath = filepath.Join(outputDir, fileName)
 	}
+
+	// Chốt tên file cuối cùng: không ghi đè ảnh cũ, không đụng nhau giữa 4 luồng tải.
+	filePath = uniqueFilePath(filePath)
 
 	// Ghi file
 	f, err := os.Create(filePath)
@@ -1148,11 +1182,31 @@ func downloadSingleImage(ctx context.Context, entry ImageEntry, outputDir string
 		result.Error = fmt.Sprintf("lỗi tạo file: %v", err)
 		return result
 	}
-	defer f.Close()
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		result.Error = fmt.Sprintf("lỗi ghi file: %v", err)
+	// Giới hạn dung lượng để 1 URL lỗi (stream vô hạn / file 2GB) không làm đầy ổ đĩa.
+	const maxImageBytes = 50 << 20 // 50MB
+	written, copyErr := io.Copy(f, io.LimitReader(resp.Body, maxImageBytes+1))
+	closeErr := f.Close()
+
+	if copyErr != nil {
 		os.Remove(filePath)
+		result.Error = fmt.Sprintf("lỗi ghi file: %v", copyErr)
+		return result
+	}
+	if closeErr != nil {
+		os.Remove(filePath)
+		result.Error = fmt.Sprintf("lỗi ghi file: %v", closeErr)
+		return result
+	}
+	if written > maxImageBytes {
+		os.Remove(filePath)
+		result.Error = "ảnh quá lớn (>50MB), đã bỏ qua"
+		return result
+	}
+	// File rỗng / quá nhỏ thì chắc chắn không phải ảnh dùng được.
+	if written < 512 {
+		os.Remove(filePath)
+		result.Error = fmt.Sprintf("file tải về không hợp lệ (%d bytes)", written)
 		return result
 	}
 
@@ -1200,12 +1254,47 @@ func generateFileName(entry ImageEntry) string {
 		}
 	}
 
-	// Tạo tên từ ID và thời gian
+	// Tên file phải DUY NHẤT THEO URL ẢNH, không theo thứ tự trong 1 lần tìm. ID do
+	// các hàm search sinh ra chỉ là số đếm (ddg_0, ddg_1...) nên tìm "mèo" tải xong,
+	// rồi tìm "chó" tải vào CÙNG thư mục sẽ tạo lại ddg_0.jpg và GHI ĐÈ ảnh mèo cũ.
+	// Ghép thêm hash của URL để 2 ảnh khác nhau không bao giờ cùng tên, mà tải lại
+	// đúng ảnh đó vẫn cho cùng tên (không sinh rác trùng nội dung).
 	safeName := sanitizeFileName(entry.ID)
 	if safeName == "" {
-		safeName = fmt.Sprintf("image_%d", time.Now().UnixNano())
+		safeName = "image"
 	}
-	return safeName + ext
+	sum := sha1.Sum([]byte(entry.URL))
+	return fmt.Sprintf("%s_%x%s", safeName, sum[:4], ext)
+}
+
+// uniqueFilePath thêm hậu tố _1, _2... nếu file đã tồn tại, để không bao giờ ghi đè
+// ảnh cũ. Bọc trong mutex vì DownloadImages chạy 4 luồng song song: 2 goroutine cùng
+// thấy "chưa tồn tại" rồi cùng os.Create một đường dẫn sẽ mất 1 ảnh.
+var uniqueNameMu sync.Mutex
+
+func uniqueFilePath(path string) string {
+	uniqueNameMu.Lock()
+	defer uniqueNameMu.Unlock()
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		// Đặt chỗ ngay để luồng song song khác không chọn trùng tên này.
+		if f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644); err == nil {
+			_ = f.Close()
+			return path
+		}
+	}
+	ext := filepath.Ext(path)
+	base := strings.TrimSuffix(path, ext)
+	for i := 1; i < 10000; i++ {
+		cand := fmt.Sprintf("%s_%d%s", base, i, ext)
+		if _, err := os.Stat(cand); os.IsNotExist(err) {
+			if f, err := os.OpenFile(cand, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644); err == nil {
+				_ = f.Close()
+				return cand
+			}
+		}
+	}
+	return fmt.Sprintf("%s_%d%s", base, time.Now().UnixNano(), ext)
 }
 
 // sanitizeFileName loại bỏ ký tự không hợp lệ trong tên file.

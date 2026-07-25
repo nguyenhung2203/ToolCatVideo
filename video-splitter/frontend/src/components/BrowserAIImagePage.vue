@@ -426,7 +426,7 @@
              tách khỏi block queueMode nên khi cắt video chạy mà trang AI đang ở màn
              chờ, log vẫn hiện. -->
         <div v-if="queueLogs.length > 0" style="width: 100%; flex-shrink: 0; margin-top: 8px; border: 1.5px solid var(--wx-border-default); border-radius: var(--wx-radius-md); background: var(--wx-surface-sunken, #0e1626); overflow: hidden;">
-          <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 6px 10px; background: rgba(0,0,0,0.15); border-bottom: 1px solid var(--wx-border-subtle, rgba(255,255,255,0.05));">
+          <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 6px 10px; background: var(--wx-surface-base); border-bottom: 1px solid var(--wx-border-default);">
             <span style="font-size: 11.5px; font-weight: 700; color: var(--wx-brand-accent); display: inline-flex; align-items: center; gap: 6px;">
               Nhật ký tiến trình ({{ queueLogs.length }})
             </span>
@@ -526,9 +526,13 @@ import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, Ch
 import { SelectFolder, GetStreamURL, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
 // @ts-ignore
 import { OpenOutputFolder, EnqueueThumbnailTasks, CancelQueueSource, DeleteResultFiles } from '../../wailsjs/go/browserai/Service'
-import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 
 const mediaType = 'image'
+
+// Hàm hủy listener RIÊNG của trang này (EventsOn trả về closure hủy chính nó).
+let offQueueProgress: (() => void) | null = null
+let offQueueLog: (() => void) | null = null
 
 const props = defineProps<{
   defaultOutputDir: string
@@ -1174,7 +1178,7 @@ onMounted(async () => {
   // Theo dõi Hàng Đợi AI khi chạy nhiều prompt song song trên trang này.
   // Lấy resultPath trực tiếp từ status.tasks (không nghe clip_ai_thumb_completed
   // riêng để tránh xung đột EventsOff với listener cùng tên ở component cha).
-  EventsOn('browser-ai:queue-progress', (status: any) => {
+  offQueueProgress = EventsOn('browser-ai:queue-progress', (status: any) => {
     // Trang Tạo Ảnh AI CHỈ quan tâm task nguồn "ai-image" — lọc bỏ task "video-cut"
     // (thumbnail từ luồng cắt video) để 2 nguồn chạy chung hàng đợi không đếm lẫn nhau.
     const mine = Array.isArray(status.tasks)
@@ -1211,7 +1215,7 @@ onMounted(async () => {
 
   // Card log: nhận log của CẢ 2 nguồn (video-cut + ai-image) để hiện chung, mỗi
   // dòng gắn nhãn nguồn để phân biệt log từ trang nào.
-  EventsOn('browser-ai:queue-log', (e: any) => {
+  offQueueLog = EventsOn('browser-ai:queue-log', (e: any) => {
     if (!e) return
     if (e.source && e.source !== 'ai-image' && e.source !== 'video-cut') return
     const d = new Date()
@@ -1232,8 +1236,13 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  EventsOff('browser-ai:queue-progress')
-  EventsOff('browser-ai:queue-log')
+  // Chỉ hủy ĐÚNG listener của trang này. EventsOff xóa TẤT CẢ listener cùng tên
+  // trên toàn app, nên trước đây rời trang này là tắt luôn listener queue-progress
+  // của VideoSplitter.vue (tab Cắt Video) → thumbnail AI mất tiến trình.
+  offQueueProgress?.()
+  offQueueLog?.()
+  offQueueProgress = null
+  offQueueLog = null
 })
 
 const pickOutputDir = async () => {

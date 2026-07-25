@@ -37,11 +37,15 @@ import (
 	"google.golang.org/genai"
 )
 
+// hashPathLen là độ dài khóa do hashPath sinh ra. isWorkDirName dựa vào hằng này để
+// nhận diện thư mục làm việc theo video, nên hai chỗ phải luôn khớp nhau.
+const hashPathLen = 12
+
 // hashPath trả về một khóa ngắn duy nhất theo đường dẫn nguồn, dùng để đặt tên
 // thư mục tạm riêng cho mỗi video (tránh nhiều video ghi đè proxy/audio của nhau).
 func hashPath(sourcePath string) string {
 	sum := sha1.Sum([]byte(sourcePath))
-	return hex.EncodeToString(sum[:])[:12]
+	return hex.EncodeToString(sum[:])[:hashPathLen]
 }
 
 // App struct
@@ -95,6 +99,15 @@ func (a *App) startup(ctx context.Context) {
 	// Dọn file tạm xuất video còn sót (cliptmp_*.mp4 / clearframe_*.jpg trong
 	// TempDir/TrafficTool) từ các lần xuất trước bị dừng/lỗi giữa chừng. Chạy nền.
 	go cleanupStaleExportTemp()
+
+	// Cho tầng exporter đẩy cảnh báo (ví dụ GPU lỗi → chuyển sang CPU) ra thanh
+	// trạng thái. Trước đây lỗi GPU bị nuốt hoàn toàn nên người dùng chỉ thấy
+	// "xuất chậm bất thường" mà không biết vì sao.
+	exporter.SetLogFunc(func(msg string) {
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "export_log", msg)
+		}
+	})
 
 	// Mở kho lưu trữ SQLite (lưu project/clip/config để mở lại không mất việc).
 	// Lỗi mở db không nên chặn app khởi động — chỉ mất tính năng lưu.
@@ -467,21 +480,44 @@ func (a *App) CancelAnalysis() {
 	}
 }
 
-// cleanupStaleExportTemp dọn file tạm xuất video còn sót ở TempDir/TrafficTool:
-// cliptmp_*.mp4 (clip đã cắt chờ ghép intro) và clearframe_*.jpg (frame gốc trích ra
-// làm ảnh bìa). Các file này lẽ ra bị xóa sau khi ghép xong, nhưng nếu lần xuất trước
-// bị dừng/crash giữa chừng thì chúng ở lại. Chỉ quét mức thư mục gốc TrafficTool (không
-// đệ quy) để không đụng thumbnails/subtitles/merge của phiên đang chạy. Chỉ xóa file
-// khớp đúng 2 tiền tố này và cũ hơn 1 giờ (tránh xóa file của tiến trình xuất song song).
+// staleWorkDirTTL: thư mục làm việc theo video (TempDir/TrafficTool/<hash>) không
+// được dùng lại sau khoảng này thì coi là rác của các video cũ và xóa hẳn. Ảnh xem
+// trước chỉ có ý nghĩa khi người dùng còn mở video đó trong app; mở lại video cũ sẽ
+// tự sinh lại ảnh. 7 ngày đủ rộng để không đụng việc đang làm dở nhiều ngày.
+const staleWorkDirTTL = 7 * 24 * time.Hour
+
+// cleanupStaleExportTemp dọn file tạm của luồng xuất video trong TempDir/TrafficTool:
+//
+//  1. Mức gốc: cliptmp_*.mp4 (clip đã cắt chờ ghép intro) và clearframe_*.jpg (frame
+//     gốc trích ra làm ảnh bìa). Chúng lẽ ra bị xóa sau khi ghép xong, nhưng nếu lần
+//     xuất trước bị dừng/crash giữa chừng thì ở lại. Chỉ xóa file cũ hơn 1 giờ để
+//     không đụng file của tiến trình xuất đang chạy song song.
+//  2. Thư mục làm việc theo video (<hash>/thumbnails, /subtitles, /merge): trước đây
+//     KHÔNG bao giờ được dọn — mỗi clip để lại 2 ảnh jpg, mỗi lần chỉnh clip thêm một
+//     ảnh edit_*.jpg, nên dùng lâu dài đọng hàng GB. Nay xóa cả thư mục <hash> nếu
+//     toàn bộ nội dung đã cũ hơn staleWorkDirTTL (không đụng video đang làm dở).
 func cleanupStaleExportTemp() {
 	root := filepath.Join(os.TempDir(), "TrafficTool")
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return
 	}
-	cutoff := time.Now().Add(-1 * time.Hour)
+	fileCutoff := time.Now().Add(-1 * time.Hour)
+	dirCutoff := time.Now().Add(-staleWorkDirTTL)
 	for _, e := range entries {
+		full := filepath.Join(root, e.Name())
 		if e.IsDir() {
+			// Chỉ xét thư mục làm việc theo video (tên = hash hex của đường dẫn nguồn),
+			// tuyệt đối không đụng các thư mục cố định khác (whisper, webview2...).
+			if !isWorkDirName(e.Name()) {
+				continue
+			}
+			// newest.IsZero() = không đọc được nội dung → KHÔNG BIẾT tuổi, bỏ qua.
+			// (zero time luôn Before cutoff nên nếu không chặn sẽ xóa oan.)
+			newest := newestModTime(full)
+			if !newest.IsZero() && newest.Before(dirCutoff) {
+				_ = os.RemoveAll(full)
+			}
 			continue
 		}
 		name := e.Name()
@@ -489,11 +525,44 @@ func cleanupStaleExportTemp() {
 			continue
 		}
 		info, ierr := e.Info()
-		if ierr != nil || info.ModTime().After(cutoff) {
+		if ierr != nil || info.ModTime().After(fileCutoff) {
 			continue
 		}
-		_ = os.Remove(filepath.Join(root, name))
+		_ = os.Remove(full)
 	}
+}
+
+// isWorkDirName nhận diện thư mục làm việc theo video do hashPath sinh ra: đúng
+// hashPathLen ký tự hex. Dùng để KHÔNG xóa nhầm các thư mục cố định (whisper,
+// temp_frames, webview2...) nằm cùng cấp.
+func isWorkDirName(name string) bool {
+	if len(name) != hashPathLen {
+		return false
+	}
+	for _, c := range name {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// newestModTime trả về mốc sửa đổi MỚI NHẤT trong cây thư mục (kể cả chính nó).
+// Dùng để chỉ xóa thư mục khi mọi file bên trong đều đã cũ. Trả về time.Time{} (zero)
+// khi không đọc được gì — caller phải coi zero là "KHÔNG BIẾT" và bỏ qua, tuyệt đối
+// không xóa, vì zero luôn Before mọi cutoff.
+func newestModTime(dir string) time.Time {
+	newest := time.Time{}
+	_ = filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+		return nil
+	})
+	return newest
 }
 
 // GenerateThumbnail trích một khung hình tại timeSec của video nguồn và trả về
@@ -520,6 +589,14 @@ type ExportResult struct {
 	OutPath  string  `json:"outPath"`
 	Duration float64 `json:"duration"` // thời lượng thực đo bằng ffprobe
 	Error    string  `json:"error"`
+
+	// Pending=true: bước CẮT đã xong nhưng file tại OutPath CHƯA tồn tại — clip đang
+	// nằm ở dạng file tạm, chờ Hàng Đợi AI dựng ảnh bìa rồi ghép intro mới ghi ra
+	// OutPath. Frontend PHẢI coi đây là "đang xử lý", không được đánh dấu hoàn thành
+	// hay lưu ExportedPath: nếu đóng app / hàng đợi chết giữa đường thì đường dẫn đó
+	// trỏ vào file không tồn tại (người dùng thấy ✅ nhưng nút Phát lỗi).
+	// Sự kiện clip_ai_thumb_completed sau đó mới là lúc file đích thực sự có.
+	Pending bool `json:"pending"`
 }
 
 // ExportClips cắt danh sách clip, chạy song song có giới hạn số job, mỗi clip được
@@ -537,10 +614,34 @@ func (a *App) CancelExport() {
 	runtime.EventsEmit(a.ctx, "export_log", "Đã dừng tiến trình xuất video!")
 }
 
+// isManualAIThumbnail cho biết clip.Thumbnail có phải ảnh bìa AI người dùng đã tạo
+// sẵn ở tab chỉnh sửa hay không (GenerateAIThumbnail ghi vào
+// <UserConfigDir>/TrafficTool/projects/<hash>/ai_thumbnails/clip_N_ai.jpg).
+// Trước đây chỉ kiểm tra chuỗi "_ai" trong đường dẫn nên mọi thư mục có "_ai"
+// (vd D:\video_ai\...) đều bị nhận nhầm là ảnh AI → bỏ qua hàng đợi tạo thumbnail.
+func isManualAIThumbnail(thumbPath string) bool {
+	if thumbPath == "" {
+		return false
+	}
+	// Phải nằm trong thư mục ai_thumbnails VÀ tên file đúng mẫu clip_<số>_ai.<ext>.
+	if filepath.Base(filepath.Dir(thumbPath)) != "ai_thumbnails" {
+		return false
+	}
+	name := filepath.Base(thumbPath)
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	return reAIThumbName.MatchString(name)
+}
+
+var reAIThumbName = regexp.MustCompile(`^clip_\d+_ai$`)
+
+// reFilenameNoise loại bỏ các từ khóa rác trong tên video tải về. Dùng ranh giới từ
+// (\b) cho các từ khóa để KHÔNG cắt chữ nằm giữa tên: trước đây "hd" khớp cả trong
+// "Nhất" → "Nhat" mất chữ, "short" khớp trong "shortcut".
+var reFilenameNoise = regexp.MustCompile(`(?i)\[.*?\]|\(.*?\)|- \w+ official|\b(4k|1080p|full hd|hd|shorts?)\b`)
+
 func sanitizeFilename(s string) string {
 	// 1. Loại bỏ các từ khóa rác / thẻ trong ngoặc như [Full HD], (Official Music Video),...
-	reBrackets := regexp.MustCompile(`(?i)\[.*?\]|\(.*?\)|- \w+ official|4k|1080p|full hd|hd|short|shorts`)
-	s = reBrackets.ReplaceAllString(s, "")
+	s = reFilenameNoise.ReplaceAllString(s, "")
 
 	// 2. Thay thế ký tự đặc biệt không hợp lệ trong Windows path bằng khoảng trắng
 	reInvalid := regexp.MustCompile(`[\\/:*?"<>|~!@#$%^&*()+=,\-\[\]{};.]`)
@@ -568,6 +669,99 @@ func sanitizeFilename(s string) string {
 	return result
 }
 
+// estimateClipsSize ước lượng tổng dung lượng các clip sẽ ghi ra, dựa trên bitrate
+// thực của video nguồn (tổng byte / tổng thời lượng). Cách này chính xác hơn nhiều
+// so với đoán theo độ phân giải vì nó phản ánh đúng chất lượng file gốc.
+//
+// Trả về 0 nếu không đọc được thông tin nguồn (phía gọi coi như "không ước lượng được"
+// và bỏ qua kiểm tra chứ không chặn người dùng).
+func estimateClipsSize(sourcePath string, clips []project.Clip, prependMode bool, introDuration float64) uint64 {
+	st, err := os.Stat(sourcePath)
+	if err != nil || st.Size() <= 0 {
+		return 0
+	}
+	info, err := media.GetVideoInfo(sourcePath)
+	if err != nil || info == nil || info.Duration <= 0 {
+		return 0
+	}
+	bytesPerSec := float64(st.Size()) / info.Duration
+
+	totalSec := 0.0
+	for _, c := range clips {
+		d := c.EndTime - c.StartTime
+		if d <= 0 {
+			d = c.Duration
+		}
+		if d <= 0 {
+			continue
+		}
+		totalSec += d
+		if prependMode {
+			totalSec += introDuration // intro ảnh bìa ghép thêm vào đầu clip
+		}
+	}
+	if totalSec <= 0 {
+		return 0
+	}
+
+	est := bytesPerSec * totalSec
+	if prependMode {
+		// Chế độ ghép ảnh bìa phải ghi file TẠM (clip đã cắt) rồi mới ghi file đích,
+		// nên có lúc cả hai cùng tồn tại → cần gấp đôi chỗ trống trong lúc chạy.
+		est *= 2
+	}
+	// Re-encode có thể phình hơn nguồn (nhất là khi nguồn nén tốt hơn cấu hình xuất).
+	// Cộng 15% biên an toàn để không báo "đủ chỗ" rồi vẫn hết đĩa giữa đường.
+	est *= 1.15
+	return uint64(est)
+}
+
+// checkExportDiskSpace kiểm tra ổ đích còn đủ chỗ trước khi bắt đầu cắt. Hết dung
+// lượng giữa lúc xuất là kiểu lỗi tệ nhất khi dùng lâu dài: ffmpeg ghi ra file hỏng,
+// người dùng chỉ thấy "LỖI" mà không biết vì sao, và hàng chục clip dở dang nằm rải
+// rác trong thư mục xuất. Chặn trước bằng một thông báo rõ ràng tốt hơn nhiều.
+//
+// Chỉ trả lỗi khi CHẮC CHẮN không đủ: nếu không đọc được dung lượng trống hoặc không
+// ước lượng được kích thước thì cho chạy (không cản đường người dùng vì chính chỗ
+// kiểm tra bị lỗi).
+func checkExportDiskSpace(outDir, sourcePath string, clips []project.Clip, prependMode bool, introDuration float64) error {
+	return checkFreeSpace(outDir, estimateClipsSize(sourcePath, clips, prependMode, introDuration), "ổ đĩa đích")
+}
+
+// checkFreeSpace so dung lượng trống của ổ chứa dir với số byte cần (need).
+// label dùng để câu thông báo nói rõ ổ NÀO thiếu chỗ (đích hay ổ TEMP).
+//
+// Trả nil khi không đọc được dung lượng trống (free==0) hoặc không ước lượng được
+// need: chỉ chặn khi CHẮC CHẮN thiếu, không cản người dùng vì chính chỗ kiểm tra lỗi.
+func checkFreeSpace(dir string, need uint64, label string) error {
+	if need == 0 {
+		return nil
+	}
+	free, err := utils.FreeDiskSpace(dir)
+	if err != nil || free == 0 {
+		return nil // không xác định được → bỏ qua kiểm tra
+	}
+	// Chừa thêm 512MB cho hệ thống: ổ đầy 100% làm Windows và chính app hoạt động lỗi.
+	const reserve = 512 * 1024 * 1024
+	if free >= need+reserve {
+		return nil
+	}
+	return fmt.Errorf("%s không đủ dung lượng: cần khoảng %s (chưa tính %s chừa cho hệ thống) nhưng chỉ còn trống %s. Hãy chọn thư mục xuất ở ổ khác hoặc giải phóng bớt dung lượng",
+		label, formatBytes(need), formatBytes(reserve), formatBytes(free))
+}
+
+// formatBytes đổi số byte sang dạng người đọc được (GB/MB) cho thông báo lỗi.
+func formatBytes(b uint64) string {
+	const (
+		mb = 1024 * 1024
+		gb = 1024 * mb
+	)
+	if b >= gb {
+		return fmt.Sprintf("%.1f GB", float64(b)/float64(gb))
+	}
+	return fmt.Sprintf("%.0f MB", float64(b)/float64(mb))
+}
+
 // ExportClips xuất nhiều clip song song sử dụng ffmpeg.
 // Tên video đầu ra được đặt theo định dạng: [Tên dự án]_[Tên video gốc]_[Số thứ tự clip].mp4
 func (a *App) ExportClips(projectName string, sourcePath string, clips []project.Clip, outDir string, outImageDir string, cfg project.AnalyzerConfig, jobs int, introDuration float64) ([]ExportResult, error) {
@@ -593,6 +787,14 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 	// Phân giải GPU tự động khi xuất
 	if cfg.HardwareAccel == "auto" || cfg.HardwareAccel == "" {
 		cfg.HardwareAccel = media.DetectGPU()
+	}
+
+	// KIỂM TRA DUNG LƯỢNG TRỐNG TRƯỚC KHI CẮT. Nếu hết đĩa giữa chừng, ffmpeg
+	// chỉ trả về lỗi I/O khó hiểu ở từng clip lẻ và người dùng thấy "xuất lỗi"
+	// mà không hiểu vì sao — với hàng trăm clip thì đã ghi hỏng cả loạt.
+	if err := checkExportDiskSpace(outDir, sourcePath, clips, prependMode, introDuration); err != nil {
+		runtime.EventsEmit(a.ctx, "export_log", "❌ "+err.Error())
+		return nil, err
 	}
 
 	a.exportCancelMu.Lock()
@@ -637,28 +839,40 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 			cleanProjName := sanitizeFilename(projectName)
 			cleanVideoName := sanitizeFilename(videoName)
 
-			var outName string
-			if cleanProjName == "" || cleanProjName == "Project" || cleanProjName == "Du_an_mac_dinh" || cleanProjName == "Dự án mặc định" {
-				outName = fmt.Sprintf("%s_%d.mp4", cleanVideoName, clip.Index)
-			} else {
-				if strings.HasSuffix(cleanProjName, "_") || strings.HasSuffix(cleanProjName, "-") {
-					outName = fmt.Sprintf("%s%d.mp4", cleanProjName, clip.Index)
-				} else {
-					outName = fmt.Sprintf("%s_%d.mp4", cleanProjName, clip.Index)
-				}
+			// TÊN FILE LUÔN CHỨA TÊN VIDEO GỐC. Trước đây khi project có tên riêng,
+			// tên file chỉ là {Project}_{index} → xuất nhiều video vào cùng thư mục thì
+			// clip #1 của mọi video đều tên giống nhau, phải nhờ hậu tố chống trùng
+			// (_1, _2...) nên không còn biết clip thuộc video nào. Nay dạng chuẩn là
+			// [Project_]{TênVideo}_{index}.mp4 — khớp với placeholder UI {Tên_Video}_#1.
+			prefix := ""
+			if cleanProjName != "" && cleanProjName != "Project" &&
+				cleanProjName != "Du_an_mac_dinh" && cleanProjName != "Dự án mặc định" {
+				prefix = strings.TrimRight(cleanProjName, "_-") + "_"
 			}
+			outName := fmt.Sprintf("%s%s_%d.mp4", prefix, cleanVideoName, clip.Index)
 			outPath := filepath.Join(outDir, outName)
-			// Tránh tuyệt đối việc trùng tên hoặc đè file đã có sẵn trong thư mục xuất
+			// Tránh tuyệt đối việc trùng tên hoặc đè file đã có sẵn trong thư mục xuất.
+			// Giữ "chỗ" bằng cách tạo file rỗng NGAY khi chọn được tên còn trống: các
+			// goroutine cắt song song (và cả lần xuất sau) sẽ thấy file tồn tại nên
+			// không chọn trùng. ffmpeg có -y nên sẽ ghi đè file rỗng này.
 			ext := filepath.Ext(outName)
 			baseNameWithoutExt := strings.TrimSuffix(outName, ext)
-			counter := 1
-			for {
-				if _, err := os.Stat(outPath); os.IsNotExist(err) {
+			for counter := 1; ; counter++ {
+				f, cerr := os.OpenFile(outPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+				if cerr == nil {
+					_ = f.Close()
+					break
+				}
+				if !os.IsExist(cerr) {
+					// Lỗi khác (không có quyền, đường dẫn quá dài, ổ đĩa lỗi...) → không
+					// lặp vô hạn, cứ dùng tên hiện tại để ffmpeg báo lỗi rõ ràng.
+					break
+				}
+				if counter > 9999 {
 					break
 				}
 				outName = fmt.Sprintf("%s_%d%s", baseNameWithoutExt, counter, ext)
 				outPath = filepath.Join(outDir, outName)
-				counter++
 			}
 			res := ExportResult{ClipID: clip.ID, Index: clip.Index, OutPath: outPath}
 			threads := 0
@@ -721,6 +935,26 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 				res.Duration = dur
 			}
 
+			// Người dùng bấm Dừng nhưng ffmpeg vừa kịp ghi xong file hợp lệ → vẫn phải
+			// báo "bị dừng". Trước đây res.OK=true nên frontend không thấy tín hiệu dừng
+			// và vẫn chạy tiếp video kế tiếp trong batch dù người dùng đã yêu cầu ngừng.
+			if clipCtx.Err() != nil {
+				res.OK = false
+				res.Error = "Tiến trình bị dừng"
+			}
+
+			// Cắt lỗi/bị dừng → dọn "chỗ giữ tên" (file rỗng đã tạo ở trên) và clip tạm,
+			// để thư mục xuất không đọng file 0 byte sau mỗi lần lỗi. Chỉ xóa khi file
+			// vẫn còn rỗng (ffmpeg chưa ghi được gì vào đó).
+			if !res.OK {
+				if st, serr := os.Stat(outPath); serr == nil && st.Size() == 0 {
+					_ = os.Remove(outPath)
+				}
+				if prependMode {
+					_ = os.Remove(cutTarget)
+				}
+			}
+
 			// prependMode (outImageDir != ""): đảo luồng — clip đã cắt ra file TẠM
 			// (cutTarget), giờ dựng ảnh bìa thành intro rồi ghép vào ĐẦU clip tạm để
 			// tạo ra video đích cuối (outPath). Ảnh bìa lấy từ: ảnh _ai chỉnh tay sẵn
@@ -741,7 +975,7 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 					}
 				}
 
-				if clip.Thumbnail != "" && strings.Contains(clip.Thumbnail, "_ai") {
+				if isManualAIThumbnail(clip.Thumbnail) {
 					// Đã có ảnh bìa AI chỉnh tay sẵn → ghép thẳng vào đầu clip (không cần
 					// hàng đợi AI). Vẫn lưu 1 bản ảnh bìa vào thư mục image.
 					destThumbPath := filepath.Join(outImageDir, destThumbName)
@@ -809,6 +1043,10 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 						// đợi đang chạy — worker sẽ tự nhặt task mới.
 						if a.browserAIService != nil {
 							a.browserAIService.EnqueueThumbnailTasks([]browserai.ThumbnailTask{task})
+							// File tại outPath CHƯA tồn tại ở thời điểm này — worker hàng đợi
+							// mới là bên ghi ra nó sau khi ghép intro. Đánh Pending để frontend
+							// không lưu ExportedPath trỏ vào file chưa có.
+							res.Pending = true
 							mu.Lock()
 							enqueuedCount++
 							mu.Unlock()
@@ -828,14 +1066,23 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 
 			mu.Lock()
 			done++
+			// pending=true → frontend CHỈ đánh dấu "đã cắt", chưa ghi exportedPath và
+			// chưa coi là hoàn thành: file đích thật do Hàng Đợi AI ghi ra sau khi ghép
+			// intro (sự kiện clip_ai_thumb_completed mới là lúc clip thực sự xong).
 			runtime.EventsEmit(a.ctx, "export_progress", map[string]any{
-				"done": done, "total": len(clips), "clipId": clip.ID, "ok": res.OK, "outPath": res.OutPath,
+				"done": done, "total": len(clips), "clipId": clip.ID, "ok": res.OK,
+				"outPath": res.OutPath, "pending": res.Pending,
 			})
-			statusW := statusWord(res.OK)
-			if clipCtx.Err() != nil {
-				statusW = "ĐÃ DỪNG"
+			// Câu log phải khớp trạng thái thật: clip pending CHƯA hoàn thành (còn chờ
+			// ghép ảnh bìa), clip bị dừng thì càng không "Hoàn thành".
+			logLine := fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Hoàn thành! (%s)", filepath.Base(sourcePath), clip.Index, statusWord(res.OK))
+			if res.Pending {
+				logLine = fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Đã cắt xong, đang chờ ghép ảnh bìa...", filepath.Base(sourcePath), clip.Index)
 			}
-			runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Hoàn thành! (%s)", filepath.Base(sourcePath), clip.Index, statusW))
+			if clipCtx.Err() != nil {
+				logLine = fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): ĐÃ DỪNG theo yêu cầu.", filepath.Base(sourcePath), clip.Index)
+			}
+			runtime.EventsEmit(a.ctx, "export_log", logLine)
 			mu.Unlock()
 		}(i, clip)
 	}
@@ -846,7 +1093,12 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 	}
 
 	okCount := 0
+	pendingCount := 0
 	for _, r := range results {
+		if r.Pending {
+			pendingCount++
+			continue
+		}
 		if r.OK {
 			okCount++
 		}
@@ -854,7 +1106,11 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 	if a.store != nil {
 		_ = a.store.AddExportRecord(hashPath(sourcePath), outDir, len(clips), okCount)
 	}
-	runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Hoàn tất: %d/%d clip thành công.", okCount, len(clips)))
+	if pendingCount > 0 {
+		runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Đã cắt xong %d/%d clip (%d clip đang chờ Hàng Đợi AI ghép ảnh bìa).", okCount+pendingCount, len(clips), pendingCount))
+	} else {
+		runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Hoàn tất: %d/%d clip thành công.", okCount, len(clips)))
+	}
 	return results, nil
 }
 
@@ -879,6 +1135,18 @@ func (a *App) MergeClips(sourcePath string, clips []project.Clip, outPath string
 	tmpDir := filepath.Join(os.TempDir(), "TrafficTool", hashPath(sourcePath), "merge")
 	_ = os.MkdirAll(tmpDir, 0755)
 	defer os.RemoveAll(tmpDir)
+
+	// Ghép cần chỗ ở CẢ HAI ổ: ổ TEMP giữ toàn bộ phân đoạn đã cắt, ổ đích giữ file
+	// ghép cuối. Kiểm tra riêng từng ổ vì TEMP (thường ổ C) hay chật hơn ổ đích.
+	mergeNeed := estimateClipsSize(sourcePath, clips, false, 0)
+	if err := checkFreeSpace(tmpDir, mergeNeed, "ổ đĩa chứa thư mục tạm (TEMP)"); err != nil {
+		runtime.EventsEmit(a.ctx, "export_log", "❌ "+err.Error())
+		return "", err
+	}
+	if err := checkFreeSpace(filepath.Dir(outPath), mergeNeed, "ổ đĩa đích"); err != nil {
+		runtime.EventsEmit(a.ctx, "export_log", "❌ "+err.Error())
+		return "", err
+	}
 
 	// Context hủy được: đăng ký vào cùng map để nút Dừng (CancelExport) giết được
 	// tiến trình ghép giữa chừng, giống ExportClips. Key riêng để không đụng clip.ID.
@@ -2135,6 +2403,10 @@ func (a *App) DownloadOnlineVideos(entries []downloader.VideoEntry, outputDir st
 	sem := make(chan struct{}, jobs)
 	var wg sync.WaitGroup
 	results := make([]downloader.DownloadResult, len(entries))
+	// Gom lỗi của từng video để BÁO ĐÚNG cho người dùng. Trước đây mọi lỗi bị nuốt và
+	// hàm luôn trả nil → frontend hiện "Đã tải xong tất cả" dù 0/10 video thành công
+	// hoặc vừa bấm Hủy.
+	errs := make([]string, len(entries))
 
 	for i, entry := range entries {
 		wg.Add(1)
@@ -2146,6 +2418,11 @@ func (a *App) DownloadOnlineVideos(entries []downloader.VideoEntry, outputDir st
 			res, err := a.DownloadOnlineVideo(e.URL, outputDir, cookieBrowser, e.ID, e.Title)
 			if err != nil {
 				results[idx] = downloader.DownloadResult{Title: e.Title}
+				name := e.Title
+				if name == "" {
+					name = e.URL
+				}
+				errs[idx] = fmt.Sprintf("%s: %v", name, err)
 			} else {
 				results[idx] = *res
 			}
@@ -2159,7 +2436,43 @@ func (a *App) DownloadOnlineVideos(entries []downloader.VideoEntry, outputDir st
 			okCount++
 		}
 	}
+	var failMsgs []string
+	for _, e := range errs {
+		if e != "" {
+			failMsgs = append(failMsgs, e)
+		}
+	}
 	runtime.EventsEmit(a.ctx, "download_log", fmt.Sprintf("Hoàn tất tải: %d/%d video thành công.", okCount, len(entries)))
+
+	// Người dùng bấm Hủy → báo rõ là đã hủy, không phải "tải xong".
+	a.downloadCancelMu.Lock()
+	cancelled := a.isDownloadCancelled
+	a.downloadCancelMu.Unlock()
+	if cancelled {
+		return results, fmt.Errorf("đã hủy tải: %d/%d video hoàn tất trước khi dừng", okCount, len(entries))
+	}
+
+	// Không video nào tải được → đây là thất bại, phải trả lỗi để frontend không báo thành công.
+	if okCount == 0 && len(entries) > 0 {
+		detail := strings.Join(failMsgs, " | ")
+		if len(detail) > 400 {
+			detail = detail[:400] + "..."
+		}
+		if detail == "" {
+			detail = "không rõ nguyên nhân"
+		}
+		return results, fmt.Errorf("không tải được video nào (%d video): %s", len(entries), detail)
+	}
+
+	// Tải được một phần → trả lỗi kèm số liệu để frontend hiện cảnh báo thay vì success.
+	if len(failMsgs) > 0 {
+		detail := strings.Join(failMsgs, " | ")
+		if len(detail) > 400 {
+			detail = detail[:400] + "..."
+		}
+		return results, fmt.Errorf("tải xong %d/%d video, %d video lỗi: %s", okCount, len(entries), len(failMsgs), detail)
+	}
+
 	return results, nil
 }
 
@@ -2254,11 +2567,14 @@ func (a *App) DownloadImages(entries []imagedownloader.ImageEntry, outputDir str
 	results, err := imagedownloader.DownloadImages(ctx, entries, outputDir,
 		func(p imagedownloader.ImageDownloadProgress) {
 			runtime.EventsEmit(a.ctx, "image_download_progress", map[string]interface{}{
-				"id":      p.ID,
-				"title":   p.Title,
-				"percent": p.Percent,
-				"done":    p.Done,
-				"total":   p.Total,
+				"id":       p.ID,
+				"title":    p.Title,
+				"percent":  p.Percent,
+				"done":     p.Done,
+				"total":    p.Total,
+				"status":   p.Status,
+				"error":    p.Error,
+				"filePath": p.FilePath,
 			})
 		},
 	)
@@ -2435,31 +2751,56 @@ func (a *App) GenerateAIContentText(apiKey string, prompt string) (string, error
 		jsonBytes, err := json.Marshal(reqBody)
 		if err == nil {
 			client := &http.Client{Timeout: 15 * time.Second}
+			// Giữ lỗi cuối cùng để báo ĐÚNG nguyên nhân. Trước đây mọi lỗi bị bỏ qua và
+			// người dùng chỉ thấy "gọi AI thất bại", không biết là sai key, hết quota
+			// hay mất mạng — không cách nào tự sửa.
+			var lastErr error
 			for _, modelName := range modelsToTry {
-				url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", modelName, apiKey)
+				// API key đi trong HEADER, không nhét vào query string. Key trong URL sẽ
+				// lộ qua log proxy/server, lịch sử redirect và thông báo lỗi — cùng cách
+				// làm với luồng phụ đề ở trên.
+				url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", modelName)
 				req, err := http.NewRequestWithContext(a.ctx, "POST", url, bytes.NewBuffer(jsonBytes))
-				if err == nil {
-					req.Header.Set("Content-Type", "application/json")
-					resp, err := client.Do(req)
-					if err == nil {
-						if resp.StatusCode == http.StatusOK {
-							var res struct {
-								Candidates []struct {
-									Content struct {
-										Parts []struct {
-											Text string `json:"text"`
-										} `json:"parts"`
-									} `json:"content"`
-								} `json:"candidates"`
-							}
-							if err := json.NewDecoder(resp.Body).Decode(&res); err == nil && len(res.Candidates) > 0 && len(res.Candidates[0].Content.Parts) > 0 {
-								resp.Body.Close()
-								return strings.TrimSpace(res.Candidates[0].Content.Parts[0].Text), nil
-							}
-						}
-						resp.Body.Close()
-					}
+				if err != nil {
+					lastErr = err
+					continue
 				}
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("x-goog-api-key", apiKey)
+				resp, err := client.Do(req)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if resp.StatusCode != http.StatusOK {
+					b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+					resp.Body.Close()
+					lastErr = fmt.Errorf("model %s lỗi %d: %s", modelName, resp.StatusCode, strings.TrimSpace(string(b)))
+					continue
+				}
+				var res struct {
+					Candidates []struct {
+						Content struct {
+							Parts []struct {
+								Text string `json:"text"`
+							} `json:"parts"`
+						} `json:"content"`
+					} `json:"candidates"`
+				}
+				decErr := json.NewDecoder(resp.Body).Decode(&res)
+				resp.Body.Close()
+				if decErr != nil {
+					lastErr = fmt.Errorf("model %s trả về dữ liệu không đọc được: %v", modelName, decErr)
+					continue
+				}
+				if len(res.Candidates) == 0 || len(res.Candidates[0].Content.Parts) == 0 {
+					lastErr = fmt.Errorf("model %s không trả về nội dung nào", modelName)
+					continue
+				}
+				return strings.TrimSpace(res.Candidates[0].Content.Parts[0].Text), nil
+			}
+			if lastErr != nil {
+				return "", fmt.Errorf("gọi AI thất bại: %v", lastErr)
 			}
 		}
 	}

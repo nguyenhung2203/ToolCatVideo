@@ -273,7 +273,18 @@ export function useDownloader(
       await DownloadOnlineVideos(entries, downloadDir.value, cookieBrowser.value)
       showToast('Đã tải xong tất cả video đã chọn!', 'success')
     } catch (err) {
-      showToast('Lỗi tải video: ' + String(err), 'error')
+      // Backend trả lỗi cho CẢ 3 trường hợp: hủy giữa dòng, lỗi toàn bộ, lỗi một phần.
+      // Phân loại để hiện đúng mức độ thay vì luôn báo "Lỗi" (hoặc như trước là luôn
+      // báo thành công dù không tải được video nào).
+      const msg = String(err)
+      const okCount = Array.from(dlProgressMap.value.values()).filter(p => p.status === 'done').length
+      if (msg.includes('đã hủy tải')) {
+        showToast(`Đã hủy tải. ${okCount}/${entries.length} video hoàn tất trước khi dừng.`, 'warning')
+      } else if (okCount > 0) {
+        showToast(`Tải xong ${okCount}/${entries.length} video, ${entries.length - okCount} video lỗi. Xem chi tiết ở từng dòng.`, 'warning')
+      } else {
+        showToast('Không tải được video nào: ' + msg, 'error')
+      }
     } finally {
       isDownloading.value = false
     }

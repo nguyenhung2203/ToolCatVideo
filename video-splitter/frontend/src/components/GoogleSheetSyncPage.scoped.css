@@ -449,7 +449,7 @@
 
 .header-text-act-btn:hover {
   opacity: 0.85;
-  background: rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--wx-text-primary) 10%, transparent);
 }
 
 .spin-icon {

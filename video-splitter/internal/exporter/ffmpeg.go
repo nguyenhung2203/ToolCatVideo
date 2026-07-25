@@ -2,7 +2,9 @@ package exporter
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -310,15 +312,23 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 
 	encoder, encoderArgs := getEncoderParams(hwAccel, preset, crf)
 
-	// Try GPU encoder first (if not CPU)
-	if encoder != "libx264" {
+	// Thử encoder GPU trước (nếu không phải CPU và GPU chưa bị tắt do lỗi liên tiếp)
+	if encoder != "libx264" && !gpuEncoderDisabled(encoder) {
 		cmdArgs := buildArgs(encoder, encoderArgs, hwDecodeArgs)
 		cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), cmdArgs...)
 		utils.HideCmdWindow(cmd)
-		if _, err := cmd.CombinedOutput(); err == nil {
+		out, gpuErr := cmd.CombinedOutput()
+		if gpuErr == nil {
+			noteGPUSuccess(encoder)
 			return nil
 		}
-		// If fails, clean up partial output and fall back to CPU
+		// Người dùng bấm Dừng → KHÔNG tính là lỗi GPU, cũng không chạy lại bằng CPU.
+		if ctx.Err() != nil {
+			_ = os.Remove(outputPath)
+			return ctx.Err()
+		}
+		// Lỗi GPU thật → ghi log để người dùng biết vì sao xuất chậm, rồi fallback CPU.
+		noteGPUFailure(encoder, "cắt clip", gpuErr, out)
 		_ = os.Remove(outputPath)
 	}
 
@@ -591,7 +601,7 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, cardIdx, frameW
 		if strings.TrimSpace(t.Font) != "" {
 			tf = utils.GetFontPathForFamily(t.Font)
 		}
-		textSteps = append(textSteps, drawText(t, tf, txtFile))
+		textSteps = append(textSteps, drawText(t, tf, txtFile, frameW))
 	}
 	// Phụ đề burn-in (hardsub) — render sau drawtext để nằm trên khung kích thước cuối.
 	// Chỉ dùng phụ đề nếu file .srt thực sự tồn tại trên đĩa — tránh ffmpeg lỗi khi kịch bản có đường dẫn cũ.
@@ -688,6 +698,33 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, cardIdx, frameW
 	// Nhạc nền: chỉnh âm lượng + fade rồi trộn với tiếng gốc.
 	if musicIdx >= 0 {
 		mSteps := []string{"asetpts=PTS-STARTPTS"}
+
+		// Cửa sổ phát nhạc trên timeline ĐẦU RA (giây): [musStart, musEnd].
+		// musStart <= 0 và musLen <= 0 nghĩa là phát từ đầu tới hết clip (mặc định cũ).
+		musStart := a.MusicStartTime
+		if musStart < 0 {
+			musStart = 0
+		}
+		if outDur > 0 && musStart > outDur {
+			musStart = outDur // Mốc bắt đầu vượt quá clip -> không còn gì để phát
+		}
+		musLen := 0.0
+		if a.MusicEndTime > musStart {
+			musEnd := a.MusicEndTime
+			if outDur > 0 && musEnd > outDur {
+				musEnd = outDur
+			}
+			musLen = musEnd - musStart
+		} else if outDur > 0 {
+			musLen = outDur - musStart
+		}
+
+		// Cắt nhạc đúng độ dài cửa sổ. Bắt buộc khi MusicLoop bật (-stream_loop -1 tạo
+		// stream vô hạn, amix duration=first không đủ để chặn nếu nhạc bị delay).
+		if musLen > 0 {
+			mSteps = append(mSteps, fmt.Sprintf("atrim=0:%s", trimFloat(musLen)), "asetpts=PTS-STARTPTS")
+		}
+
 		mv := 1.0
 		if a.MusicVolume > 0 {
 			mv = a.MusicVolume
@@ -695,15 +732,21 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, cardIdx, frameW
 		if mv != 1.0 {
 			mSteps = append(mSteps, "volume="+trimFloat(mv))
 		}
+		// Fade tính theo mốc TƯƠNG ĐỐI trong đoạn nhạc (trước khi adelay đẩy sang musStart).
 		if a.FadeIn > 0 {
 			mSteps = append(mSteps, fmt.Sprintf("afade=t=in:st=0:d=%s", trimFloat(a.FadeIn)))
 		}
-		if a.FadeOut > 0 && outDur > 0 {
-			st := outDur - a.FadeOut
+		if a.FadeOut > 0 && musLen > 0 {
+			st := musLen - a.FadeOut
 			if st < 0 {
 				st = 0
 			}
 			mSteps = append(mSteps, fmt.Sprintf("afade=t=out:st=%s:d=%s", trimFloat(st), trimFloat(a.FadeOut)))
+		}
+		// Đẩy nhạc tới đúng mốc bắt đầu trên timeline clip.
+		if musStart > 0 {
+			ms := int(math.Round(musStart * 1000))
+			mSteps = append(mSteps, fmt.Sprintf("adelay=%d:all=1", ms))
 		}
 		parts = append(parts, fmt.Sprintf("[%d:a]%s[mus]", musicIdx, strings.Join(mSteps, ",")))
 		parts = append(parts, "[abase][mus]amix=inputs=2:duration=first:dropout_transition=0[aout]")
@@ -716,7 +759,9 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, cardIdx, frameW
 }
 
 // drawText dựng một filter drawtext từ TextOp.
-func drawText(t project.TextOp, fontPath, txtFile string) string {
+// frameW = chiều rộng khung xuất, dùng quy đổi cỡ chữ từ px preview sang px thật
+// (giống uiScale của card) — không có bước này thì chữ xuất ra nhỏ hơn preview.
+func drawText(t project.TextOp, fontPath, txtFile string, frameW int) string {
 	color := t.Color
 	if color == "" {
 		color = "white"
@@ -727,6 +772,18 @@ func drawText(t project.TextOp, fontPath, txtFile string) string {
 	size := t.FontSize
 	if size <= 0 {
 		size = 48
+	}
+	// Preview render chữ trong khung rộng ~500px. Nhân theo tỉ lệ để chữ trên video
+	// chiếm đúng phần khung như người dùng thấy khi chỉnh.
+	if frameW > 0 {
+		uiScale := float64(frameW) / uiPreviewFrameW
+		if uiScale < 1 {
+			uiScale = 1
+		}
+		size = int(math.Round(float64(size) * uiScale))
+	}
+	if size < 1 {
+		size = 1
 	}
 	x := t.X
 	if x == "" {
@@ -852,16 +909,20 @@ func concatDemuxer(ctx context.Context, inputFiles []string, outputPath, preset 
 	}
 
 	encoder, encoderArgs := getEncoderParams(hwAccel, preset, crf)
-	if encoder != "libx264" {
+	if encoder != "libx264" && !gpuEncoderDisabled(encoder) {
 		cmdArgs := buildArgs(encoder, encoderArgs)
 		cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), cmdArgs...)
 		utils.HideCmdWindow(cmd)
-		if err := cmd.Run(); err == nil {
+		gpuOut, gpuErr := cmd.CombinedOutput()
+		if gpuErr == nil {
+			noteGPUSuccess(encoder)
 			return nil
 		}
 		if ctx.Err() != nil {
+			_ = os.Remove(outputPath)
 			return ctx.Err()
 		}
+		noteGPUFailure(encoder, "ghép clip", gpuErr, gpuOut)
 		_ = os.Remove(outputPath)
 	}
 
@@ -935,17 +996,20 @@ func concatXfade(ctx context.Context, inputFiles []string, outputPath, transitio
 	}
 
 	encoder, encoderArgs := getEncoderParams(hwAccel, preset, crf)
-	if encoder != "libx264" {
+	if encoder != "libx264" && !gpuEncoderDisabled(encoder) {
 		cmdArgs := buildArgs(encoder, encoderArgs)
 		cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), cmdArgs...)
 		utils.HideCmdWindow(cmd)
-		if err := cmd.Run(); err == nil {
+		gpuOut, gpuErr := cmd.CombinedOutput()
+		if gpuErr == nil {
+			noteGPUSuccess(encoder)
 			return nil
 		}
 		if ctx.Err() != nil {
 			_ = os.Remove(outputPath)
 			return ctx.Err()
 		}
+		noteGPUFailure(encoder, "ghép chuyển cảnh", gpuErr, gpuOut)
 		_ = os.Remove(outputPath)
 	}
 
@@ -1245,14 +1309,299 @@ func ffFilterPath(p string) string {
 }
 
 // PrependThumbnailIntro ghép một đoạn intro (ảnh thumbnail đứng yên introDur giây,
-// audio IM LẶNG) vào ĐẦU clip video, xuất ra outputPath. Toàn bộ được re-encode để
-// intro và clip đồng nhất khung/fps/codec (concat filter yêu cầu điều này).
+// audio IM LẶNG) vào ĐẦU clip video, xuất ra outputPath.
+//
+// Có HAI đường đi:
+//
+//	1) ĐƯỜNG NHANH (mặc định): chỉ encode ~2 giây intro rồi nối bằng concat demuxer
+//	   với -c copy. Clip gốc KHÔNG bị encode lại lần nào.
+//	2) ĐƯỜNG ĐẦY ĐỦ (dự phòng): re-encode cả intro lẫn clip qua concat filter.
+//
+// Vì sao cần đường nhanh: bản cũ luôn đi đường (2) — một clip 60 giây phải encode
+// lại toàn bộ 60 giây chỉ để thêm 2 giây vào đầu. Với hàng trăm clip đây là phần
+// chậm nhất của cả luồng xuất, lại còn làm giảm chất lượng thêm một lần
+// (generation loss) dù nội dung clip không hề đổi.
+//
+// Đường nhanh chỉ dùng được khi tham số intro khớp CHÍNH XÁC với clip (codec,
+// pix_fmt, khung, fps, sample rate, số kênh) — nếu không concat demuxer sẽ cho ra
+// file lỗi. Ta probe clip trước để dựng intro theo đúng tham số đó, và verify
+// thời lượng file kết quả; sai lệch thì tự động rơi về đường (2).
+func PrependThumbnailIntro(ctx context.Context, clipPath, imagePath, outputPath string, introDur float64, preset string, crf int, hwAccel string) error {
+	if introDur <= 0 {
+		introDur = 2.0
+	}
+	if preset == "" {
+		preset = "fast"
+	}
+	if crf <= 0 || crf > 51 {
+		crf = 23
+	}
+
+	if err := prependIntroStreamCopy(ctx, clipPath, imagePath, outputPath, introDur, preset, crf, hwAccel); err == nil {
+		return nil
+	} else if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	// Đường nhanh không dùng được với clip này (codec lạ, tham số không khớp...)
+	// → quay về cách chắc chắn đúng: re-encode toàn bộ.
+	return prependIntroFullReencode(ctx, clipPath, imagePath, outputPath, introDur, preset, crf, hwAccel)
+}
+
+// clipStreamParams là các tham số phải khớp giữa intro và clip để concat demuxer
+// nối được bằng -c copy.
+type clipStreamParams struct {
+	vCodec     string
+	pixFmt     string
+	width      int
+	height     int
+	fps        string
+	hasAudio   bool
+	aCodec     string
+	sampleRate string
+	channels   int
+}
+
+// probeClipParams đọc tham số stream chi tiết của clip. Dùng ffprobe trực tiếp vì
+// media.VideoInfo không mang codec/pix_fmt/sample_rate.
+func probeClipParams(clipPath string) (*clipStreamParams, error) {
+	args := []string{
+		"-v", "error",
+		"-show_entries", "stream=codec_type,codec_name,width,height,pix_fmt,r_frame_rate,sample_rate,channels",
+		"-of", "json",
+		clipPath,
+	}
+	cmd := exec.Command(utils.GetBinPath("ffprobe"), args...)
+	utils.HideCmdWindow(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var probe struct {
+		Streams []struct {
+			CodecType  string `json:"codec_type"`
+			CodecName  string `json:"codec_name"`
+			Width      int    `json:"width"`
+			Height     int    `json:"height"`
+			PixFmt     string `json:"pix_fmt"`
+			RFrameRate string `json:"r_frame_rate"`
+			SampleRate string `json:"sample_rate"`
+			Channels   int    `json:"channels"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		return nil, err
+	}
+	p := &clipStreamParams{}
+	for _, s := range probe.Streams {
+		switch s.CodecType {
+		case "video":
+			if p.vCodec != "" {
+				continue // chỉ lấy video stream đầu tiên
+			}
+			p.vCodec = s.CodecName
+			p.pixFmt = s.PixFmt
+			p.width, p.height = s.Width, s.Height
+			p.fps = s.RFrameRate
+		case "audio":
+			if p.hasAudio {
+				// Nhiều audio stream → concat demuxer dễ lệch mapping, không dùng đường nhanh.
+				return nil, fmt.Errorf("clip có nhiều hơn 1 audio stream")
+			}
+			p.hasAudio = true
+			p.aCodec = s.CodecName
+			p.sampleRate = s.SampleRate
+			p.channels = s.Channels
+		}
+	}
+	if p.vCodec == "" || p.width <= 0 || p.height <= 0 {
+		return nil, fmt.Errorf("không đọc được thông số video của clip")
+	}
+	return p, nil
+}
+
+// prependIntroStreamCopy dựng intro khớp tham số clip rồi nối bằng concat demuxer
+// với -c copy (clip KHÔNG bị encode lại). Trả lỗi nếu không áp dụng được để phía
+// gọi rơi về đường re-encode đầy đủ.
+func prependIntroStreamCopy(ctx context.Context, clipPath, imagePath, outputPath string, introDur float64, preset string, crf int, hwAccel string) error {
+	p, err := probeClipParams(clipPath)
+	if err != nil {
+		return err
+	}
+	// Chỉ hỗ trợ h264 + aac: đây là thứ chính app xuất ra, cũng là tổ hợp mà mp4
+	// stream-copy an toàn nhất. Codec khác → để đường re-encode xử lý.
+	if p.vCodec != "h264" {
+		return fmt.Errorf("codec video %q không dùng được đường nhanh", p.vCodec)
+	}
+	if p.hasAudio && p.aCodec != "aac" {
+		return fmt.Errorf("codec audio %q không dùng được đường nhanh", p.aCodec)
+	}
+	if p.pixFmt == "" {
+		p.pixFmt = "yuv420p"
+	}
+	if p.fps == "" || p.fps == "0/0" {
+		return fmt.Errorf("không đọc được fps của clip")
+	}
+	sampleRate := p.sampleRate
+	channels := p.channels
+	if !p.hasAudio {
+		// Clip không có tiếng → nối cứng chỉ-video, intro cũng không cần audio.
+		sampleRate, channels = "", 0
+	} else {
+		if sampleRate == "" {
+			sampleRate = "44100"
+		}
+		if channels <= 0 {
+			channels = 2
+		}
+	}
+
+	tmpDir := filepath.Join(os.TempDir(), "TrafficTool")
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		return err
+	}
+	introFile, err := os.CreateTemp(tmpDir, "intro_*.mp4")
+	if err != nil {
+		return err
+	}
+	introPath := introFile.Name()
+	_ = introFile.Close()
+	listPath := introPath + ".txt"
+	defer func() {
+		_ = os.Remove(introPath)
+		_ = os.Remove(listPath)
+	}()
+
+	// --- Bước 1: encode intro (chỉ introDur giây) khớp tham số clip ---
+	buildIntroArgs := func(vcodec string, extraArgs []string) []string {
+		args := []string{
+			"-y",
+			"-loop", "1", "-t", fmt.Sprintf("%.3f", introDur), "-i", imagePath,
+		}
+		if channels > 0 {
+			args = append(args, "-f", "lavfi", "-t", fmt.Sprintf("%.3f", introDur),
+				"-i", fmt.Sprintf("anullsrc=sample_rate=%s:channel_layout=%s", sampleRate, channelLayout(channels)))
+		}
+		args = append(args,
+			"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=%s",
+				p.width, p.height, p.width, p.height, p.fps),
+			"-c:v", vcodec,
+		)
+		args = append(args, extraArgs...)
+		args = append(args, "-pix_fmt", p.pixFmt)
+		if channels > 0 {
+			args = append(args, "-c:a", "aac", "-b:a", "128k", "-ar", sampleRate, "-ac", strconv.Itoa(channels))
+		} else {
+			args = append(args, "-an")
+		}
+		args = append(args, "-movflags", "+faststart", introPath)
+		return args
+	}
+
+	encoder, encoderArgs := getEncoderParams(hwAccel, preset, crf)
+	introDone := false
+	if encoder != "libx264" && !gpuEncoderDisabled(encoder) {
+		cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), buildIntroArgs(encoder, encoderArgs)...)
+		utils.HideCmdWindow(cmd)
+		gpuOut, gpuErr := cmd.CombinedOutput()
+		if gpuErr == nil {
+			noteGPUSuccess(encoder)
+			introDone = true
+		} else {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			noteGPUFailure(encoder, "dựng intro ảnh bìa", gpuErr, gpuOut)
+		}
+	}
+	if !introDone {
+		cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"),
+			buildIntroArgs("libx264", []string{"-preset", preset, "-crf", strconv.Itoa(crf)})...)
+		utils.HideCmdWindow(cmd)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("dựng intro lỗi: %v, output: %s", err, lastFFmpegError(out))
+		}
+	}
+
+	// --- Bước 2: nối intro + clip bằng concat demuxer, -c copy ---
+	// Đường dẫn trong file list phải escape dấu ' của cú pháp concat.
+	listContent := fmt.Sprintf("file '%s'\nfile '%s'\n",
+		concatEscape(introPath), concatEscape(clipPath))
+	if err := os.WriteFile(listPath, []byte(listContent), 0644); err != nil {
+		return err
+	}
+
+	concatArgs := []string{
+		"-y",
+		// +genpts PHẢI đứng TRƯỚC -i: đây là cờ của input format context. Timestamp
+		// của 2 file độc lập nhau nên cần dựng lại PTS khi demux, đặt sau -i (thành
+		// cờ output) sẽ không có tác dụng và mối nối dễ bị nhảy/âm.
+		"-fflags", "+genpts",
+		"-f", "concat", "-safe", "0", "-i", listPath,
+		"-c", "copy",
+		"-avoid_negative_ts", "make_zero",
+		"-movflags", "+faststart",
+		outputPath,
+	}
+	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), concatArgs...)
+	utils.HideCmdWindow(cmd)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.Remove(outputPath)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("nối intro lỗi: %v, output: %s", err, lastFFmpegError(out))
+	}
+
+	// --- Bước 3: verify. Stream-copy concat có thể "thành công" nhưng ra file
+	// thiếu/lệch thời lượng khi tham số không khớp hoàn toàn. Kiểm tra trước khi
+	// coi là xong, sai thì xóa để đường re-encode ghi lại từ đầu.
+	clipDur := 0.0
+	if info, ierr := media.GetVideoInfo(clipPath); ierr == nil && info != nil {
+		clipDur = info.Duration
+	}
+	if clipDur > 0 {
+		expected := clipDur + introDur
+		// Dung sai rộng tay: concat stream-copy hay lệch cỡ vài frame ở mối nối.
+		tol := math.Max(1.0, expected*0.05)
+		if _, verr := VerifyOutput(outputPath, expected, tol); verr != nil {
+			_ = os.Remove(outputPath)
+			return fmt.Errorf("file nối bằng stream-copy không đạt: %v", verr)
+		}
+	}
+	return nil
+}
+
+// channelLayout đổi số kênh sang tên layout mà anullsrc hiểu.
+func channelLayout(channels int) string {
+	switch channels {
+	case 1:
+		return "mono"
+	case 6:
+		return "5.1"
+	case 8:
+		return "7.1"
+	default:
+		return "stereo"
+	}
+}
+
+// concatEscape escape đường dẫn cho file list của concat demuxer (chỉ dấu ').
+func concatEscape(p string) string {
+	return strings.ReplaceAll(p, "'", `'\''`)
+}
+
+// prependIntroFullReencode là cách cũ: re-encode CẢ intro lẫn clip qua concat
+// filter. Chậm hơn nhiều nhưng chấp nhận mọi codec/tham số, nên giữ làm dự phòng
+// cho các clip mà đường stream-copy không xử lý được.
 //
 // Khung/fps chuẩn hóa theo chính clip (probeFrame) nên intro luôn khớp tỷ lệ clip.
 // Audio intro là anullsrc (im lặng) — theo lựa chọn "im lặng khi hiện thumbnail".
 // Audio clip giữ nguyên. Nếu clip không có audio track, dùng nhánh fallback nối
 // silent cho cả clip để concat không lỗi.
-func PrependThumbnailIntro(ctx context.Context, clipPath, imagePath, outputPath string, introDur float64, preset string, crf int, hwAccel string) error {
+func prependIntroFullReencode(ctx context.Context, clipPath, imagePath, outputPath string, introDur float64, preset string, crf int, hwAccel string) error {
 	if introDur <= 0 {
 		introDur = 2.0
 	}
@@ -1310,12 +1659,19 @@ func PrependThumbnailIntro(ctx context.Context, clipPath, imagePath, outputPath 
 	}
 
 	encoder, encoderArgs := getEncoderParams(hwAccel, preset, crf)
-	if encoder != "libx264" {
+	if encoder != "libx264" && !gpuEncoderDisabled(encoder) {
 		cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), buildArgs(encoder, encoderArgs)...)
 		utils.HideCmdWindow(cmd)
-		if err := cmd.Run(); err == nil {
+		gpuOut, gpuErr := cmd.CombinedOutput()
+		if gpuErr == nil {
+			noteGPUSuccess(encoder)
 			return nil
 		}
+		if ctx.Err() != nil {
+			_ = os.Remove(outputPath)
+			return ctx.Err()
+		}
+		noteGPUFailure(encoder, "ghép ảnh bìa vào đầu clip", gpuErr, gpuOut)
 		_ = os.Remove(outputPath)
 	}
 	cmd := exec.CommandContext(ctx, utils.GetBinPath("ffmpeg"), buildArgs("libx264", []string{"-preset", preset, "-crf", strconv.Itoa(crf)})...)
@@ -1329,12 +1685,33 @@ func PrependThumbnailIntro(ctx context.Context, clipPath, imagePath, outputPath 
 }
 
 // copyFile sao chép file (dùng khi ghép chỉ có 1 clip).
+//
+// Dùng io.Copy (buffer nhỏ) chứ KHÔNG os.ReadFile + os.WriteFile: bản cũ nạp
+// toàn bộ file vào RAM, một clip 2GB là 2GB RAM cấp phát đột ngột — dễ OOM khi
+// máy đang chạy song song nhiều tiến trình ffmpeg.
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0644)
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		_ = os.Remove(dst) // file dở dang không được để lại
+		return err
+	}
+	// Sync trước Close để lỗi ghi đĩa (hết dung lượng) không bị bỏ qua âm thầm.
+	if err := out.Sync(); err != nil {
+		out.Close()
+		_ = os.Remove(dst)
+		return err
+	}
+	return out.Close()
 }
 
 // colorEq dựng filter eq từ ColorOp.

@@ -14,6 +14,7 @@ export interface ImageProgressItem {
   total: number
   status: 'downloading' | 'done' | 'error'
   filePath?: string
+  error?: string
 }
 
 export const IMAGE_SOURCES: { value: ImageSource; label: string; icon: string; needsKey: boolean; hint: string }[] = [
@@ -301,13 +302,19 @@ export function useImageDownloader(
       if (data && data.id) {
         downloadDoneCount.value = data.done || 0
         downloadTotalCount.value = data.total || downloadTotalCount.value
+        // Lấy status thật từ backend. Trước đây luôn ghi 'downloading' nên ảnh lỗi
+        // (bị chặn bot, 404...) vẫn hiện như đang tải, người dùng không biết thiếu ảnh nào.
+        const status: ImageProgressItem['status'] =
+          data.status === 'done' || data.status === 'error' ? data.status : 'downloading'
         progressMap.value.set(data.id, {
           id: data.id,
           title: data.title || '',
           percent: data.percent || 0,
           done: data.done || 0,
           total: data.total || 0,
-          status: 'downloading',
+          status,
+          filePath: data.filePath || undefined,
+          error: data.error || undefined,
         })
       }
     })

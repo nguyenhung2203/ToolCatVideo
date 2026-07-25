@@ -307,6 +307,19 @@ function updateSelectionFromDrag() {
               <div v-if="selectedImageIds.has(entry.id)" class="img-card-check">
                 <Check :size="13" />
               </div>
+
+              <!-- Badge trạng thái tải: ảnh lỗi phải THẤY ĐƯỢC ngay trên card,
+                   không chỉ đếm trong tổng số. -->
+              <div
+                v-if="imageProgressMap.get(entry.id)"
+                class="img-card-status"
+                :class="'is-' + imageProgressMap.get(entry.id)!.status"
+                :title="imageProgressMap.get(entry.id)!.error || imageProgressMap.get(entry.id)!.filePath || ''"
+              >
+                <template v-if="imageProgressMap.get(entry.id)!.status === 'done'">✓ Đã tải</template>
+                <template v-else-if="imageProgressMap.get(entry.id)!.status === 'error'">✕ Lỗi</template>
+                <template v-else>⋯ Đang tải</template>
+              </div>
             </div>
             <div v-if="entry.author" class="img-card-author">by {{ entry.author }}</div>
           </div>

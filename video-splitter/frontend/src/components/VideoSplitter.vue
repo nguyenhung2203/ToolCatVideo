@@ -124,6 +124,8 @@ const sysStats = ref({
   activeTasks: ''
 })
 let sysStatsTimer: any = null
+// Cờ dừng vòng đo tài nguyên (xem scheduleStats trong onMounted / onUnmounted).
+let statsStopped = false
 
 // === Update Checking System (Kiểm tra cập nhật & phiên bản) ===
 const appVersion = ref('v1.0.0')
@@ -1417,7 +1419,7 @@ onMounted(async () => {
       thumbDoneCount.value = Math.min(exportProgress.value.total, thumbDoneCount.value + 1)
     }
   })
-  EventsOn('export_progress', (p: { done: number, total: number, clipId?: string, ok?: boolean, outPath?: string }) => {
+  EventsOn('export_progress', (p: { done: number, total: number, clipId?: string, ok?: boolean, outPath?: string, pending?: boolean }) => {
     if (!isMultiExportRunning.value) {
       exportProgress.value = { done: p.done, total: p.total }
     }
@@ -1426,10 +1428,18 @@ onMounted(async () => {
       for (const path of Object.keys(clipsMap.value)) {
         const clip = (clipsMap.value[path] || []).find((c: any) => c.id === p.clipId)
         if (clip) {
-          clip.status = 'completed'
-          // Lưu đường dẫn file video đã cắt để nút "Phát" hoạt động ngay
-          if (p.outPath) {
-            clip.exportedPath = p.outPath
+          // pending=true → mới CẮT xong, file đích chưa tồn tại (đang chờ Hàng Đợi AI
+          // dựng ảnh bìa rồi ghép intro). KHÔNG được đánh ✅ / ghi exportedPath ở đây:
+          // nếu ghi, người dùng thấy dấu ✅ + nút Phát nhưng file không có thật.
+          // clip_ai_thumb_completed / clip_ai_thumb_failed mới là tín hiệu kết thúc.
+          if (p.pending) {
+            clip.status = 'processing'
+          } else {
+            clip.status = 'completed'
+            // Lưu đường dẫn file video đã cắt để nút "Phát" hoạt động ngay
+            if (p.outPath) {
+              clip.exportedPath = p.outPath
+            }
           }
           break
         }
@@ -1562,13 +1572,28 @@ onMounted(async () => {
       }
     } catch (_) {}
   }
+  // Nhịp đo THÍCH ỨNG thay cho setInterval 500ms cố định. GetSystemStats phải đọc
+  // PDH counter của GPU + duyệt tiến trình — khá đắt, mà 500ms nghĩa là 7200 lần/giờ
+  // ngay cả khi app chỉ mở không làm gì. Nay: 1s khi đang cắt/xuất (cần thấy tài
+  // nguyên biến động), 3s khi rảnh. Dùng setTimeout tự hẹn lại để không bao giờ có
+  // 2 lần gọi chồng nhau nếu một lần đo bị chậm.
+  const scheduleStats = () => {
+    const busy = isAnalyzing.value || isExporting.value || isMultiExportRunning.value
+    sysStatsTimer = setTimeout(async () => {
+      await fetchStats()
+      if (!statsStopped) scheduleStats()
+    }, busy ? 1000 : 3000)
+  }
   fetchStats()
-  sysStatsTimer = setInterval(fetchStats, 500)
+  scheduleStats()
 })
 
 onUnmounted(() => {
   if (timerInterval) clearInterval(timerInterval)
-  if (sysStatsTimer) clearInterval(sysStatsTimer)
+  // statsStopped chặn vòng setTimeout tự hẹn lại: nếu chỉ clearTimeout mà một lần
+  // fetchStats đang await giữa đường thì nó vẫn hẹn tiếp sau khi component đã hủy.
+  statsStopped = true
+  if (sysStatsTimer) clearTimeout(sysStatsTimer)
 })
 
 const currentTimeRef = ref(Date.now())
@@ -2461,8 +2486,46 @@ const activeSelectedCount = computed(() => {
   return activeClips.value.filter(c => selectedClips.value.has(c.id)).length
 })
 
+// resolveDuration lấy thời lượng THỰC của video: ưu tiên cache, thiếu thì hỏi
+// backend. Bắt buộc phải có số > 0 trước khi dựng clip "nguyên video", vì backend
+// từ chối clip có duration <= 0 ("clip có thời lượng không hợp lệ").
+const resolveDuration = async (path: string): Promise<number> => {
+  const cached = videoDurationMap.value[path]
+    || (path === activeVideoPath.value ? (videoInfo.value?.Duration || 0) : 0)
+  if (cached > 0) return cached
+  try {
+    const info = await GetVideoInfo(path)
+    if (info && info.Duration > 0) {
+      videoDurationMap.value[path] = info.Duration
+      videoInfoMap.value[path] = info
+      return info.Duration
+    }
+  } catch (e) {
+    console.error('Không đọc được thời lượng video để xuất:', path, e)
+  }
+  return 0
+}
+
+// makeFullVideoClip dựng clip "nguyên video" (dùng khi video chưa được cắt).
+// Trả về null nếu không đọc được thời lượng — caller bỏ qua video đó kèm cảnh báo
+// thay vì gửi clip duration=0 xuống ffmpeg rồi báo lỗi khó hiểu.
+const makeFullVideoClip = async (path: string, idSuffix = ''): Promise<any | null> => {
+  const dur = await resolveDuration(path)
+  if (dur <= 0) return null
+  return {
+    id: `full_video_${Date.now()}${idSuffix ? '_' + idSuffix : ''}`,
+    index: 1,
+    startTime: 0,
+    endTime: dur,
+    duration: dur,
+    status: 'pending',
+    edit: {}
+  }
+}
+
 const exportClips = async () => {
   let clipsToExportMap: Record<string, any[]> = {}
+  const skippedNoDuration: string[] = []
 
   // Xuất từ tab Chỉnh sửa: bỏ qua clip đã cắt, xuất NGUYÊN video đang xem thành 1 file.
   if (forceFullVideoExport) {
@@ -2473,16 +2536,14 @@ const exportClips = async () => {
       forcedScenarioId = ''
       return
     }
-    const dur = videoInfo.value?.Duration || videoDurationMap.value[path] || 0
-    clipsToExportMap[path] = [{
-      id: `full_video_${Date.now()}`,
-      index: 1,
-      startTime: 0,
-      endTime: dur > 0 ? dur : 0,
-      duration: dur > 0 ? dur : 0,
-      status: 'pending',
-      edit: {}
-    }]
+    const fullClip = await makeFullVideoClip(path)
+    if (!fullClip) {
+      showToast('Không đọc được thời lượng video đang mở nên không thể xuất!', 'error')
+      forceFullVideoExport = false
+      forcedScenarioId = ''
+      return
+    }
+    clipsToExportMap[path] = [fullClip]
   }
 
   if (!forceFullVideoExport) {
@@ -2496,17 +2557,12 @@ const exportClips = async () => {
       if (existingClips.length > 0) {
         clipsToExportMap[activeVideoPath.value] = existingClips
       } else {
-        const dur = videoInfo.value?.Duration || 0
-        const fullClip: any = {
-          id: `full_video_${Date.now()}`,
-          index: 1,
-          startTime: 0,
-          endTime: dur > 0 ? dur : 0,
-          duration: dur > 0 ? dur : 0,
-          status: 'pending',
-          edit: {}
+        const fullClip = await makeFullVideoClip(activeVideoPath.value)
+        if (fullClip) {
+          clipsToExportMap[activeVideoPath.value] = [fullClip]
+        } else {
+          skippedNoDuration.push(activeVideoPath.value.split('\\').pop() || activeVideoPath.value)
         }
-        clipsToExportMap[activeVideoPath.value] = [fullClip]
       }
     } else if (videoPaths.value.length > 0) {
       for (const p of videoPaths.value) {
@@ -2514,16 +2570,12 @@ const exportClips = async () => {
         if (list.length > 0) {
           clipsToExportMap[p] = list
         } else {
-          const fullClip: any = {
-            id: `full_video_${Date.now()}_${p.split('\\').pop()}`,
-            index: 1,
-            startTime: 0,
-            endTime: 0,
-            duration: 0,
-            status: 'pending',
-            edit: {}
+          const fullClip = await makeFullVideoClip(p, p.split('\\').pop() || '')
+          if (fullClip) {
+            clipsToExportMap[p] = [fullClip]
+          } else {
+            skippedNoDuration.push(p.split('\\').pop() || p)
           }
-          clipsToExportMap[p] = [fullClip]
         }
       }
     }
@@ -2533,8 +2585,15 @@ const exportClips = async () => {
   const finalTotal = Object.values(clipsToExportMap).reduce((acc, list) => acc + list.length, 0)
 
   if (finalTotal === 0) {
-    showToast('Vui lòng chọn hoặc nạp một video vào dự án để xuất!', 'warning')
+    if (skippedNoDuration.length > 0) {
+      showToast(`Không đọc được thời lượng của ${skippedNoDuration.length} video (${skippedNoDuration.join(', ')}) nên chưa xuất được. Hãy kiểm tra file còn tồn tại và đúng định dạng.`, 'error', 6000)
+    } else {
+      showToast('Vui lòng chọn hoặc nạp một video vào dự án để xuất!', 'warning')
+    }
     return
+  }
+  if (skippedNoDuration.length > 0) {
+    showToast(`Bỏ qua ${skippedNoDuration.length} video không đọc được thời lượng: ${skippedNoDuration.join(', ')}`, 'warning', 5000)
   }
 
   isExporting.value = true
@@ -2589,8 +2648,15 @@ const exportClips = async () => {
       if (selectedPresetIds.value.size > 1) {
         analyzerConfig.prompt = getRandomPresetPrompt()
       }
-      const results = await ExportClips(projName, videoPath, list, exportDestDir, imageDestDir, analyzerConfig, exportJobs.value, thumbnailIntroDuration.value)
-      unlisten()
+      // unlisten PHẢI chạy dù ExportClips lỗi/bị dừng. Trước đây gọi sau await mà
+      // không có finally → mỗi lần xuất lỗi để lại một listener sống mãi, giữ closure
+      // globalDone/lastDoneForThisVideo cũ nên các lần xuất sau cộng dồn tiến độ sai.
+      let results: Awaited<ReturnType<typeof ExportClips>>
+      try {
+        results = await ExportClips(projName, videoPath, list, exportDestDir, imageDestDir, analyzerConfig, exportJobs.value, thumbnailIntroDuration.value)
+      } finally {
+        unlisten()
+      }
 
       const stopped = results.some(r => r.error === 'Tiến trình xuất bị dừng' || r.error === 'Tiến trình bị dừng')
       if (stopped) {
@@ -2603,6 +2669,12 @@ const exportClips = async () => {
       allClipsOfThisVideo.forEach(c => {
         const res = resultMap.get(c.id)
         if (res && res.ok) {
+          // res.pending → chỉ mới cắt xong, file đích do Hàng Đợi AI ghi ra sau.
+          // Không lưu exportedPath vào project vì đường dẫn đó chưa có file thật.
+          if (res.pending) {
+            c.status = 'processing'
+            return
+          }
           c.status = 'completed'
           if (res.outPath) {
             c.exportedPath = res.outPath
@@ -2703,6 +2775,11 @@ const exportSelectedVideos = async () => {
       clips.forEach(c => {
         const res = resultMap.get(c.id)
         if (res && res.ok) {
+          // res.pending → chỉ mới cắt xong, chờ Hàng Đợi AI ghép ảnh bìa mới có file đích.
+          if (res.pending) {
+            c.status = 'processing'
+            return
+          }
           c.status = 'completed'
           if (res.outPath) {
             c.exportedPath = res.outPath
@@ -4643,29 +4720,29 @@ const formatSize = (bytes: number) => {
     </div>
 
     <!-- Bảng Nhật ký hoạt động collapsible (giống terminal) -->
-    <div v-if="showLogPanel" class="terminal-log-panel" style="background: #0f172a; border-top: 1px solid var(--border-color); height: 180px; display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box; flex-shrink: 0; z-index: 99;">
-      <div class="terminal-header" style="display: flex; justify-content: space-between; align-items: center; padding: 6px 16px; background: #1e293b; border-bottom: 1px solid rgba(255,255,255,0.06); flex-shrink: 0; user-select: none;">
+    <div v-if="showLogPanel" class="terminal-log-panel" style="background: var(--wx-surface-sunken); border-top: 1px solid var(--border-color); height: 180px; display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box; flex-shrink: 0; z-index: 99;">
+      <div class="terminal-header" style="display: flex; justify-content: space-between; align-items: center; padding: 6px 16px; background: var(--wx-surface-base); border-bottom: 1px solid var(--wx-border-default); flex-shrink: 0; user-select: none;">
         <div style="display: flex; align-items: center; gap: 8px;">
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><line x1="6" y1="8" x2="10" y2="8"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="6" y1="16" x2="14" y2="16"/></svg>
-          <span style="font-size: 11px; font-weight: 700; color: #94a3b8; letter-spacing: 0.5px;">NHẬT KÝ HOẠT ĐỘNG CHI TIẾT</span>
+          <span style="font-size: 11px; font-weight: 700; color: var(--wx-text-muted); letter-spacing: 0.5px;">NHẬT KÝ HOẠT ĐỘNG CHI TIẾT</span>
         </div>
         <div style="display: flex; align-items: center; gap: 10px;">
           <button @click="logs = []" style="background: none; border: none; color: #ef4444; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 4px; transition: background 0.2s;" onmouseover="this.style.background='rgba(239,68,68,0.1)'" onmouseout="this.style.background='none'">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
             Xóa
           </button>
-          <button @click="showLogPanel = false" style="background: none; border: none; color: #94a3b8; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px; transition: background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.06)'" onmouseout="this.style.background='none'">
+          <button @click="showLogPanel = false" style="background: none; border: none; color: var(--wx-text-muted); font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px; transition: background 0.2s;" onmouseover="this.style.background='color-mix(in srgb, currentColor 12%, transparent)'" onmouseout="this.style.background='none'">
             <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
       </div>
-      <div ref="logContainerRef" class="terminal-body custom-scroll" style="flex: 1; overflow-y: auto; padding: 10px 16px; font-family: monospace; font-size: 11.5px; line-height: 1.5; color: #cbd5e1; display: flex; flex-direction: column; gap: 4px;">
-        <div v-if="logs.length === 0" style="color: #64748b; font-style: italic;">
+      <div ref="logContainerRef" class="terminal-body custom-scroll" style="flex: 1; overflow-y: auto; padding: 10px 16px; font-family: monospace; font-size: 11.5px; line-height: 1.5; color: var(--wx-text-secondary); display: flex; flex-direction: column; gap: 4px;">
+        <div v-if="logs.length === 0" style="color: var(--wx-text-muted); font-style: italic;">
           Chưa có hoạt động nào được ghi nhận.
         </div>
         <div v-for="(log, idx) in logs" :key="idx" style="white-space: pre-wrap; word-break: break-all; display: flex; gap: 8px;">
-          <span style="color: #64748b; flex-shrink: 0;">[{{ log.time }}]</span>
-          <span :style="{ color: log.type === 'error' ? '#f87171' : log.type === 'success' ? '#34d399' : log.type === 'warning' ? '#facc15' : '#cbd5e1' }">{{ log.msg }}</span>
+          <span style="color: var(--wx-text-muted); flex-shrink: 0;">[{{ log.time }}]</span>
+          <span :style="{ color: log.type === 'error' ? 'var(--wx-danger-solid, #dc2626)' : log.type === 'success' ? 'var(--wx-success-solid, #059669)' : log.type === 'warning' ? 'var(--wx-warning-solid, #d97706)' : 'var(--wx-text-secondary)' }">{{ log.msg }}</span>
         </div>
       </div>
     </div>
@@ -5593,7 +5670,7 @@ const formatSize = (bytes: number) => {
                         @click="openDownloadPage(updateResult.downloadUrl)"
                         :disabled="isUpdatingApp"
                         class="btn"
-                        style="padding: 5px 10px; font-size: 11px; background: rgba(255, 255, 255, 0.1); color: var(--wx-text-secondary); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; cursor: pointer;"
+                        style="padding: 5px 10px; font-size: 11px; background: var(--wx-surface-base); color: var(--wx-text-secondary); border: 1px solid var(--wx-border-default); border-radius: 6px; cursor: pointer;"
                       >
                         Mở GitHub ↗
                       </button>
@@ -5601,17 +5678,17 @@ const formatSize = (bytes: number) => {
                   </div>
 
                   <!-- Tiến trình tải bản cập nhật -->
-                  <div v-if="isUpdatingApp" style="margin-top: 4px; background: rgba(0,0,0,0.3); padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(16, 185, 129, 0.3);">
-                    <div style="display: flex; justify-content: space-between; font-size: 11px; color: #4ade80; font-weight: 600; margin-bottom: 4px;">
+                  <div v-if="isUpdatingApp" style="margin-top: 4px; background: var(--wx-surface-sunken); padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(16, 185, 129, 0.3);">
+                    <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--wx-success-solid, #059669); font-weight: 600; margin-bottom: 4px;">
                       <span>{{ updateStatusMsg || 'Đang tiến hành cập nhật...' }}</span>
                       <span>{{ updateProgressPercent }}%</span>
                     </div>
-                    <div style="width: 100%; height: 6px; background: rgba(255, 255, 255, 0.1); border-radius: 3px; overflow: hidden;">
+                    <div style="width: 100%; height: 6px; background: color-mix(in srgb, var(--wx-text-primary) 12%, transparent); border-radius: 3px; overflow: hidden;">
                       <div :style="{ width: updateProgressPercent + '%' }" style="height: 100%; background: linear-gradient(90deg, #10b981, #34d399); transition: width 0.2s ease;"></div>
                     </div>
                   </div>
 
-                  <div v-if="updateResult.releaseNotes" style="font-size: 11px; color: var(--text-muted); max-height: 80px; overflow-y: auto; white-space: pre-wrap; background: rgba(0,0,0,0.25); padding: 6px 8px; border-radius: 4px; margin-top: 4px;">
+                  <div v-if="updateResult.releaseNotes" style="font-size: 11px; color: var(--text-muted); max-height: 80px; overflow-y: auto; white-space: pre-wrap; background: var(--wx-surface-sunken); padding: 6px 8px; border-radius: 4px; margin-top: 4px;">
                     {{ updateResult.releaseNotes }}
                   </div>
                 </div>

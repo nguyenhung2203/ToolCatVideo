@@ -690,7 +690,12 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 				// đã tự tạo sẵn file đích khác. Chỉ chuyển đúng file khớp mẫu clip tạm.
 				if task.FinalVideoPath != "" && task.ClipPath != task.FinalVideoPath &&
 					strings.Contains(filepath.Base(task.ClipPath), "cliptmp_") {
-					if _, statErr := os.Stat(task.FinalVideoPath); os.IsNotExist(statErr) {
+					// ExportClips "giữ chỗ" tên file đích bằng một file RỖNG (chống trùng
+					// tên giữa các clip cắt song song). File 0 byte đó KHÔNG phải video
+					// của người dùng, nên vẫn phải cứu clip ghi đè lên nó — chỉ bỏ qua
+					// khi đích đã có nội dung thật.
+					st, statErr := os.Stat(task.FinalVideoPath)
+					if os.IsNotExist(statErr) || (statErr == nil && st.Size() == 0) {
 						if mvErr := moveFile(task.ClipPath, task.FinalVideoPath); mvErr == nil {
 							emitLog("info", "Đã cứu clip (không có intro) ra file đích do ghép ảnh bìa lỗi")
 						}

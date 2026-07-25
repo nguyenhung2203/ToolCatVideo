@@ -443,7 +443,8 @@ export namespace main {
 	    outPath: string;
 	    duration: number;
 	    error: string;
-	
+	    pending: boolean;
+
 	    static createFrom(source: any = {}) {
 	        return new ExportResult(source);
 	    }
@@ -456,6 +457,7 @@ export namespace main {
 	        this.outPath = source["outPath"];
 	        this.duration = source["duration"];
 	        this.error = source["error"];
+	        this.pending = source["pending"];
 	    }
 	}
 	export class ParsedSheetResult {
@@ -646,6 +648,8 @@ export namespace project {
 	    fadeOut: number;
 	    musicLoop: boolean;
 	    musicTracks: string[];
+	    musicStartTime: number;
+	    musicEndTime: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AudioOp(source);
@@ -661,6 +665,8 @@ export namespace project {
 	        this.fadeOut = source["fadeOut"];
 	        this.musicLoop = source["musicLoop"];
 	        this.musicTracks = source["musicTracks"];
+	        this.musicStartTime = source["musicStartTime"];
+	        this.musicEndTime = source["musicEndTime"];
 	    }
 	}
 	export class CardOp {

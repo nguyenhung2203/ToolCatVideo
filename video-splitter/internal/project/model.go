@@ -211,6 +211,10 @@ type AudioOp struct {
 	FadeOut     float64  `json:"fadeOut"`     // fade out (giây)
 	MusicLoop   bool     `json:"musicLoop"`   // tự động lặp nhạc nền nếu ngắn hơn video
 	MusicTracks []string `json:"musicTracks"` // danh sách nhiều file nhạc nền để ghép nối tiếp
+	// MusicStartTime/MusicEndTime giới hạn khoảng thời gian nhạc nền phát trong clip
+	// (giây, theo mốc thời gian của clip). Nhạc luôn phát từ đầu bài tại MusicStartTime.
+	MusicStartTime float64 `json:"musicStartTime"` // mốc bắt đầu phát nhạc nền; 0 = từ đầu clip
+	MusicEndTime   float64 `json:"musicEndTime"`   // mốc dừng nhạc nền; 0 = tới hết clip
 }
 
 // TransitionOp hiệu ứng chuyển cảnh vào đầu clip (dùng khi ghép nhiều clip).

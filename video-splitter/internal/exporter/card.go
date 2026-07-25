@@ -16,6 +16,11 @@ import (
 	_ "image/jpeg"
 )
 
+// uiPreviewFrameW là chiều rộng (px) của khung preview trong tab Chỉnh sửa. Mọi giá trị
+// người dùng nhập bằng px trên preview (cỡ chữ, bo góc, độ dày viền) phải nhân
+// frameW/uiPreviewFrameW khi xuất để trông đúng như lúc chỉnh.
+const uiPreviewFrameW = 500.0
+
 // renderCardPNG dựng card/banner thành 1 ảnh PNG (straight alpha) đúng kích thước pixel
 // của card trong khung xuất, khớp với preview CSS ở RemixScenarioPage.vue. Trả về đường
 // dẫn file PNG tạm (caller tự thêm vào danh sách dọn dẹp) hoặc lỗi.
@@ -41,7 +46,7 @@ func renderCardPNG(c project.CardOp, frameW, frameH int) (string, error) {
 
 	// Hệ số quy đổi px của preview (~khung rộng 500px) sang khung xuất, để độ dày viền,
 	// bán kính bo góc, chu kỳ sọc trông tương đương preview.
-	uiScale := float64(frameW) / 500.0
+	uiScale := float64(frameW) / uiPreviewFrameW
 	if uiScale < 1 {
 		uiScale = 1
 	}
