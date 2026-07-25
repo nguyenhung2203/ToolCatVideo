@@ -5,6 +5,7 @@ import { project, storage, main } from '../../wailsjs/go/models'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { useTheme } from '../ui-system/composables/useTheme'
 import BaseDropdown from './common/BaseDropdown.vue'
+import BaseButton from './common/BaseButton.vue'
 import VideoDownloader from './VideoDownloader.vue'
 import ImageDownloader from './ImageDownloader.vue'
 import BrowserAIImagePage from './BrowserAIImagePage.vue'
@@ -19,7 +20,8 @@ import {
   Clock, Film, Monitor, Loader2, ArrowRight, Upload, BarChart2,
   Sparkles, Tag, FileVideo, ListVideo, LayoutGrid, SlidersHorizontal,
   Cpu, FlipHorizontal2, Timer, Volume2, VolumeX, Repeat,
-  Star, Pencil, Move, Chrome, FileText, FileSpreadsheet
+  Star, Pencil, Move, Chrome, FileText, FileSpreadsheet,
+  GripVertical, Unlink
 } from 'lucide-vue-next'
 
 const { isDark, toggleColorScheme } = useTheme()
@@ -550,6 +552,7 @@ const loadNamingConfig = () => {
 
 watch(namingConfig, () => {
   localStorage.setItem('splitter_naming_config', JSON.stringify(namingConfig))
+  saveGlobalSettings()
 }, { deep: true })
 
 // Trạng thái hiển thị ở thanh đáy workspace.
@@ -703,22 +706,40 @@ let forcedScenarioId = ''
 // file (bỏ qua các clip đã cắt, không xuất thumbnail). Reset ở cuối exportClips.
 let forceFullVideoExport = false
 
-const loadRemixScenarios = () => {
-  const data = localStorage.getItem('remix_scenarios_list')
-  if (data) {
-    try {
-      remixScenarios.value = JSON.parse(data) as RemixScenario[]
-    } catch (e) {
-      console.error(e)
+const loadRemixScenarios = async () => {
+  try {
+    const settingsStr = await GetGlobalSettings()
+    if (settingsStr) {
+      const gSettings = JSON.parse(settingsStr)
+      if (Array.isArray(gSettings.remixScenarios) && gSettings.remixScenarios.length > 0) {
+        remixScenarios.value = gSettings.remixScenarios
+        localStorage.setItem('remix_scenarios_list', JSON.stringify(gSettings.remixScenarios))
+      }
+      if (gSettings.remixScenarioMode === 'random' || gSettings.remixScenarioMode === 'roundrobin') {
+        scenarioMode.value = gSettings.remixScenarioMode
+        localStorage.setItem('remix_scenario_mode', gSettings.remixScenarioMode)
+      }
     }
+  } catch (_) {}
+
+  if (remixScenarios.value.length === 0) {
+    const data = localStorage.getItem('remix_scenarios_list')
+    if (data) {
+      try {
+        remixScenarios.value = JSON.parse(data) as RemixScenario[]
+      } catch (e) {
+        console.error(e)
+      }
+    }
+    const mode = localStorage.getItem('remix_scenario_mode')
+    if (mode === 'random' || mode === 'roundrobin') scenarioMode.value = mode
   }
-  const mode = localStorage.getItem('remix_scenario_mode')
-  if (mode === 'random' || mode === 'roundrobin') scenarioMode.value = mode
 }
 
 const saveRemixScenarios = () => {
   localStorage.setItem('remix_scenarios_list', JSON.stringify(remixScenarios.value))
   localStorage.setItem('remix_scenario_mode', scenarioMode.value)
+  saveGlobalSettings()
 }
 
 // Xuất ngay từ tab Chỉnh sửa: áp ĐÚNG kịch bản đang mở (scenarioId) cho các clip của
@@ -1102,6 +1123,7 @@ const loadPromptPresets = () => {
 
 const savePromptPresets = () => {
   localStorage.setItem('prompt_presets_list', JSON.stringify(promptPresets.value))
+  saveGlobalSettings()
 }
 
 const selectPresetTag = (preset: PromptPreset) => {
@@ -2276,7 +2298,10 @@ function updateClipSelectionFromDrag() {
 function onClipsGridMouseDown(e: MouseEvent) {
   if (e.button !== 0 || isExporting.value) return
   const target = e.target as HTMLElement
-  if (target.closest('button, input, a, select, textarea, .btn-remove-clip, .btn-action-small, label')) return
+  if (target.closest('button, input, a, select, textarea, .btn-remove-clip, .btn-action-small, label, .clip-drag-handle')) return
+  // Nhấn lên bất kỳ thẻ clip nào → để dành cho kéo-ghép (native drag), KHÔNG bôi đen quét chọn.
+  // Khung quét chọn chỉ bắt đầu từ vùng trống của lưới.
+  if (target.closest('.clip-modern-card')) return
 
   const grid = clipsGridRef.value
   if (!grid) return
@@ -2912,6 +2937,7 @@ const saveActiveProjectState = () => {
 
   localStorage.setItem('namedProjectsList', JSON.stringify(namedProjects.value))
   localStorage.setItem('activeProjectId', activeProjectId.value)
+  saveGlobalSettings()
 }
 
 watch(analyzerConfig, () => {
@@ -3236,6 +3262,146 @@ const mergeWithNext = async (index: number) => {
 const mergeWithPrev = (index: number) => {
   if (index <= 0) return
   mergeWithNext(index - 1)
+}
+
+// Trải phẳng một clip thành danh sách đoạn con (ClipSegment). Clip thường → 1 đoạn
+// dựng từ chính nó; clip đã ghép → trả lại đúng các đoạn con đã lưu.
+const clipToSegments = (c: any): any[] => {
+  if (c.segments && c.segments.length > 0) {
+    return c.segments.map((s: any) => ({ ...s }))
+  }
+  return [{
+    startTime: c.startTime,
+    endTime: c.endTime,
+    confidence: c.confidence,
+    tier: c.tier,
+    reason: c.reason,
+    thumbEnd: c.thumbEnd,
+  }]
+}
+
+// Ghép cả DẢI LIÊN TIẾP các clip từ fromIdx đến toIdx thành 1 clip ghép.
+// Vì các clip liền kề trên timeline, kết quả là một range [start, end] liên tục;
+// giữ lại biên các clip con trong `segments` để hủy ghép được.
+const mergeClipRange = async (fromIdx: number, toIdx: number) => {
+  const clips = clipsMap.value[activeVideoPath.value]
+  if (!clips) return
+  const lo = Math.min(fromIdx, toIdx)
+  const hi = Math.max(fromIdx, toIdx)
+  if (lo < 0 || hi >= clips.length || lo === hi) return
+
+  // Gom mọi đoạn con trong dải [lo, hi] (trải phẳng cả clip đã ghép sẵn).
+  const segments: any[] = []
+  for (let i = lo; i <= hi; i++) {
+    segments.push(...clipToSegments(clips[i]))
+  }
+  const first = clips[lo]
+  const last = clips[hi]
+  const merged = project.Clip.createFrom({
+    ...first,
+    startTime: first.startTime,
+    endTime: last.endTime,
+    duration: last.endTime - first.startTime,
+    status: 'pending',
+    thumbnail: '',
+    thumbEnd: last.thumbEnd,
+    exportedPath: '', // xóa video đã xuất cũ để thẻ trích lại frame đúng đoạn, không dùng chung file
+    segments,
+  })
+  clips.splice(lo, hi - lo + 1, merged)
+  reindexClips()
+  await refreshClipThumbs(merged)
+  addLog(`Đã ghép ${hi - lo + 1} clip thành 1 (Clip #${lo + 1}).`)
+  await saveProject()
+}
+
+// Hủy ghép: khôi phục các đoạn con của clip ghép thành từng clip riêng.
+const unmergeClip = async (index: number) => {
+  const clips = clipsMap.value[activeVideoPath.value]
+  if (!clips) return
+  const clip: any = clips[index]
+  if (!clip.segments || clip.segments.length === 0) return
+  const restored = clip.segments.map((s: any) => {
+    const c: any = project.Clip.createFrom({
+      ...clip,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      duration: s.endTime - s.startTime,
+      confidence: s.confidence ?? 0,
+      tier: s.tier || 'review',
+      reason: s.reason || '',
+      status: 'pending',
+      thumbnail: '',
+      thumbEnd: s.thumbEnd || '',
+      exportedPath: '', // clear để mỗi clip trích lại frame của chính nó (không dùng chung video ghép cũ)
+      segments: [],
+    })
+    delete c.aiThumbFailed
+    delete c.aiThumbError
+    return c
+  })
+  clips.splice(index, 1, ...restored)
+  reindexClips()
+  for (const c of restored) {
+    await refreshClipThumbs(c)
+  }
+  addLog(`Đã tách clip ghép thành ${restored.length} clip.`)
+  await saveProject()
+}
+
+// === KÉO-THẢ GHÉP CLIP ===
+const dragSrcIdx = ref<number | null>(null)
+const dragOverIdx = ref<number | null>(null)
+
+const onClipDragStart = (idx: number, e: DragEvent) => {
+  if (isExporting.value || isMultiVideoDisplay.value) return
+  dragSrcIdx.value = idx
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(idx))
+  }
+}
+
+const onClipDragOver = (idx: number, e: DragEvent) => {
+  if (dragSrcIdx.value === null || dragSrcIdx.value === idx) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  dragOverIdx.value = idx
+}
+
+const onClipDrop = async (idx: number, e: DragEvent) => {
+  e.preventDefault()
+  e.stopPropagation() // chặn nổi bọt lên grid (grid drop dùng để hủy ghép)
+  const src = dragSrcIdx.value
+  dragOverIdx.value = null
+  dragSrcIdx.value = null
+  if (src === null || src === idx) return
+  await mergeClipRange(src, idx)
+}
+
+const onClipDragEnd = () => {
+  dragOverIdx.value = null
+  dragSrcIdx.value = null
+}
+
+// Thả ra VÙNG TRỐNG của lưới (không trúng thẻ nào) → hủy ghép clip nguồn nếu là clip ghép.
+const onGridDragOver = (e: DragEvent) => {
+  if (dragSrcIdx.value === null) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+}
+
+const onGridDrop = async (e: DragEvent) => {
+  e.preventDefault()
+  const src = dragSrcIdx.value
+  dragOverIdx.value = null
+  dragSrcIdx.value = null
+  if (src === null) return
+  const clips = clipsMap.value[activeVideoPath.value]
+  const clip: any = clips?.[src]
+  if (clip?.segments && clip.segments.length > 0) {
+    await unmergeClip(src)
+  }
 }
 
 // === LƯU / MỞ PROJECT (SQLite qua backend) ===
@@ -3795,38 +3961,38 @@ const formatSize = (bytes: number) => {
               <span>Chọn tất cả video để xử lý</span>
             </label>
 
-            <button 
-              v-if="videoPaths.length > 0 && selectedVideos.size > 0" 
+            <BaseButton
+              v-if="videoPaths.length > 0 && selectedVideos.size > 0"
+              variant="danger"
+              size="sm"
               :disabled="isAnalyzing || isExporting"
-              @click.stop="removeSelectedVideos" 
-              class="btn-danger-compact" 
-              style="height: 28px; box-sizing: border-box; padding: 5px 10px; font-size: 11px;"
+              @click.stop="removeSelectedVideos"
             >
               Xóa {{ selectedVideos.size }} video đã chọn
-            </button>
+            </BaseButton>
           </div>
 
           <div class="title-right-actions" style="display: flex; align-items: center; gap: 8px;">
             <!-- Nút chọn video gốc (bên phải) -->
-            <button :disabled="isAnalyzing || isExporting" @click="handleSelectFiles" class="btn select-btn flex-center">
+            <BaseButton variant="secondary" size="sm" :disabled="isAnalyzing || isExporting" @click="handleSelectFiles">
               <Plus :size="12" />
               Chọn Video Gốc
-            </button>
+            </BaseButton>
             <!-- Nút Bắt Đầu Cắt Tự Động / Dừng Ngay (bên phải) -->
-            <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0 || isExporting" @click="analyzeAll" class="btn btn-analyze flex-center font-bold">
+            <BaseButton v-if="!isAnalyzing" variant="primary" size="sm" :disabled="videoPaths.length === 0 || isExporting" @click="analyzeAll">
               <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
               Cắt Video
-            </button>
-            <button v-else @click="cancelCurrentAnalysis" class="btn stop-analyze-btn flex-center font-bold">
+            </BaseButton>
+            <BaseButton v-else variant="danger" size="sm" @click="cancelCurrentAnalysis">
               <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
               Dừng Ngay ({{ processedVideosCount }}/{{ totalVideosCount }})
-            </button>
+            </BaseButton>
 
             <!-- Nút Chỉ Xuất Video Gốc (Không Cắt) -->
-            <button v-if="!isAnalyzing" :disabled="videoPaths.length === 0 || isExporting" @click="exportWithoutSplitting" class="btn btn-export-direct flex-center font-bold" title="Xuất trực tiếp các video gốc đang chọn (áp dụng cấu hình hiệu ứng/tốc độ ở bên trái, không cắt nhỏ)">
+            <BaseButton v-if="!isAnalyzing" variant="success" size="sm" :disabled="videoPaths.length === 0 || isExporting" @click="exportWithoutSplitting" title="Xuất trực tiếp các video gốc đang chọn (áp dụng cấu hình hiệu ứng/tốc độ ở bên trái, không cắt nhỏ)">
               <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2v9.67z"/></svg>
               Xuất Video
-            </button>
+            </BaseButton>
           </div>
         </div>
 
@@ -4192,6 +4358,8 @@ const formatSize = (bytes: number) => {
             ref="clipsGridRef"
             class="clips-grid"
             @mousedown.left="onClipsGridMouseDown"
+            @dragover="onGridDragOver"
+            @drop="onGridDrop"
             style="position: relative; user-select: none;"
           >
             <!-- Khung bôi đen quét chọn -->
@@ -4200,14 +4368,30 @@ const formatSize = (bytes: number) => {
             <div v-for="(clip, idx) in displayClips" :key="clip.id"
               class="clip-modern-card"
               :data-clip-id="clip.id"
-              :class="{ 'clip-selected': selectedClips.has(clip.id), 'clip-done': clip.status === 'completed' }">
-              
+              :draggable="!isMultiVideoDisplay && !isExporting ? 'true' : 'false'"
+              @dragstart="onClipDragStart(idx, $event)"
+              @dragover="onClipDragOver(idx, $event)"
+              @drop="onClipDrop(idx, $event)"
+              @dragend="onClipDragEnd"
+              :class="{ 'clip-selected': selectedClips.has(clip.id), 'clip-done': clip.status === 'completed', 'clip-drag-over': dragOverIdx === idx, 'clip-dragging': dragSrcIdx === idx }">
+
               <div class="clip-card-header-bar">
                 <div class="header-left-wrap">
+                  <span
+                    v-if="!isMultiVideoDisplay && !isExporting"
+                    class="clip-drag-handle"
+                    title="Kéo thả vào clip khác để ghép"
+                    style="display: inline-flex; align-items: center; cursor: grab; color: var(--wx-text-muted); padding: 0 2px;"
+                  >
+                    <GripVertical :size="14" />
+                  </span>
                   <label class="clip-select-wrap" @click.stop>
                     <input type="checkbox" class="clip-checkbox" :checked="selectedClips.has(clip.id)" @change="toggleClipSelected(clip.id)" :disabled="isExporting" />
                   </label>
                   <span class="clip-title-tag">Clip #{{ clip.index }}</span>
+                  <span v-if="(clip as any).segments && (clip as any).segments.length > 0" class="clip-merged-badge" :title="`Clip ghép từ ${(clip as any).segments.length} đoạn liên tiếp`" style="display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 700; color: #a5b4fc; background: rgba(99,102,241,0.16); border: 1px solid rgba(99,102,241,0.4); border-radius: 4px; padding: 1px 6px;">
+                    🔗 Ghép {{ (clip as any).segments.length }} đoạn
+                  </span>
                   <span class="status-dot done" v-if="clip.status === 'completed'" title="Đã xuất"></span>
                   <span class="status-dot pending" v-else title="Chờ xuất"></span>
                   <span v-if="(clip as any).aiThumbFailed" class="ai-thumb-fail-badge" :title="(clip as any).aiThumbError || 'Không tạo được ảnh bìa AI'" style="display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 700; color: #fca5a5; background: rgba(239,68,68,0.14); border: 1px solid rgba(239,68,68,0.35); border-radius: 4px; padding: 1px 6px;">
@@ -4278,7 +4462,11 @@ const formatSize = (bytes: number) => {
                 </div>
               </div>
 
-              <div class="clip-time-inputs-row">
+              <!-- Clip ghép: khóa input để không làm lệch biên các đoạn con; hiện tóm tắt -->
+              <div v-if="(clip as any).segments && (clip as any).segments.length > 0" class="clip-merged-summary" style="display: flex; align-items: center; justify-content: center; gap: 6px; padding: 8px; margin: 4px 0; font-size: 12px; color: var(--wx-text-muted); background: rgba(99,102,241,0.08); border: 1px dashed rgba(99,102,241,0.35); border-radius: 6px;">
+                🔗 {{ (clip as any).segments.length }} đoạn liên tiếp · {{ formatTime(clip.startTime) }} → {{ formatTime(clip.endTime) }}
+              </div>
+              <div v-else class="clip-time-inputs-row">
                 <div class="input-block">
                   <span class="input-lbl">Bắt đầu</span>
                   <input type="number" step="1" v-model.number="clip.startTime" :disabled="isExporting" @input="updateClipDuration(clip)" @change="onClipTimeChange(clip)" />
@@ -4291,9 +4479,10 @@ const formatSize = (bytes: number) => {
               </div>
 
               <div class="clip-card-actions-row">
-                <!-- <button v-if="!isExporting" @click="openEdit(idx)" class="mini-act-btn btn-edit" title="Chỉnh sửa (Chèn chữ, watermark...)">
-                  ✏️ Sửa
-                </button> -->
+                <button v-if="!isExporting && (clip as any).segments && (clip as any).segments.length > 0" @click="unmergeClip(idx)" class="mini-act-btn flex-center" title="Tách clip ghép thành các đoạn ban đầu" style="display: inline-flex; align-items: center; gap: 4px; color: #a5b4fc; border-color: rgba(99,102,241,0.4);">
+                  <Unlink :size="12" />
+                  Tách
+                </button>
                 <button v-if="!isExporting" @click="removeClip(idx)" class="mini-act-btn btn-delete flex-center" title="Xóa clip" style="display: inline-flex; align-items: center; gap: 4px;">
                   <Trash2 :size="12" />
                   Xóa
@@ -4767,10 +4956,10 @@ const formatSize = (bytes: number) => {
         <!-- Thanh tiêu đề màn hình chỉnh sửa -->
         <header class="edit-header">
           <div class="edit-header-left">
-            <button class="edit-back-btn" @click="showEdit = false" title="Quay lại">
-              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z"/></svg>
+            <BaseButton variant="ghost" size="sm" @click="showEdit = false" title="Quay lại">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z"/></svg>
               Quay lại
-            </button>
+            </BaseButton>
             <h2 style="display: flex; align-items: center; gap: 6px;">
               <Scissors :size="18" style="color: var(--wx-brand-accent);" />
               Chỉnh sửa Clip #{{ editingClip.index }}
@@ -4778,18 +4967,18 @@ const formatSize = (bytes: number) => {
             </h2>
           </div>
           <div class="edit-header-right">
-            <button @click="resetEdit" class="btn reset-btn" style="display: inline-flex; align-items: center; gap: 4px;">
+            <BaseButton variant="secondary" size="sm" @click="resetEdit">
               <RotateCcw :size="14" /> Đặt lại
-            </button>
-            <button @click="applyEditToAll" class="btn reset-btn" title="Áp bộ chỉnh sửa này cho mọi clip của video hiện tại" style="display: inline-flex; align-items: center; gap: 4px;">
+            </BaseButton>
+            <BaseButton variant="secondary" size="sm" @click="applyEditToAll" title="Áp bộ chỉnh sửa này cho mọi clip của video hiện tại">
               <Copy :size="14" /> Áp cho video này
-            </button>
-            <button @click="applyEditToSelectedVideos" class="btn reset-btn" :title="selectedVideos.size > 0 ? `Áp cho mọi clip của ${selectedVideos.size} video đã tick` : 'Áp cho mọi clip của tất cả video đã phân tích'" style="display: inline-flex; align-items: center; gap: 4px;">
+            </BaseButton>
+            <BaseButton variant="secondary" size="sm" @click="applyEditToSelectedVideos" :title="selectedVideos.size > 0 ? `Áp cho mọi clip của ${selectedVideos.size} video đã tick` : 'Áp cho mọi clip của tất cả video đã phân tích'">
               <Layers :size="14" /> {{ selectedVideos.size > 0 ? `Áp cho ${selectedVideos.size} video đã chọn` : 'Áp cho tất cả video' }}
-            </button>
-            <button @click="showEdit = false" class="btn save-btn" style="display: inline-flex; align-items: center; gap: 4px;">
+            </BaseButton>
+            <BaseButton variant="primary" size="sm" @click="showEdit = false">
               <Check :size="14" /> Xong
-            </button>
+            </BaseButton>
           </div>
         </header>
 
@@ -5140,10 +5329,10 @@ const formatSize = (bytes: number) => {
               </div>
               <div v-else>
                 <div style="margin-bottom: 12px;">
-                  <button @click="getClipFrames" :disabled="aiThumbState.isExtractingFrames" class="btn select-btn flex-center" style="font-size:12px; padding: 6px 12px; width: 100%; justify-content: center; background: var(--bg-panel-dark); cursor: pointer;">
-                    <svg viewBox="0 0 24 24" width="14" height="14" style="margin-right:4px;"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+                  <BaseButton variant="primary" size="sm" block :loading="aiThumbState.isExtractingFrames" :disabled="aiThumbState.isExtractingFrames" @click="getClipFrames">
+                    <svg v-if="!aiThumbState.isExtractingFrames" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
                     {{ aiThumbState.isExtractingFrames ? 'Đang trích xuất ảnh mẫu...' : 'Lấy 3 ảnh mẫu từ Clip này' }}
-                  </button>
+                  </BaseButton>
                 </div>
 
                 <!-- Hiển thị 3 ảnh mẫu trích xuất -->
@@ -5434,9 +5623,9 @@ const formatSize = (bytes: number) => {
             </div>
           </div>
           <div class="modal-footer" style="justify-content: flex-end;">
-            <button class="btn save-btn flex-center" @click="saveGlobalSettings(); showSettings = false" style="display: inline-flex; align-items: center; gap: 4px;">
+            <BaseButton variant="primary" size="md" @click="saveGlobalSettings(); showSettings = false">
               <Check :size="15" /> Hoàn tất
-            </button>
+            </BaseButton>
           </div>
         </div>
       </div>

@@ -28,11 +28,11 @@
                 @input="onUrlInput"
                 placeholder="Dán link Google Sheet của anh vào đây..."
                 class="img-text-input"
-                style="flex: 1;"
+                style="flex: 1; height: 40px;"
               />
-              <button @click="fetchSheetStructure(true)" class="img-dir-btn btn-accent-blue" title="Bấm để tự đọc tất cả các Tab & Cột">
+              <BaseButton variant="secondary" size="md" @click="fetchSheetStructure(true)" title="Bấm để tự đọc tất cả các Tab & Cột">
                 <RefreshCw :size="13" /> Kiểm Tra Link
-              </button>
+              </BaseButton>
             </div>
           </div>
 
@@ -48,11 +48,11 @@
                 @change="fetchSheetStructure(false)"
                 placeholder="https://script.google.com/macros/s/AKfycb.../exec"
                 class="img-text-input"
-                style="flex: 1;"
+                style="flex: 1; height: 40px;"
               />
-              <button @click="openScriptModal" class="img-dir-btn" style="white-space: nowrap;" title="Xem hướng dẫn cài đặt Apps Script 1-Click">
+              <BaseButton variant="secondary" size="md" style="white-space: nowrap;" @click="openScriptModal" title="Xem hướng dẫn cài đặt Apps Script 1-Click">
                 <Code :size="13" /> Lấy mã Apps Script
-              </button>
+              </BaseButton>
             </div>
           </div>
 
@@ -181,25 +181,27 @@
 
         <!-- Nút Hành Động Bước 1 -->
         <div class="config-footer-row" style="padding-top: 6px; display: flex; gap: 8px;">
-          <button
+          <BaseButton
             v-if="!isGeneratingAI"
-            @click="generateAllTopicGroups"
+            variant="primary"
+            size="lg"
+            block
             :disabled="selectedHeaderNames.size === 0"
-            class="img-action-btn start-generate-btn"
-            style="width: 100%; height: 44px; font-size: 13.5px; background: linear-gradient(135deg, #8b5cf6, #6366f1); box-shadow: 0 4px 15px rgba(139, 92, 246, 0.4);"
+            @click="generateAllTopicGroups"
           >
             <Sparkles :size="16" />
             <span>1. Sinh Content AI (Theo Cột Đã Chọn)</span>
-          </button>
-          <button
+          </BaseButton>
+          <BaseButton
             v-else
+            variant="danger"
+            size="lg"
+            block
             @click="cancelGenerationFlag = true"
-            class="img-action-btn"
-            style="width: 100%; height: 44px; font-size: 13.5px; background: linear-gradient(135deg, #ef4444, #dc2626); box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4); color: white;"
           >
             <Loader2 :size="16" class="spin-icon" />
             <span>Dừng Sinh Content (Hủy)</span>
-          </button>
+          </BaseButton>
         </div>
 
       </div>
@@ -210,16 +212,16 @@
         <!-- Thanh Công Cụ Điều Khiển Top Toolbar Tinh Gọn -->
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">
           <div style="display: flex; align-items: center; gap: 8px;">
-            <button
+            <BaseButton
+              variant="secondary"
+              size="sm"
               @click="isLeftPanelCollapsed = !isLeftPanelCollapsed"
-              class="img-dir-btn btn-accent-blue"
-              style="height: 30px; padding: 0 12px; font-weight: 700; font-size: 12px;"
               :title="isLeftPanelCollapsed ? 'Hiện lại bảng cấu hình bên trái' : 'Ẩn bảng cấu hình, mở rộng bảng kết quả'"
             >
               <PanelLeftOpen v-if="isLeftPanelCollapsed" :size="14" />
               <PanelLeftClose v-else :size="14" />
               <span>{{ isLeftPanelCollapsed ? 'Hiện cấu hình' : 'Mở rộng bảng Excel' }}</span>
-            </button>
+            </BaseButton>
             
             <span style="font-size: 12.5px; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
               <FileSpreadsheet :size="16" />
@@ -274,47 +276,46 @@
                 </div>
 
                 <div style="display: flex; align-items: center; gap: 8px;">
-                  <button
-                    @click="addExtraSampleToGroup(group)"
+                  <BaseButton
+                    variant="secondary"
+                    size="sm"
+                    :loading="group.isGeneratingMore"
                     :disabled="group.isGeneratingMore"
-                    class="img-dir-btn"
-                    style="height: 32px; padding: 0 10px; font-size: 11.5px; color: #c084fc; border-color: rgba(168, 85, 247, 0.4);"
+                    @click="addExtraSampleToGroup(group)"
                   >
-                    <Loader2 v-if="group.isGeneratingMore" :size="12" class="spin-icon" />
-                    <Plus v-else :size="12" />
+                    <Plus v-if="!group.isGeneratingMore" :size="12" />
                     <span>{{ group.isGeneratingMore ? 'Đang tạo...' : 'Sinh Thêm 1 Mẫu' }}</span>
-                  </button>
+                  </BaseButton>
 
                   <!-- Nút Tạo Lại Các Ô Đã Chọn -->
-                  <button
+                  <BaseButton
                     v-if="hasSelectedCellsInGroup(group)"
-                    @click="regenerateSelectedCellsInGroup(group)"
+                    variant="secondary"
+                    size="sm"
+                    :loading="group.isGeneratingMore"
                     :disabled="group.isGeneratingMore"
-                    class="img-dir-btn"
-                    style="height: 32px; padding: 0 10px; font-size: 11.5px; color: #f59e0b; border-color: rgba(245, 158, 11, 0.4);"
+                    @click="regenerateSelectedCellsInGroup(group)"
                     title="Tạo lại tất cả các ô nội dung (card) đang tích chọn trong nhóm này"
                   >
-                    <Loader2 v-if="group.isGeneratingMore" :size="12" class="spin-icon" />
-                    <RefreshCw v-else :size="12" />
+                    <RefreshCw v-if="!group.isGeneratingMore" :size="12" />
                     <span>Tạo Lại Đã Chọn</span>
-                  </button>
+                  </BaseButton>
 
-                  <button @click="clearResults" class="img-dir-btn" style="height: 32px; font-size: 11.5px; color: #f87171; border-color: rgba(239, 68, 68, 0.3);" title="Xóa tất cả mẫu">
+                  <BaseButton variant="danger" size="sm" @click="clearResults" title="Xóa tất cả mẫu">
                     <Trash2 :size="13" /> Xóa tất cả
-                  </button>
+                  </BaseButton>
 
                   <!-- Nút Đẩy Sheet -->
-                  <button
-                    @click="pushSelectedRowsToSheet"
+                  <BaseButton
+                    variant="success"
+                    size="sm"
+                    :loading="isPushing"
                     :disabled="totalSelectedCount === 0 || isPushing"
-                    class="img-action-btn start-generate-btn"
-                    style="height: 32px; padding: 0 14px; font-size: 12px; background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);"
-                    :style="(totalSelectedCount === 0 || isPushing) ? 'opacity: 0.5; cursor: not-allowed; pointer-events: none; background: #4b5563; box-shadow: none;' : ''"
+                    @click="pushSelectedRowsToSheet"
                   >
                     <Upload v-if="!isPushing" :size="13" />
-                    <Loader2 v-else :size="13" class="spin-icon" />
                     <span>{{ isPushing ? 'Đang Đẩy Sheet...' : `Đẩy Lên Sheet` }}</span>
-                  </button>
+                  </BaseButton>
                 </div>
               </div>
 
@@ -383,6 +384,7 @@
 
                       <td style="padding: 8px 6px;">
                         <span v-if="item.pushStatus === 'success'" class="status-tag success">✓ Đã dán</span>
+                        <span v-else-if="item.pushStatus === 'duplicate'" class="status-tag" style="background: rgba(245,158,11,0.16); color: #f59e0b; border: 1px solid rgba(245,158,11,0.4);" title="Bị bỏ qua vì đã có giá trị trùng trong cột trên Sheet">⚠ Trùng</span>
                         <span v-else-if="item.pushStatus === 'error'" class="status-tag error">✕ Lỗi</span>
                         <span v-else-if="item.pushStatus === 'pushing'" class="status-tag pushing">Đang dán...</span>
                         <span v-else class="status-tag waiting">Chờ dán</span>
@@ -436,10 +438,10 @@
         </div>
 
         <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--wx-border-default); flex-shrink: 0;">
-          <button @click="copyAppsScript" class="img-dir-btn btn-accent-blue" style="height: 32px;">
+          <BaseButton variant="primary" size="sm" @click="copyAppsScript">
             <Copy :size="13" /> {{ copied ? '🎉 Đã Copy Code!' : 'Copy Toàn Bộ Mã Code' }}
-          </button>
-          <button @click="showScriptModal = false" class="img-dir-btn" style="height: 32px;">Đóng</button>
+          </BaseButton>
+          <BaseButton variant="secondary" size="sm" @click="showScriptModal = false">Đóng</BaseButton>
         </div>
       </div>
     </div>
@@ -450,6 +452,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { FileSpreadsheet, Sparkles, RefreshCw, Play, Loader2, Check, Trash2, Code, Copy, Folder, Plus, Sliders, PanelLeftOpen, PanelLeftClose, Upload } from 'lucide-vue-next'
+import BaseButton from './common/BaseButton.vue'
 import { FetchGoogleSheetStructure, PushGoogleSheetRow, PushGoogleSheetBatch, GetGoogleAppsScriptTemplate, GenerateAIContentText, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
 
 const props = defineProps<{
@@ -511,7 +514,7 @@ interface GeneratedRowItem {
   topicName: string
   columnData: Record<string, string>
   columnTranslations?: Record<string, string>
-  pushStatus: 'waiting' | 'pushing' | 'success' | 'error'
+  pushStatus: 'waiting' | 'pushing' | 'success' | 'error' | 'duplicate'
 }
 
 const getItemTranslation = (item: GeneratedRowItem, colName: string): string => {
@@ -1120,12 +1123,26 @@ const pushSelectedRowsToSheet = async () => {
       return headerListToUse.map(h => (h ? (item.columnData[h] || '') : ''))
     })
 
+    let duplicateCount = 0
     try {
-      await PushGoogleSheetBatch(webAppUrl.value, tabGid.value, tabName.value, rowsData, headerListToUse)
-      selectedItemsToPush.forEach(item => {
-        item.pushStatus = 'success'
+      const resp: any = await PushGoogleSheetBatch(webAppUrl.value, tabGid.value, tabName.value, rowsData, headerListToUse)
+      // results[]: trạng thái từng dòng theo đúng thứ tự đã gửi ("inserted" / "duplicate").
+      // Apps Script bỏ qua dòng trùng (giá trị đã tồn tại ở chính cột đó) nên đánh dấu riêng.
+      const results: string[] = Array.isArray(resp?.results) ? resp.results : []
+      selectedItemsToPush.forEach((item, i) => {
+        if (results[i] === 'duplicate') {
+          item.pushStatus = 'duplicate'
+          duplicateCount++
+        } else {
+          item.pushStatus = 'success'
+          successCount++
+        }
       })
-      successCount = selectedItemsToPush.length
+      // Fallback khi Apps Script cũ chưa trả results (chưa cập nhật mã): coi như đã dán hết.
+      if (results.length === 0) {
+        selectedItemsToPush.forEach(item => { item.pushStatus = 'success' })
+        successCount = selectedItemsToPush.length
+      }
     } catch (err) {
       console.error('Lỗi đẩy batch:', err)
       props.showToast(`Lỗi đẩy dữ liệu: ${String(err)}`, 'error')
@@ -1134,8 +1151,12 @@ const pushSelectedRowsToSheet = async () => {
       })
     }
 
-    if (successCount > 0) {
+    if (successCount > 0 && duplicateCount > 0) {
+      props.showToast(`🎉 Đã dán ${successCount} mẫu lên Tab "${activeTabName.value}". Bỏ qua ${duplicateCount} mẫu trùng dữ liệu.`, 'success')
+    } else if (successCount > 0) {
       props.showToast(`🎉 Đã đẩy thành công ${successCount}/${selectedItemsToPush.length} mẫu lên Tab "${activeTabName.value}" của Google Sheet!`, 'success')
+    } else if (duplicateCount > 0) {
+      props.showToast(`Tất cả ${duplicateCount} mẫu đã trùng dữ liệu sẵn có trên Sheet nên không dán mẫu nào.`, 'warning')
     } else {
       props.showToast('Lỗi đẩy dữ liệu lên Google Sheet!', 'error')
     }

@@ -5,6 +5,7 @@ import {
   Globe, Link2, Search, Download, Square, FolderOpen,
   Check, X, Eye, Heart, Clock, Calendar, Copy, Loader2, Trash2, Film, SlidersHorizontal
 } from 'lucide-vue-next'
+import BaseButton from './common/BaseButton.vue'
 
 const props = defineProps<{
   videoPaths: string[]
@@ -158,12 +159,11 @@ const failedThumbs = ref<Set<string>>(new Set())
           @keyup.enter="probeUrl"
           :disabled="isProbing"
         />
-        <button @click="probeUrl" class="btn dl-probe-btn" :disabled="isProbing || !downloadUrl.trim()">
-          <Loader2 v-if="isProbing" :size="14" class="spin-hourglass" />
-          <Link2 v-else-if="downloadMode === 'link'" :size="14" />
-          <Search v-else :size="14" />
+        <BaseButton variant="primary" size="md" :loading="isProbing" :disabled="isProbing || !downloadUrl.trim()" @click="probeUrl">
+          <Link2 v-if="!isProbing && downloadMode === 'link'" :size="14" />
+          <Search v-else-if="!isProbing" :size="14" />
           {{ isProbing ? (downloadMode === 'link' ? 'Đang dò...' : 'Đang tìm...') : (downloadMode === 'link' ? 'Tìm Video' : 'Tìm kiếm') }}
-        </button>
+        </BaseButton>
         <button type="button" @click="showFilters = !showFilters" class="btn dl-filter-toggle-btn" :class="{ active: showFilters }">
           <SlidersHorizontal :size="14" />
           <span>Bộ lọc</span>
@@ -392,28 +392,29 @@ const failedThumbs = ref<Set<string>>(new Set())
       <div class="dl-dir-row">
         <label class="dl-dir-label">Lưu vào:</label>
         <input v-model="downloadDir" type="text" class="dl-dir-input" readonly />
-        <button @click="pickDownloadDir" class="btn dl-dir-btn" title="Chọn thư mục">
+        <BaseButton variant="secondary" size="md" title="Chọn thư mục" @click="pickDownloadDir">
           <FolderOpen :size="14" />
-        </button>
+        </BaseButton>
       </div>
       <div class="dl-footer-actions">
-        <button v-if="isDownloading" @click="cancelDl" class="btn stop-analyze-btn dl-action-btn">
+        <BaseButton v-if="isDownloading" variant="danger" size="md" @click="cancelDl">
           <Square :size="12" /> Hủy tải
-        </button>
+        </BaseButton>
         <template v-else>
-          <button
+          <BaseButton
             v-if="dlSelectedCount > 0"
-            @click="removeSelectedEntries"
-            class="btn dl-remove-btn dl-action-btn"
+            variant="danger"
+            size="md"
             :title="`Xóa ${dlSelectedCount} video đã chọn khỏi danh sách`"
+            @click="removeSelectedEntries"
           >
             <Trash2 :size="13" /> Xóa {{ dlSelectedCount }} video đã chọn
-          </button>
-          <button @click="startDownload" :disabled="dlSelectedCount === 0" class="btn btn-analyze dl-action-btn">
-            <Download :size="12" style="margin-right: 4px;" />
+          </BaseButton>
+          <BaseButton variant="primary" size="md" :disabled="dlSelectedCount === 0" @click="startDownload">
+            <Download :size="12" />
             <span v-if="dlSelectedCount === 0">Chọn video để tải</span>
             <span v-else>Tải {{ dlSelectedCount }} video đã chọn</span>
-          </button>
+          </BaseButton>
         </template>
       </div>
     </div>

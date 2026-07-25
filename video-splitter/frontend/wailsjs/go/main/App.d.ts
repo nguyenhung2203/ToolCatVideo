@@ -76,9 +76,9 @@ export function ParseGoogleSheetLink(arg1:string):Promise<main.ParsedSheetResult
 
 export function ProbeOnlineURL(arg1:string,arg2:string,arg3:number,arg4:string,arg5:string):Promise<downloader.URLProbeResult>;
 
-export function PushGoogleSheetBatch(arg1:string,arg2:string,arg3:string,arg4:Array<any>,arg5:Array<string>):Promise<void>;
+export function PushGoogleSheetBatch(arg1:string,arg2:string,arg3:string,arg4:Array<any>,arg5:Array<string>):Promise<googlesheet.WebAppResponse>;
 
-export function PushGoogleSheetRow(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:Array<string>):Promise<void>;
+export function PushGoogleSheetRow(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:Array<string>):Promise<googlesheet.WebAppResponse>;
 
 export function SaveGlobalSettings(arg1:string):Promise<void>;
 

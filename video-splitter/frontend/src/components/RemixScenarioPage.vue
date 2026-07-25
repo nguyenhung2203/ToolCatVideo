@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, reactive, computed, watch } from 'vue'
 import { Plus, Trash2, Save, Copy, Music, Image as ImageIcon, FileText, Layers, SlidersHorizontal, Film, Check, Wand2, Palette, Volume2, Type, Sparkles, Play, Pause, RotateCcw, Video, Folder, X, Square, Loader2, ArrowUp, ArrowDown, GripVertical } from 'lucide-vue-next'
-import { SelectImageFile, SelectAudioFile, SelectFolder, GetStreamURL } from '../../wailsjs/go/main/App'
+import { SelectImageFile, SelectAudioFile, SelectFolder, GetStreamURL, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'
+import BaseButton from './common/BaseButton.vue'
 
 const props = defineProps<{
   showToast: (msg: string, type: 'success' | 'error' | 'info' | 'warning') => void
@@ -41,6 +42,7 @@ interface DraftText {
   content: string
   fontSize: number
   color: string
+  font: string
   x: number
   y: number
   startTime: number
@@ -99,6 +101,28 @@ const targetLangs = [
 ]
 const sourceLangs = [{ code: 'auto', name: 'Tự nhận diện' }, ...targetLangs.slice(1)]
 
+// Danh sách font dùng chung cho dropdown text + phụ đề. Chỉ liệt kê font mặc định
+// LUÔN có sẵn trên Windows 10/11 (khớp map fontFamilyFiles ở backend utils/bin.go)
+// để chọn font nào cũng render được. cssFamily là chuỗi font-family cho preview.
+const fontOptions = [
+  { name: 'Arial', cssFamily: "Arial, sans-serif" },
+  { name: 'Times New Roman', cssFamily: "'Times New Roman', serif" },
+  { name: 'Tahoma', cssFamily: "Tahoma, sans-serif" },
+  { name: 'Verdana', cssFamily: "Verdana, sans-serif" },
+  { name: 'Georgia', cssFamily: "Georgia, serif" },
+  { name: 'Calibri', cssFamily: "Calibri, sans-serif" },
+  { name: 'Comic Sans MS', cssFamily: "'Comic Sans MS', cursive" },
+  { name: 'Impact', cssFamily: "Impact, sans-serif" },
+  { name: 'Trebuchet MS', cssFamily: "'Trebuchet MS', sans-serif" },
+  { name: 'Courier New', cssFamily: "'Courier New', monospace" },
+  { name: 'Segoe UI', cssFamily: "'Segoe UI', sans-serif" },
+]
+// cssFontFamily quy tên font family → chuỗi CSS cho preview; rỗng/không rõ = mặc định.
+const cssFontFamily = (name: string): string => {
+  const f = fontOptions.find(o => o.name === name)
+  return f ? f.cssFamily : "'Segoe UI', sans-serif"
+}
+
 const draft = reactive({
   hflip: false,
   speed: 1.0,
@@ -144,6 +168,7 @@ const draft = reactive({
   subFontColor: '#ffffff',
   subOutlineColor: '#000000',
   subMarginV: 40,
+  subFont: 'Arial',
   subX: 0.5,
   subY: 0.9,
   subHasCustomPosition: false,
@@ -236,7 +261,7 @@ const toggleTextSelected = (text: DraftText) => {
 const addText = () => {
   draft.textEnabled = true
   const id = `text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-  draft.texts.push({ id, content: 'Nội dung chữ', fontSize: 48, color: '#ffffff', x: 0.5, y: 0.82, startTime: 0, endTime: 0, bgBox: true, selected: true })
+  draft.texts.push({ id, content: 'Nội dung chữ', fontSize: 48, color: '#ffffff', font: 'Arial', x: 0.5, y: 0.82, startTime: 0, endTime: 0, bgBox: true, selected: true })
   selectedTextId.value = id
 }
 
@@ -343,11 +368,27 @@ const setTextPosition = (text: DraftText, x: number, y: number) => {
 }
 
 
-function load() {
-  const data = localStorage.getItem(STORAGE_KEY)
-  if (data) {
-    try { scenarios.value = JSON.parse(data) as RemixScenario[] } catch (e) { console.error(e) }
+async function load() {
+  try {
+    const settingsStr = await GetGlobalSettings()
+    if (settingsStr) {
+      const gSettings = JSON.parse(settingsStr)
+      if (Array.isArray(gSettings.remixScenarios) && gSettings.remixScenarios.length > 0) {
+        scenarios.value = gSettings.remixScenarios
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(gSettings.remixScenarios))
+      }
+    }
+  } catch (e) {
+    console.error('Lỗi nạp kịch bản từ settings.json:', e)
   }
+
+  if (scenarios.value.length === 0) {
+    const data = localStorage.getItem(STORAGE_KEY)
+    if (data) {
+      try { scenarios.value = JSON.parse(data) as RemixScenario[] } catch (e) { console.error(e) }
+    }
+  }
+
   if (scenarios.value.length > 0) {
     openEdit(scenarios.value[0])
   } else {
@@ -357,9 +398,21 @@ function load() {
   }
 }
 
-function persist() {
+async function persist() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(scenarios.value))
   window.dispatchEvent(new Event('remix_scenarios_updated'))
+
+  try {
+    const settingsStr = await GetGlobalSettings()
+    let gSettings: Record<string, any> = {}
+    if (settingsStr) {
+      try { gSettings = JSON.parse(settingsStr) } catch (_) {}
+    }
+    gSettings.remixScenarios = JSON.parse(JSON.stringify(scenarios.value))
+    await SaveGlobalSettings(JSON.stringify(gSettings))
+  } catch (e) {
+    console.error('Lỗi lưu kịch bản vào settings.json:', e)
+  }
 }
 
 const cardStreamUrl = ref('')
@@ -1213,6 +1266,7 @@ const subStyle = computed(() => ({
   top: `${clamp01(draft.subY) * 100}%`,
   transform: 'translate(-50%, -50%)',
   fontSize: `${Math.max(10, draft.subFontSize)}px`,
+  fontFamily: cssFontFamily(draft.subFont),
   color: draft.subFontColor || '#ffffff',
   WebkitTextStroke: `1px ${draft.subOutlineColor || '#000000'}`,
   textShadow: `0 1px 3px ${draft.subOutlineColor || '#000000'}`,
@@ -1233,6 +1287,7 @@ const textStyle = (text: DraftText) => ({
   transform: 'translate(-50%, -50%)',
   color: text.color || '#ffffff',
   fontSize: `${Math.max(8, text.fontSize)}px`,
+  fontFamily: cssFontFamily(text.font),
   fontWeight: '700',
   lineHeight: '1.2',
   whiteSpace: 'pre-wrap',
@@ -1273,7 +1328,7 @@ const resetDraft = () => {
     trimStart: 0, trimEnd: 0, pitch: 0, stripMeta: false,
     wmEnabled: false, wmPath: '', wmScale: 0.2, wmOpacity: 1.0, wmX: 0.97, wmY: 0.97, wmStartTime: 0, wmEndTime: 0,
     muteOriginal: false, musicPath: '', musicVolume: 0.3, musicLoop: false,
-    subEnabled: false, subPath: '', subFontSize: 24, subFontColor: '#ffffff', subOutlineColor: '#000000', subMarginV: 40,
+    subEnabled: false, subPath: '', subFontSize: 24, subFontColor: '#ffffff', subOutlineColor: '#000000', subMarginV: 40, subFont: 'Arial',
     subX: 0.5, subY: 0.9, subHasCustomPosition: false,
     subAutoGen: false, subSourceLang: 'auto', subTargetLang: '', textEnabled: false, texts: [],
     randomText: false, cardEnabled: false, cardAboveText: false, cardMode: 'preset', cardPreset: 'glass', cardImgPath: '',
@@ -1302,6 +1357,7 @@ const draftToEdit = (): any => ({
     content: t.content,
     fontSize: Math.round(Math.min(300, Math.max(8, t.fontSize))),
     color: t.color || '#ffffff',
+    font: t.font || 'Arial',
     x: coordExpr('x', t.x, 'text'),
     y: coordExpr('y', t.y, 'text'),
     startTime: Math.max(0, t.startTime || 0),
@@ -1344,6 +1400,7 @@ const draftToEdit = (): any => ({
     fontColor: cssToASSColor(draft.subFontColor, '&Hffffff'),
     outlineCol: cssToASSColor(draft.subOutlineColor, '&H000000'),
     marginV: draft.subMarginV,
+    font: draft.subFont,
     positionX: clamp01(draft.subX),
     positionY: clamp01(draft.subY),
     hasCustomPosition: draft.subHasCustomPosition,
@@ -1403,6 +1460,7 @@ const editToDraft = (e: any) => {
     draft.subFontColor = assToCSSColor(e.subtitle.fontColor, '#ffffff')
     draft.subOutlineColor = assToCSSColor(e.subtitle.outlineCol, '#000000')
     draft.subMarginV = e.subtitle.marginV ?? 40
+    draft.subFont = e.subtitle.font || 'Arial'
     draft.subHasCustomPosition = !!e.subtitle.hasCustomPosition
     draft.subX = draft.subHasCustomPosition ? clamp01(e.subtitle.positionX ?? 0.5) : 0.5
     draft.subY = draft.subHasCustomPosition ? clamp01(e.subtitle.positionY ?? 0.9) : 0.9
@@ -1417,6 +1475,7 @@ const editToDraft = (e: any) => {
     content: t.content || '',
     fontSize: t.fontSize || 48,
     color: t.color || '#ffffff',
+    font: t.font || 'Arial',
     x: parseNormalizedExpr(t.x, 'x', 'text', 0.5),
     y: parseNormalizedExpr(t.y, 'y', 'text', 0.82),
     startTime: Math.max(0, t.startTime || 0),
@@ -1560,14 +1619,14 @@ onMounted(load)
               {{ s.name }}
             </option>
           </select>
-          <button @click="openNew" class="capcut-add-chip-btn" title="Tạo kịch bản mới">
+          <BaseButton variant="secondary" size="sm" @click="openNew" title="Tạo kịch bản mới">
             <Plus :size="12" /> Tạo mới
-          </button>
+          </BaseButton>
         </div>
       </div>
 
       <div class="capcut-header-actions">
-        <div style="display: flex; align-items: center; gap: 6px; background: rgba(0,0,0,0.3); border: 1px solid var(--wx-border-default); border-radius: 6px; padding: 2px 8px; height: 32px; margin-right: 4px;">
+        <div style="display: flex; align-items: center; gap: 8px; background: var(--wx-surface-sunken); border: 1px solid var(--wx-border-default); border-radius: 6px; padding: 2px 10px; height: 32px; margin-right: 10px;">
           <Video :size="13" style="color: var(--wx-text-secondary); flex-shrink: 0;" />
           <select
             v-if="videos && videos.length > 0"
@@ -1576,7 +1635,7 @@ onMounted(load)
             title="Chọn video để chỉnh sửa"
             style="background: transparent; border: none; color: var(--wx-text-primary); font-size: 11px; max-width: 180px; outline: none; cursor: pointer;"
           >
-            <option v-for="(p, i) in videos" :key="i" :value="i" style="background-color: #0f172a; color: #f8fafc;">
+            <option v-for="(p, i) in videos" :key="i" :value="i" style="background-color: var(--wx-surface-base); color: var(--wx-text-primary);">
               {{ fileName(p) }}
             </option>
           </select>
@@ -1585,20 +1644,20 @@ onMounted(load)
             type="button"
             @click="emit('selectExternalVideo')"
             title="Chọn video từ máy"
-            style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #38bdf8; border-radius: 4px; padding: 3px 6px; cursor: pointer; display: flex; align-items: center; justify-content: center;"
+            style="background: var(--wx-surface-base); border: 1px solid var(--wx-border-default); color: var(--wx-brand-accent); border-radius: 4px; padding: 3px 6px; cursor: pointer; display: flex; align-items: center; justify-content: center;"
           >
             <Folder :size="13" />
           </button>
         </div>
-        <button v-if="editingId && editingId !== 'new'" class="btn capcut-sec-btn" @click="duplicateScenario(scenarios.find(s => s.id === editingId)!)" title="Nhân bản kịch bản này">
+        <BaseButton v-if="editingId && editingId !== 'new'" variant="secondary" size="sm" @click="duplicateScenario(scenarios.find(s => s.id === editingId)!)" title="Nhân bản kịch bản này">
           <Copy :size="13" /> Nhân bản
-        </button>
-        <button v-if="editingId && editingId !== 'new'" class="btn capcut-danger-btn" @click="deleteScenario(editingId)" title="Xóa kịch bản này">
+        </BaseButton>
+        <BaseButton v-if="editingId && editingId !== 'new'" variant="danger" size="sm" @click="deleteScenario(editingId)" title="Xóa kịch bản này">
           <Trash2 :size="13" /> Xóa
-        </button>
-        <button class="btn capcut-save-btn" @click="onSaveBtnClick">
+        </BaseButton>
+        <BaseButton variant="primary" size="sm" @click="onSaveBtnClick">
           <Save :size="14" /> {{ editingId === 'new' ? 'Lưu Kịch Bản Mới' : 'Lưu Thay Đổi' }}
-        </button>
+        </BaseButton>
         <!-- Widget xuất video gọn đẹp ngay trên thanh header -->
         <div v-if="isExporting" style="display: flex; align-items: center; gap: 10px; background: rgba(99, 102, 241, 0.15); border: 1.5px solid var(--wx-brand-primary, #6366f1); border-radius: 8px; padding: 4px 10px; height: 34px;">
           <div style="display: flex; align-items: center; gap: 8px;">
@@ -1624,15 +1683,16 @@ onMounted(load)
           </button>
         </div>
 
-        <button
+        <BaseButton
           v-else
-          class="btn capcut-export-now-btn"
+          variant="success"
+          size="sm"
           @click="exportCurrentScenario"
           title="Lưu kịch bản và tiến hành xuất video ngay"
         >
           <Video :size="14" />
           <span>Lưu và Xuất Video</span>
-        </button>
+        </BaseButton>
       </div>
     </header>
 
@@ -1824,7 +1884,7 @@ onMounted(load)
             </label>
             <div v-if="draft.wmEnabled" class="sub-fields-group">
               <div class="inline-field-row">
-                <button class="btn-picker" @click="pickWatermark">Chọn Logo</button>
+                <BaseButton variant="secondary" size="sm" @click="pickWatermark">Chọn Logo</BaseButton>
                 <span class="file-name-hint">{{ fileName(draft.wmPath) || 'Chưa chọn' }}</span>
               </div>
               <div class="wm-pos-selector">
@@ -1851,7 +1911,7 @@ onMounted(load)
               <span class="lbl-txt">Tắt tiếng video gốc</span>
             </label>
             <div class="inline-field-row" style="margin-top: 6px;">
-              <button class="btn-picker" @click="pickMusic">Nhạc nền MP3</button>
+              <BaseButton variant="secondary" size="sm" @click="pickMusic">Nhạc nền MP3</BaseButton>
               <span class="file-name-hint">{{ fileName(draft.musicPath) || 'Không có' }}</span>
             </div>
 
@@ -1873,13 +1933,19 @@ onMounted(load)
             </label>
             <div v-if="draft.subEnabled" class="sub-fields-group">
               <div class="inline-field-row">
-                <button class="btn-picker" @click="pickSubtitle">Chọn File Sub</button>
+                <BaseButton variant="secondary" size="sm" @click="pickSubtitle">Chọn File Sub</BaseButton>
                 <span class="file-name-hint">{{ fileName(draft.subPath) || 'Chưa chọn' }}</span>
               </div>
               <div class="inline-field-row editor-compact-row">
                 <label>Cỡ chữ <input v-model.number="draft.subFontSize" type="number" min="10" max="160" class="scenario-input-num" /></label>
                 <label>Màu <input v-model="draft.subFontColor" type="color" class="color-input" /></label>
                 <label>Viền <input v-model="draft.subOutlineColor" type="color" class="color-input" /></label>
+              </div>
+              <div class="inline-field-row" style="margin-top: 6px;">
+                <span style="font-size: 11.5px;">Kiểu chữ:</span>
+                <select v-model="draft.subFont" class="scenario-select" style="flex: 1; min-width: 0;" :style="{ fontFamily: cssFontFamily(draft.subFont) }">
+                  <option v-for="f in fontOptions" :key="f.name" :value="f.name" :style="{ fontFamily: f.cssFamily }">{{ f.name }}</option>
+                </select>
               </div>
               <div class="pos-grid-4">
                 <button type="button" class="pos-mini-btn" @click="setSubtitlePosition(0.5, 0.12)">Trên</button>
@@ -1960,7 +2026,7 @@ onMounted(load)
 
                 <!-- Mode Image -->
                 <div v-else class="inline-field-row">
-                  <button class="btn-picker" @click="pickCardImage">Chọn File Ảnh Nền</button>
+                  <BaseButton variant="secondary" size="sm" @click="pickCardImage">Chọn File Ảnh Nền</BaseButton>
                   <span class="file-name-hint">{{ fileName(draft.cardImgPath) || 'Chưa chọn ảnh' }}</span>
                 </div>
 
@@ -1998,7 +2064,7 @@ onMounted(load)
                   <span class="text-section-title">Chèn text ({{ draft.texts.length }})</span>
                 </div>
                 <div class="text-head-actions">
-                  <button class="btn-text-action add" @click="addText"><Plus :size="11" /> Thêm chữ</button>
+                  <BaseButton variant="secondary" size="sm" @click="addText"><Plus :size="11" /> Thêm chữ</BaseButton>
                 </div>
               </div>
 
@@ -2028,6 +2094,14 @@ onMounted(load)
                     <label>Cỡ <input v-model.number="selectedText.fontSize" type="number" min="8" max="300" class="scenario-input-num" /></label>
                     <label>Màu <input v-model="selectedText.color" type="color" class="color-input" /></label>
                     <label class="check-inline"><input v-model="selectedText.bgBox" type="checkbox" /> Nền mờ</label>
+                  </div>
+                  <div class="inline-field-row editor-compact-row">
+                    <label style="flex: 1; min-width: 0; gap: 6px;">
+                      <span style="white-space: nowrap; flex-shrink: 0;">Kiểu chữ</span>
+                      <select v-model="selectedText.font" class="scenario-select" style="flex: 1; min-width: 0;" :style="{ fontFamily: cssFontFamily(selectedText.font) }">
+                        <option v-for="f in fontOptions" :key="f.name" :value="f.name" :style="{ fontFamily: f.cssFamily }">{{ f.name }}</option>
+                      </select>
+                    </label>
                   </div>
                   <div class="inline-field-row editor-compact-row">
                     <label>Bắt đầu <input v-model.number="selectedText.startTime" type="number" min="0" step="0.1" class="scenario-input-num" /></label>

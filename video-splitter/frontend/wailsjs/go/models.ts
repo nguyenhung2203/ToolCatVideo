@@ -320,6 +320,28 @@ export namespace googlesheet {
 	        this.rawHeaders = source["rawHeaders"];
 	    }
 	}
+	export class WebAppResponse {
+	    status: string;
+	    message?: string;
+	    count?: number;
+	    inserted: number;
+	    skipped: number;
+	    results?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new WebAppResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.status = source["status"];
+	        this.message = source["message"];
+	        this.count = source["count"];
+	        this.inserted = source["inserted"];
+	        this.skipped = source["skipped"];
+	        this.results = source["results"];
+	    }
+	}
 
 }
 
@@ -681,6 +703,28 @@ export namespace project {
 	        this.cardAboveText = source["cardAboveText"];
 	    }
 	}
+	export class ClipSegment {
+	    startTime: number;
+	    endTime: number;
+	    confidence: number;
+	    tier: string;
+	    reason: string;
+	    thumbEnd: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClipSegment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.startTime = source["startTime"];
+	        this.endTime = source["endTime"];
+	        this.confidence = source["confidence"];
+	        this.tier = source["tier"];
+	        this.reason = source["reason"];
+	        this.thumbEnd = source["thumbEnd"];
+	    }
+	}
 	export class SubtitleOp {
 	    enabled: boolean;
 	    path: string;
@@ -688,6 +732,7 @@ export namespace project {
 	    fontColor: string;
 	    outlineCol: string;
 	    marginV: number;
+	    font: string;
 	    positionX: number;
 	    positionY: number;
 	    hasCustomPosition: boolean;
@@ -707,6 +752,7 @@ export namespace project {
 	        this.fontColor = source["fontColor"];
 	        this.outlineCol = source["outlineCol"];
 	        this.marginV = source["marginV"];
+	        this.font = source["font"];
 	        this.positionX = source["positionX"];
 	        this.positionY = source["positionY"];
 	        this.hasCustomPosition = source["hasCustomPosition"];
@@ -817,6 +863,7 @@ export namespace project {
 	    content: string;
 	    fontSize: number;
 	    color: string;
+	    font: string;
 	    x: string;
 	    y: string;
 	    startTime: number;
@@ -832,6 +879,7 @@ export namespace project {
 	        this.content = source["content"];
 	        this.fontSize = source["fontSize"];
 	        this.color = source["color"];
+	        this.font = source["font"];
 	        this.x = source["x"];
 	        this.y = source["y"];
 	        this.startTime = source["startTime"];
@@ -938,6 +986,7 @@ export namespace project {
 	    signals: string[];
 	    edit: EditOps;
 	    exportedPath: string;
+	    segments: ClipSegment[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Clip(source);
@@ -959,6 +1008,7 @@ export namespace project {
 	        this.signals = source["signals"];
 	        this.edit = this.convertValues(source["edit"], EditOps);
 	        this.exportedPath = source["exportedPath"];
+	        this.segments = this.convertValues(source["segments"], ClipSegment);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -979,6 +1029,7 @@ export namespace project {
 		    return a;
 		}
 	}
+	
 	
 	
 	

@@ -683,8 +683,21 @@ func (qm *AIQueueManager) worker(ctx context.Context, workerID int) {
 				flowLogf("[W%d %s] Ghép intro vào clip thất bại: %v", workerID+1, task.ClipName, mergeErr)
 				emitLog("error", "Ghép intro lỗi: "+mergeErr.Error())
 				qm.mu.Unlock()
+				// CỨU clip tạm ra file đích: ghép intro lỗi KHÔNG được để mất video. Vì
+				// ExportClips đã báo OK cho clip này (nó chỉ chịu trách nhiệm bước cắt),
+				// nếu bỏ luôn thì người dùng thấy "thành công" mà thư mục xuất thiếu file.
+				// Đưa clip đã cắt ra đích (thiếu intro nhưng còn video) trừ khi người dùng
+				// đã tự tạo sẵn file đích khác. Chỉ chuyển đúng file khớp mẫu clip tạm.
+				if task.FinalVideoPath != "" && task.ClipPath != task.FinalVideoPath &&
+					strings.Contains(filepath.Base(task.ClipPath), "cliptmp_") {
+					if _, statErr := os.Stat(task.FinalVideoPath); os.IsNotExist(statErr) {
+						if mvErr := moveFile(task.ClipPath, task.FinalVideoPath); mvErr == nil {
+							emitLog("info", "Đã cứu clip (không có intro) ra file đích do ghép ảnh bìa lỗi")
+						}
+					}
+				}
 				if appCtx != nil {
-					runtime.EventsEmit(appCtx, "export_log", fmt.Sprintf("⚠ %s: Ghép ảnh bìa vào đầu video thất bại (%v).", task.ClipName, mergeErr))
+					runtime.EventsEmit(appCtx, "export_log", fmt.Sprintf("⚠ %s: Ghép ảnh bìa vào đầu video thất bại (%v). Đã cứu clip gốc (không có intro) ra file đích.", task.ClipName, mergeErr))
 					runtime.EventsEmit(appCtx, "clip_ai_thumb_failed", failedTask)
 				}
 			} else {

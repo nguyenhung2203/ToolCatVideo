@@ -257,7 +257,11 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 	buildArgs := func(vcodec string, extraArgs []string, hwDecArgs []string) []string {
 		args := []string{"-y", "-accurate_seek", "-fflags", "+genpts"}
 		args = append(args, hwDecArgs...)
-		args = append(args, "-ss", fmt.Sprintf("%.3f", effStart), "-i", inputPath)
+		// -t đặt Ở INPUT (trước -i) để giới hạn ĐÚNG dur giây nguồn: filtergraph chỉ
+		// đọc đoạn này rồi setpts nén/giãn tự nhiên theo speed. Nếu đặt -t ở output như
+		// trước, ffmpeg đọc từ điểm seek tới HẾT video, setpts nén, rồi -t output lấp đầy
+		// dur giây → speed vô hiệu VÀ lấn sang nội dung clip kế tiếp.
+		args = append(args, "-ss", fmt.Sprintf("%.3f", effStart), "-t", fmt.Sprintf("%.3f", dur), "-i", inputPath)
 		if e.Watermark.Enabled && e.Watermark.ImgPath != "" {
 			args = append(args, "-i", e.Watermark.ImgPath)
 		}
@@ -279,7 +283,6 @@ func cutVideoReencode(ctx context.Context, inputPath string, clip project.Clip, 
 			}
 		}
 		args = append(args,
-			"-t", fmt.Sprintf("%.3f", dur),
 			"-c:v", vcodec,
 		)
 		args = append(args, extraArgs...)
@@ -582,7 +585,13 @@ func buildGraph(e project.EditOps, dur float64, wmIdx, musicIdx, cardIdx, frameW
 			return "", "", nil, textFiles, ferr
 		}
 		textFiles = append(textFiles, txtFile)
-		textSteps = append(textSteps, drawText(t, fontPath, txtFile))
+		// Mỗi dòng chữ có thể chọn font riêng: resolve family → file .ttf; rỗng/không
+		// tìm thấy thì dùng font mặc định (fontPath) như cũ.
+		tf := fontPath
+		if strings.TrimSpace(t.Font) != "" {
+			tf = utils.GetFontPathForFamily(t.Font)
+		}
+		textSteps = append(textSteps, drawText(t, tf, txtFile))
 	}
 	// Phụ đề burn-in (hardsub) — render sau drawtext để nằm trên khung kích thước cuối.
 	// Chỉ dùng phụ đề nếu file .srt thực sự tồn tại trên đĩa — tránh ffmpeg lỗi khi kịch bản có đường dẫn cũ.
@@ -764,10 +773,15 @@ func subtitleFilter(s project.SubtitleOp) string {
 	if marginV < 0 {
 		marginV = 0
 	}
-	// Tên font ưu tiên có sẵn trên Windows + phủ dấu tiếng Việt.
+	// Font family cho libass: dùng font người dùng chọn, rỗng → Arial (có sẵn Windows,
+	// phủ dấu tiếng Việt). libass nhận TÊN family (không phải đường dẫn file).
+	fontName := strings.TrimSpace(s.Font)
+	if fontName == "" {
+		fontName = "Arial"
+	}
 	style := fmt.Sprintf(
-		"FontName=Arial,Fontsize=%d,PrimaryColour=%s,OutlineColour=%s,Outline=1,Shadow=0,MarginV=%d",
-		size, primary, outline, marginV)
+		"FontName=%s,Fontsize=%d,PrimaryColour=%s,OutlineColour=%s,Outline=1,Shadow=0,MarginV=%d",
+		fontName, size, primary, outline, marginV)
 	return fmt.Sprintf("subtitles='%s':force_style='%s'", ffSubPath(s.Path), style)
 }
 

@@ -222,8 +222,8 @@ select option,
 .settings-modal select option,
 .settings-group select option,
 select.custom-select option {
-  background-color: #0e1626 !important;
-  color: #f8fafc !important;
+  background-color: var(--wx-surface-base) !important;
+  color: var(--wx-text-primary) !important;
   padding: 8px 12px;
 }
 

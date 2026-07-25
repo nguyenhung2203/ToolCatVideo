@@ -58,11 +58,11 @@
               <div style="height: 22px; display: flex; align-items: center; margin-bottom: 6px;">
                 <label class="img-label" style="margin-bottom: 0;">Thư mục lưu:</label>
               </div>
-              <div style="display: flex; gap: var(--wx-space-1); height: 38px;">
-                <input type="text" v-model="outputDir" class="img-text-input read-only-input" readonly style="flex: 1; height: 38px;" />
-                <button @click="pickOutputDir" class="img-dir-btn" style="height: 38px; width: 38px; padding: 0; flex: none;" title="Chọn thư mục lưu">
+              <div style="display: flex; gap: var(--wx-space-1); height: 40px;">
+                <input type="text" v-model="outputDir" class="img-text-input read-only-input" readonly style="flex: 1; height: 40px;" />
+                <BaseButton variant="secondary" size="icon" @click="pickOutputDir" title="Chọn thư mục lưu">
                   <FolderOpen :size="14" />
-                </button>
+                </BaseButton>
               </div>
             </div>
 
@@ -141,9 +141,9 @@
           <p class="state-description">
             Điền mô tả bên trái sau đó nhấn nút <strong>"Bắt đầu tạo"</strong> bên dưới để bắt đầu luồng tự động hóa trình duyệt.
           </p>
-          <button @click="startGeneration" :disabled="effectiveTasks.length === 0" class="img-action-btn start-generate-btn">
+          <BaseButton variant="primary" size="md" :disabled="effectiveTasks.length === 0" @click="startGeneration">
             <Play :size="14" /> Bắt đầu tạo{{ effectiveTasks.length > 1 ? ` (${effectiveTasks.length} prompt song song)` : '' }}
-          </button>
+          </BaseButton>
         </div>
 
         <!-- Queue Mode State (Chạy nhiều prompt song song qua Hàng Đợi AI) -->
@@ -278,21 +278,21 @@
 
           <!-- Bottom Action Row -->
           <div class="completed-actions" style="flex-shrink: 0; margin-top: 10px; display: flex; gap: 8px; align-items: center; width: 100%;">
-            <button @click="cancel" class="img-dir-btn" style="height: 38px;">
+            <BaseButton variant="secondary" size="md" @click="cancel">
               <StopCircle :size="12" /> Hủy bỏ
-            </button>
+            </BaseButton>
             <span style="font-size: var(--wx-fs-12); color: var(--wx-text-muted); flex: 1; text-align: left;">
               Lưu vào: <code>{{ outputDir }}</code>
             </span>
-            <button
-              @click="confirmDownload"
+            <BaseButton
+              variant="primary"
+              size="md"
               :disabled="selectedPreviewIndexes.size === 0"
-              class="img-action-btn apply-btn"
-              style="height: 38px; font-weight: bold; background: var(--wx-brand-primary); color: var(--wx-text-inverse);"
+              @click="confirmDownload"
             >
-              <Download :size="14" style="margin-right: 4px;" />
+              <Download :size="14" />
               Tải {{ selectedPreviewIndexes.size }} ảnh đã chọn
-            </button>
+            </BaseButton>
           </div>
         </div>
 
@@ -312,9 +312,9 @@
             <div class="img-progress-fill" :style="{ width: smoothProgress + '%' }"></div>
           </div>
 
-          <button @click="cancel" class="img-action-btn cancel-btn">
+          <BaseButton variant="danger" size="md" @click="cancel">
             <StopCircle :size="14" /> Hủy bỏ tác vụ
-          </button>
+          </BaseButton>
         </div>
 
         <!-- Login Required panel -->
@@ -325,12 +325,12 @@
             Vui lòng hoàn tất quá trình đăng nhập tài khoản Google của bạn trên cửa sổ Chrome vừa được mở.
           </p>
           <div style="display: flex; gap: var(--wx-space-2); justify-content: center;">
-            <button @click="openBrowser(provider, props.showChrome)" class="img-dir-btn">
+            <BaseButton variant="secondary" size="md" @click="openBrowser(provider, props.showChrome)">
               <Chrome :size="14" style="margin-right: 4px;" /> Mở lại Chrome
-            </button>
-            <button @click="checkLogin(provider)" class="img-action-btn check-login-btn">
+            </BaseButton>
+            <BaseButton variant="primary" size="md" @click="checkLogin(provider)">
               Xác nhận đã đăng nhập
-            </button>
+            </BaseButton>
           </div>
         </div>
 
@@ -339,9 +339,9 @@
           <AlertCircle :size="40" class="failed-icon" />
           <h3 class="failed-title">Tạo thất bại</h3>
           <p class="failed-desc">{{ error }}</p>
-          <button @click="newJobKeepInput" class="img-dir-btn" title="Thử lại với cùng prompt & ảnh (không phải nhập lại)">
+          <BaseButton variant="secondary" size="md" @click="newJobKeepInput" title="Thử lại với cùng prompt & ảnh (không phải nhập lại)">
             <RefreshCw :size="12" style="margin-right: 4px;" /> Thử lại
-          </button>
+          </BaseButton>
         </div>
 
         <!-- Success Preview panel -->
@@ -402,9 +402,9 @@
 
           <!-- Single Row Bottom Action & Info Bar -->
           <div class="completed-actions" style="flex-shrink: 0; margin-top: 8px; display: flex; gap: 8px; align-items: center; width: 100%;">
-            <button @click="newJobKeepInput" class="img-dir-btn" style="height: 38px;" title="Tạo lại với cùng prompt & ảnh (không phải nhập lại)">
-              <RefreshCw :size="12" style="margin-right: 4px;" /> Tạo lại
-            </button>
+            <BaseButton variant="secondary" size="md" @click="newJobKeepInput" title="Tạo lại với cùng prompt & ảnh (không phải nhập lại)">
+              <RefreshCw :size="12" /> Tạo lại
+            </BaseButton>
 
             <span style="font-size: var(--wx-fs-12); color: var(--wx-text-muted); flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
               <template v-if="(previewURLs.length > 0 ? previewURLs : [previewURL]).length <= 1">
@@ -415,9 +415,9 @@
               </template>
             </span>
 
-            <button @click="openFolder" class="img-dir-btn" style="height: 38px;">
-              <FolderOpen :size="12" style="margin-right: 4px;" /> Mở thư mục
-            </button>
+            <BaseButton variant="secondary" size="md" @click="openFolder">
+              <FolderOpen :size="12" /> Mở thư mục
+            </BaseButton>
           </div>
         </div>
 
@@ -520,6 +520,7 @@
 <script setup lang="ts">
 import { ref, reactive, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useBrowserAI } from './composables/useBrowserAI'
+import BaseButton from './common/BaseButton.vue'
 import { Sparkles, AlertCircle, FolderOpen, Chrome, Play, StopCircle, Trash2, CheckCircle, RefreshCw, ImageIcon, Check, Download, ChevronDown, ChevronUp } from 'lucide-vue-next'
 // @ts-ignore
 import { SelectFolder, GetStreamURL, GetGlobalSettings, SaveGlobalSettings } from '../../wailsjs/go/main/App'

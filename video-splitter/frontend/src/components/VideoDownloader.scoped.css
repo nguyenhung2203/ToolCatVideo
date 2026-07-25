@@ -144,7 +144,7 @@
   padding: 0 var(--wx-space-3);
   font-size: var(--wx-fs-13);
   font-family: var(--font-family);
-  height: 36px;
+  height: 40px;
   box-sizing: border-box;
   outline: none;
   transition: border-color var(--wx-d-fast) ease, box-shadow var(--wx-d-fast) ease;
@@ -159,38 +159,12 @@
 
 .dl-url-input:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.dl-probe-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--wx-space-1);
-  white-space: nowrap;
-  height: 36px;
-  box-sizing: border-box;
-  padding: 0 var(--wx-space-4);
-  font-size: var(--wx-fs-13);
-  font-weight: var(--wx-fw-bold);
-  background: var(--wx-gradient-button);
-  color: var(--wx-text-on-brand);
-  border: none;
-  border-radius: var(--wx-radius-md);
-  cursor: pointer;
-  transition: all var(--wx-d-fast) ease;
-  box-shadow: var(--wx-shadow-brand);
-}
-
-.dl-probe-btn:hover:not(:disabled) {
-  filter: brightness(1.1);
-  transform: translateY(-1px);
-}
-
-.dl-probe-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-
 .dl-filter-toggle-btn {
   display: inline-flex;
   align-items: center;
   gap: var(--wx-space-1);
   white-space: nowrap;
-  height: 36px;
+  height: 40px;
   box-sizing: border-box;
   padding: 0 var(--wx-space-3);
   font-size: var(--wx-fs-13);
@@ -729,55 +703,10 @@
   box-sizing: border-box;
 }
 
-.dl-dir-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 var(--wx-space-3);
-  height: 36px;
-  flex-shrink: 0;
-  background: var(--wx-surface-sunken);
-  border: 1.5px solid var(--wx-border-default);
-  border-radius: var(--wx-radius-md);
-  color: var(--wx-text-primary);
-  cursor: pointer;
-  transition: all var(--wx-d-fast) ease;
-}
-
-.dl-dir-btn:hover {
-  border-color: var(--wx-brand-accent);
-  color: var(--wx-brand-accent);
-}
-
 .dl-footer-actions {
   display: flex;
   gap: var(--wx-space-2);
   flex-shrink: 0;
-}
-
-.dl-action-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--wx-space-1);
-  justify-content: center;
-  height: 36px;
-  padding: 0 var(--wx-space-5);
-  font-size: var(--wx-fs-13);
-  font-weight: var(--wx-fw-bold);
-  border-radius: var(--wx-radius-md);
-  border: none;
-  cursor: pointer;
-  transition: all var(--wx-d-fast) ease;
-}
-
-.dl-remove-btn {
-  background: var(--wx-danger-solid);
-  color: var(--wx-text-inverse);
-}
-
-.dl-remove-btn:hover {
-  filter: brightness(1.1);
-  transform: translateY(-1px);
 }
 
 .dl-drag-box {

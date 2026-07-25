@@ -96,6 +96,60 @@ func GetFontPath() string {
 	return ""
 }
 
+// fontFamilyFiles map tên font family (khớp dropdown UI) sang tên file .ttf trong
+// thư mục Fonts của Windows. drawtext cần đường dẫn file thật (không nhận tên family
+// như libass), nên phải quy đổi. Danh sách này khớp các font mặc định luôn có sẵn
+// trên Windows 10/11 để tránh chọn font rồi không render được.
+var fontFamilyFiles = map[string]string{
+	"Arial":           "arial.ttf",
+	"Times New Roman": "times.ttf",
+	"Tahoma":          "tahoma.ttf",
+	"Verdana":         "verdana.ttf",
+	"Georgia":         "georgia.ttf",
+	"Calibri":         "calibri.ttf",
+	"Comic Sans MS":   "comic.ttf",
+	"Impact":          "impact.ttf",
+	"Trebuchet MS":    "trebuc.ttf",
+	"Courier New":     "cour.ttf",
+	"Segoe UI":        "segoeui.ttf",
+}
+
+// GetFontPathForFamily trả về đường dẫn file .ttf cho một font family (dùng cho
+// drawtext của TextOp). Nếu family rỗng hoặc không nằm trong danh sách hỗ trợ, hoặc
+// file font không tồn tại trên máy, fallback về GetFontPath() (font mặc định).
+func GetFontPathForFamily(family string) string {
+	family = strings.TrimSpace(family)
+	if family != "" {
+		if file, ok := fontFamilyFiles[family]; ok {
+			if win := os.Getenv("WINDIR"); win != "" {
+				p := filepath.Join(win, "Fonts", file)
+				if _, err := os.Stat(p); err == nil {
+					return p
+				}
+			}
+		}
+	}
+	return GetFontPath()
+}
+
+// SupportedFontFamilies trả về danh sách tên font family hỗ trợ (cho UI dropdown +
+// kiểm tra hợp lệ). Chỉ liệt kê font thực sự có file trên máy để UI không hiện font
+// dùng không được.
+func SupportedFontFamilies() []string {
+	var out []string
+	win := os.Getenv("WINDIR")
+	for _, fam := range []string{"Arial", "Times New Roman", "Tahoma", "Verdana", "Georgia", "Calibri", "Comic Sans MS", "Impact", "Trebuchet MS", "Courier New", "Segoe UI"} {
+		if win == "" {
+			out = append(out, fam)
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(win, "Fonts", fontFamilyFiles[fam])); err == nil {
+			out = append(out, fam)
+		}
+	}
+	return out
+}
+
 // GetWorkerExe trả về đường dẫn tới worker đã đóng gói (PyInstaller) nếu có.
 // Trả về "" nếu không tìm thấy — khi đó caller nên fallback sang chạy script bằng python.
 func GetWorkerExe() string {

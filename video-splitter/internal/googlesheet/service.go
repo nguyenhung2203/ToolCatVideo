@@ -350,13 +350,16 @@ type WebAppPayload struct {
 
 // WebAppResponse phản hồi từ Google Apps Script Web App
 type WebAppResponse struct {
-	Status  string `json:"status"`
-	Message string `json:"message,omitempty"`
-	Count   int    `json:"count,omitempty"`
+	Status   string   `json:"status"`
+	Message  string   `json:"message,omitempty"`
+	Count    int      `json:"count,omitempty"`
+	Inserted int      `json:"inserted"`          // số dòng đã chèn thực tế
+	Skipped  int      `json:"skipped"`           // số dòng bị bỏ qua vì trùng
+	Results  []string `json:"results,omitempty"` // trạng thái từng dòng theo thứ tự: "inserted" / "duplicate"
 }
 
 // PushRowToWebApp gửi 1 dòng dữ liệu lên Apps Script Web App URL
-func (s *Service) PushRowToWebApp(ctx context.Context, webAppURL string, gid string, tabName string, row []string, headers []string) error {
+func (s *Service) PushRowToWebApp(ctx context.Context, webAppURL string, gid string, tabName string, row []string, headers []string) (*WebAppResponse, error) {
 	payload := WebAppPayload{
 		Action:  "append_row",
 		Gid:     gid,
@@ -369,7 +372,7 @@ func (s *Service) PushRowToWebApp(ctx context.Context, webAppURL string, gid str
 }
 
 // PushBatchToWebApp gửi danh sách nhiều dòng dữ liệu lên Apps Script Web App URL
-func (s *Service) PushBatchToWebApp(ctx context.Context, webAppURL string, gid string, tabName string, rows [][]string, headers []string) error {
+func (s *Service) PushBatchToWebApp(ctx context.Context, webAppURL string, gid string, tabName string, rows [][]string, headers []string) (*WebAppResponse, error) {
 	payload := WebAppPayload{
 		Action:  "append_batch",
 		Gid:     gid,
@@ -381,25 +384,25 @@ func (s *Service) PushBatchToWebApp(ctx context.Context, webAppURL string, gid s
 	return s.sendRequest(ctx, webAppURL, payload)
 }
 
-func (s *Service) sendRequest(ctx context.Context, webAppURL string, payload WebAppPayload) error {
+func (s *Service) sendRequest(ctx context.Context, webAppURL string, payload WebAppPayload) (*WebAppResponse, error) {
 	webAppURL = strings.TrimSpace(webAppURL)
 	if webAppURL == "" {
-		return fmt.Errorf("vui lòng nhập Web App URL (từ Google Apps Script)")
+		return nil, fmt.Errorf("vui lòng nhập Web App URL (từ Google Apps Script)")
 	}
 
 	_, err := url.ParseRequestURI(webAppURL)
 	if err != nil {
-		return fmt.Errorf("đường dẫn Web App URL không hợp lệ: %v", err)
+		return nil, fmt.Errorf("đường dẫn Web App URL không hợp lệ: %v", err)
 	}
 
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("lỗi đóng gói dữ liệu JSON: %v", err)
+		return nil, fmt.Errorf("lỗi đóng gói dữ liệu JSON: %v", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", webAppURL, bytes.NewBuffer(bodyBytes))
 	if err != nil {
-		return fmt.Errorf("lỗi tạo request HTTP: %v", err)
+		return nil, fmt.Errorf("lỗi tạo request HTTP: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -415,25 +418,25 @@ func (s *Service) sendRequest(ctx context.Context, webAppURL string, payload Web
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("lỗi kết nối tới Web App: %v", err)
+		return nil, fmt.Errorf("lỗi kết nối tới Web App: %v", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("lỗi đọc phản hồi từ Web App: %v", err)
+		return nil, fmt.Errorf("lỗi đọc phản hồi từ Web App: %v", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return interpretWebAppError(resp.StatusCode, string(respBody))
+		return nil, interpretWebAppError(resp.StatusCode, string(respBody))
 	}
 
 	var res WebAppResponse
 	if err := json.Unmarshal(respBody, &res); err != nil {
 		if strings.Contains(strings.ToLower(string(respBody)), "success") {
-			return nil
+			return &WebAppResponse{Status: "success"}, nil
 		}
-		return interpretWebAppError(resp.StatusCode, string(respBody))
+		return nil, interpretWebAppError(resp.StatusCode, string(respBody))
 	}
 
 	if res.Status != "success" && res.Status != "ok" {
@@ -441,10 +444,10 @@ func (s *Service) sendRequest(ctx context.Context, webAppURL string, payload Web
 		if msg == "" {
 			msg = "xảy ra lỗi không xác định trên Apps Script"
 		}
-		return fmt.Errorf("lỗi ghi Google Sheet: %s", msg)
+		return nil, fmt.Errorf("lỗi ghi Google Sheet: %s", msg)
 	}
 
-	return nil
+	return &res, nil
 }
 
 // GetAppsScriptTemplate Code Apps Script tự động bóc tách tất cả Tab & Cột trên Google Sheet
@@ -501,11 +504,36 @@ function doPost(e) {
       }
     }
 
-    function processSingleRow(rowItem, rowHeaders) {
-      var nextRow = sheet.getLastRow() + 1;
+    // === CHECK TRÙNG THEO TỪNG CỘT ===
+    // Yêu cầu: giá trị ghi vào một cột KHÔNG được trùng với giá trị đã có trong
+    // chính cột đó. Nếu bất kỳ ô nào của một dòng trùng với dữ liệu sẵn có (hoặc
+    // với dòng đã chèn trước trong cùng lô), BỎ QUA cả dòng đó.
+    // existingCols[cIdx] = map giá trị (đã chuẩn hóa) -> true, nạp lười cho từng cột.
+    var lastRow = sheet.getLastRow();
+    var numData = lastRow - 1; // trừ dòng header (dòng 1)
+    var existingCols = {};
+    function normVal(v) {
+      return (v === null || v === undefined) ? "" : v.toString().trim().toLowerCase();
+    }
+    function ensureColLoaded(cIdx) {
+      if (existingCols[cIdx]) return;
+      var setMap = {};
+      if (numData > 0) {
+        var colVals = sheet.getRange(2, cIdx, numData, 1).getValues();
+        for (var i = 0; i < colVals.length; i++) {
+          var nv = normVal(colVals[i][0]);
+          if (nv !== "") setMap[nv] = true;
+        }
+      }
+      existingCols[cIdx] = setMap;
+    }
+
+    // buildRow: dựng mảng ô đầy đủ (padded) + danh sách ô thực ghi {col, val}.
+    function buildRow(rowItem, rowHeaders) {
       var maxIdx = Math.max(lastCol, rowItem.length);
       var padded = new Array(maxIdx);
       for (var i = 0; i < maxIdx; i++) padded[i] = "";
+      var written = [];
 
       if (rowHeaders && rowHeaders.length === rowItem.length) {
         // Con trỏ tiêu thụ riêng cho mỗi tên cột (xử lý tên trùng theo thứ tự).
@@ -520,6 +548,7 @@ function doPost(e) {
             var cIdx = pos < idxList.length ? idxList[pos] : idxList[idxList.length - 1];
             cursor[hName] = pos + 1;
             padded[cIdx - 1] = rowItem[h];
+            written.push({ col: cIdx, val: rowItem[h] });
             mappedCount++;
           }
         }
@@ -527,26 +556,81 @@ function doPost(e) {
         if (mappedCount === 0) {
           for (var k = 0; k < rowItem.length; k++) {
             padded[k] = rowItem[k];
+            written.push({ col: k + 1, val: rowItem[k] });
           }
         }
       } else {
         for (var k = 0; k < rowItem.length; k++) {
           padded[k] = rowItem[k];
+          written.push({ col: k + 1, val: rowItem[k] });
         }
       }
-      sheet.getRange(nextRow, 1, 1, padded.length).setValues([padded]);
+      return { padded: padded, written: written };
     }
 
+    // processSingleRow: loại bỏ các ô bị TRÙNG ở từng cột tương ứng (để trống ô trùng),
+    // vẫn chèn dòng chứa các ô KHÔNG TRÙNG. Chỉ bỏ qua cả dòng nếu TẤT CẢ các ô đều rỗng/trùng.
+    function processSingleRow(rowItem, rowHeaders) {
+      var built = buildRow(rowItem, rowHeaders);
+      var padded = built.padded;
+      var written = built.written;
+
+      var hasAnyNewValue = false;
+      for (var w = 0; w < written.length; w++) {
+        var nv = normVal(written[w].val);
+        if (nv === "") continue;
+        ensureColLoaded(written[w].col);
+        if (existingCols[written[w].col][nv]) {
+          // Ô này bị trùng giá trị trong cột -> Bỏ giá trị ô này (để trống)
+          padded[written[w].col - 1] = "";
+        } else {
+          // Ô này chưa trùng -> Giữ nguyên giá trị và ghi nhận có dữ liệu mới
+          hasAnyNewValue = true;
+        }
+      }
+
+      // Nếu không có ô nào mới (tất cả ô đều rỗng hoặc bị trùng) -> Bỏ qua dòng này
+      if (!hasAnyNewValue) {
+        return "duplicate";
+      }
+
+      var nextRow = sheet.getLastRow() + 1;
+      sheet.getRange(nextRow, 1, 1, padded.length).setValues([padded]);
+
+      // Ghi nhận các giá trị mới vừa chèn để các dòng sau trong cùng lô không bị trùng lại
+      for (var w2 = 0; w2 < written.length; w2++) {
+        var nv2 = normVal(padded[written[w2].col - 1]);
+        if (nv2 !== "") {
+          existingCols[written[w2].col][nv2] = true;
+        }
+      }
+      return "inserted";
+    }
+
+    var inserted = 0;
+    var skipped = 0;
+    var results = [];
     if (data.action === "append_batch" && data.rows && data.rows.length > 0) {
       for (var r = 0; r < data.rows.length; r++) {
-        processSingleRow(data.rows[r], data.headers);
+        var st = processSingleRow(data.rows[r], data.headers);
+        results.push(st);
+        if (st === "inserted") inserted++; else skipped++;
       }
     } else if (data.row && data.row.length > 0) {
-      processSingleRow(data.row, data.headers);
+      var st1 = processSingleRow(data.row, data.headers);
+      results.push(st1);
+      if (st1 === "inserted") inserted++; else skipped++;
     }
 
-    return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Đã chèn thành công" }))
-      .setMimeType(ContentService.MimeType.JSON);
+    var msg = "Đã chèn " + inserted + " dòng";
+    if (skipped > 0) msg += ", bỏ qua " + skipped + " dòng trùng";
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "success",
+      message: msg,
+      inserted: inserted,
+      skipped: skipped,
+      results: results
+    })).setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: error.toString() }))
       .setMimeType(ContentService.MimeType.JSON);

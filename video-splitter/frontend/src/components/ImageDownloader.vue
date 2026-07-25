@@ -5,6 +5,7 @@ import {
   Image as ImageIcon, Search, Download, Square,
   FolderOpen, Check, Key, Loader2, Trash2, Globe, Palette, Camera, SlidersHorizontal
 } from 'lucide-vue-next'
+import BaseButton from './common/BaseButton.vue'
 
 const props = defineProps<{
   showToast: (msg: string, type: 'success' | 'error' | 'info' | 'warning') => void
@@ -158,15 +159,16 @@ function updateSelectionFromDrag() {
           @keyup.enter="searchImages"
           :disabled="isImageSearching || isImageDownloading"
         />
-        <button
-          @click="searchImages"
-          class="btn img-search-btn"
+        <BaseButton
+          variant="primary"
+          size="md"
+          :loading="isImageSearching"
           :disabled="isImageSearching || isImageDownloading || !imageQuery.trim()"
+          @click="searchImages"
         >
-          <Loader2 v-if="isImageSearching" :size="14" class="spin-hourglass" />
-          <Search v-else :size="14" />
+          <Search v-if="!isImageSearching" :size="14" />
           {{ isImageSearching ? 'Đang tìm...' : 'Tìm Ảnh' }}
-        </button>
+        </BaseButton>
         <button
           type="button"
           @click="showFilters = !showFilters"
@@ -321,9 +323,9 @@ function updateSelectionFromDrag() {
       <div class="img-dir-row">
         <span class="img-dir-label">Lưu vào:</span>
         <input v-model="imageDir" class="img-text-input img-dir-input" readonly placeholder="Thư mục lưu ảnh..." />
-        <button @click="pickImageDir" class="btn img-dir-btn">
+        <BaseButton variant="secondary" size="icon" @click="pickImageDir">
           <FolderOpen :size="14" />
-        </button>
+        </BaseButton>
       </div>
 
       <!-- Download progress bar -->
@@ -336,28 +338,30 @@ function updateSelectionFromDrag() {
 
       <!-- Actions -->
       <div class="img-footer-actions">
-        <button v-if="isImageDownloading" @click="cancelImageDl" class="btn stop-analyze-btn img-action-btn">
+        <BaseButton v-if="isImageDownloading" variant="danger" size="md" @click="cancelImageDl">
           <Square :size="12" /> Dừng tải
-        </button>
-        <button
+        </BaseButton>
+        <BaseButton
           v-if="!isImageDownloading && imageSelectedCount > 0"
-          @click="removeSelectedImages"
-          class="btn img-remove-btn img-action-btn"
+          variant="danger"
+          size="md"
           :title="`Xóa ${imageSelectedCount} ảnh đã chọn khỏi danh sách`"
+          @click="removeSelectedImages"
         >
           <Trash2 :size="13" />
           Xóa {{ imageSelectedCount }} ảnh đã chọn
-        </button>
-        <button
-          @click="startImageDownload"
+        </BaseButton>
+        <BaseButton
+          variant="primary"
+          size="md"
           :disabled="isImageDownloading || isImageSearching || imageSelectedCount === 0"
-          class="btn btn-analyze img-action-btn"
+          @click="startImageDownload"
         >
           <Download :size="15" />
           <span v-if="isImageDownloading">Đang tải {{ downloadDoneCount }}/{{ downloadTotalCount }}...</span>
           <span v-else-if="imageSelectedCount === 0">Chọn ảnh để tải</span>
           <span v-else>Tải {{ imageSelectedCount }} ảnh đã chọn</span>
-        </button>
+        </BaseButton>
       </div>
     </div>
 

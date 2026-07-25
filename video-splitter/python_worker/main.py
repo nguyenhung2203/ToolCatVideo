@@ -1220,9 +1220,12 @@ def transcribe_audio(media_path, language="auto", model_name="small",
     listen_path = src
     if clip_start is not None and clip_end is not None and clip_end > clip_start:
         import tempfile
+        # Tên WAV tạm phải DUY NHẤT theo cả start+end (mili-giây) + PID. Dùng
+        # clip_start:.0f (giây nguyên) như trước làm 2 clip cách nhau <1s (VD 20.2s
+        # và 20.4s) trùng tên → clip này ghi đè WAV của clip kia khi chạy song song.
         tmp_wav = os.path.join(
             tempfile.gettempdir(),
-            f"vs_trans_{abs(hash(media_path)) % (10**8)}_{clip_start:.0f}.wav")
+            f"vs_trans_{abs(hash(media_path)) % (10**8)}_{clip_start*1000:.0f}_{clip_end*1000:.0f}_{os.getpid()}.wav")
         dur = clip_end - clip_start
         cmd = [
             ffmpeg_path, '-y', '-hide_banner', '-nostdin', '-loglevel', 'error',
@@ -1259,16 +1262,28 @@ def transcribe_audio(media_path, language="auto", model_name="small",
     segments_out = []
     detected_lang = language
     try:
+        # word_timestamps=True: lấy mốc theo TỪNG TỪ để siết start/end segment về đúng
+        # khoảng giọng nói THẬT. Mốc segment mặc định của Whisper hay bị kéo dài trùm cả
+        # khoảng lặng (VD giọng hết ở 8.3s nhưng segment ghi 9.0s) → phụ đề hiện lệch,
+        # không song song với giọng. Dùng mốc từ đầu/cuối cho khớp.
         seg_iter, info = model.transcribe(listen_path, language=lang_arg,
-                                          vad_filter=True)
+                                          vad_filter=True, word_timestamps=True)
         detected_lang = getattr(info, "language", None) or language
         total_dur = float(getattr(info, "duration", 0.0)) or 0.0
         for seg in seg_iter:
             text = (seg.text or "").strip()
             if text:
+                seg_start = float(seg.start)
+                seg_end = float(seg.end)
+                # Siết mốc về span của từ đầu tiên → từ cuối cùng (giọng thật).
+                words = getattr(seg, "words", None) or []
+                real_words = [w for w in words if (w.word or "").strip()]
+                if real_words:
+                    seg_start = float(real_words[0].start)
+                    seg_end = float(real_words[-1].end)
                 segments_out.append({
-                    "start": float(seg.start),
-                    "end": float(seg.end),
+                    "start": seg_start,
+                    "end": seg_end,
                     "text": text,
                 })
             if total_dur > 0:

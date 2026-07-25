@@ -45,6 +45,21 @@ type Clip struct {
 	Signals      []string `json:"signals"`      // các tín hiệu đã phát hiện
 	Edit         EditOps  `json:"edit"`         // các thao tác chỉnh sửa áp cho clip khi xuất
 	ExportedPath string   `json:"exportedPath"` // đường dẫn video đã xuất để phát ngay
+
+	// Segments: biên gốc các clip con của một CLIP GHÉP (dải liên tục trên timeline).
+	// Rỗng = clip thường. Có phần tử = clip ghép: StartTime=seg[0].start, EndTime=seg[last].end.
+	// Giữ lại để HỦY GHÉP (tách về từng clip con). Khi xuất chỉ cắt một lần theo [StartTime,EndTime].
+	Segments []ClipSegment `json:"segments"`
+}
+
+// ClipSegment: một đoạn con của clip ghép (biên gốc trước khi ghép), để hủy ghép được.
+type ClipSegment struct {
+	StartTime  float64 `json:"startTime"`
+	EndTime    float64 `json:"endTime"`
+	Confidence int     `json:"confidence"`
+	Tier       string  `json:"tier"`
+	Reason     string  `json:"reason"`
+	ThumbEnd   string  `json:"thumbEnd"`
 }
 
 // === EDIT OPERATIONS ===
@@ -108,6 +123,7 @@ type SubtitleOp struct {
 	FontColor  string `json:"fontColor"`  // màu chữ dạng "&HBBGGRR" hoặc tên; rỗng = trắng
 	OutlineCol string `json:"outlineCol"` // màu viền; rỗng = đen
 	MarginV    int    `json:"marginV"`    // lề dưới (px) — đẩy phụ đề lên/xuống
+	Font       string `json:"font"`       // tên font family (VD "Arial"); rỗng = Arial mặc định
 
 	// Vị trí neo tâm tự do theo tỷ lệ khung đầu ra (0..1). HasCustomPosition=false
 	// giữ nguyên cách burn phụ đề cũ bằng MarginV để tương thích preset/project đã lưu.
@@ -146,6 +162,7 @@ type TextOp struct {
 	Content   string  `json:"content"`
 	FontSize  int     `json:"fontSize"`
 	Color     string  `json:"color"`     // mã màu, ví dụ "white", "#ffcc00"
+	Font      string  `json:"font"`      // tên font family (VD "Arial", "Times New Roman"); rỗng = mặc định
 	X         string  `json:"x"`         // biểu thức vị trí ffmpeg ("(w-text_w)/2" = giữa ngang)
 	Y         string  `json:"y"`         // biểu thức vị trí ffmpeg
 	StartTime float64 `json:"startTime"` // thời điểm hiện chữ (giây, trong clip); 0 = từ đầu

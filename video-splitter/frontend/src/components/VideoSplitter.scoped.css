@@ -317,11 +317,11 @@
 
 .title-left h2 {
   margin: 0;
-  font-size: var(--wx-fs-14);
+  font-size: var(--wx-fs-13);
   font-weight: var(--wx-fw-bold);
   text-transform: uppercase;
   letter-spacing: var(--wx-tracking-wide);
-  color: var(--accent-color);
+  color: var(--wx-brand-accent);
 }
 
 .video-counter {
@@ -1496,11 +1496,11 @@
 
 .title-left-clips h2 {
   margin: 0;
-  font-size: var(--wx-fs-14);
+  font-size: var(--wx-fs-13);
   font-weight: var(--wx-fw-bold);
   text-transform: uppercase;
   letter-spacing: var(--wx-tracking-wide);
-  color: var(--accent-color);
+  color: var(--wx-brand-accent);
 }
 
 .clips-counter {
@@ -1575,6 +1575,22 @@
 
 .clip-modern-card.clip-done {
   border-color: color-mix(in srgb, var(--wx-success-solid) 40%, transparent);
+}
+
+/* Thẻ đang được kéo (mờ đi để biết nguồn kéo) */
+.clip-modern-card.clip-dragging {
+  opacity: 0.4;
+}
+
+/* Thẻ đích khi kéo clip khác đè lên (viền tím + nền nhấn để gợi ý ghép) */
+.clip-modern-card.clip-drag-over {
+  border-color: #6366f1;
+  background-color: color-mix(in srgb, #6366f1 12%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, #6366f1 30%, transparent);
+}
+
+.clip-drag-handle:active {
+  cursor: grabbing;
 }
 
 .clip-card-header-bar {
@@ -3206,6 +3222,13 @@
 .text-content-input:focus {
   outline: none;
   border-color: var(--accent-color);
+}
+
+/* Dropdown native <select>: dùng nền theo theme để popup <option> không bị đen ở chế độ sáng */
+select.text-content-input,
+select.text-content-input option {
+  background: var(--wx-surface-base);
+  color: var(--wx-text-primary);
 }
 
 /* Settings section header */

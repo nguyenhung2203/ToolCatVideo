@@ -1315,94 +1315,147 @@ func (a *App) translateSegments(segments []subtitle.Segment, targetLang, apiKey 
 		langLabel = targetLang
 	}
 
-	prompt := fmt.Sprintf(
-		"Dịch các câu phụ đề sau sang %s. Mỗi dòng có định dạng SỐ|||NỘI DUNG.\n"+
-			"Yêu cầu BẮT BUỘC:\n"+
-			"- Giữ NGUYÊN số dòng và số thứ tự đầu dòng, đúng định dạng SỐ|||BẢN DỊCH.\n"+
-			"- KHÔNG gộp, KHÔNG tách, KHÔNG thêm bớt dòng.\n"+
-			"- Chỉ trả về các dòng đã dịch, không giải thích.\n\n%s",
-		langLabel, sb.String())
-
-	geminiPayload := map[string]interface{}{
-		"contents": []map[string]interface{}{
-			{"parts": []map[string]interface{}{{"text": prompt}}},
-		},
-	}
-	payloadBytes, err := json.Marshal(geminiPayload)
-	if err != nil {
-		return nil, err
-	}
-
 	client := &http.Client{Timeout: 60 * time.Second}
 	modelsToTry := buildGeminiModelList(a.getPreferredGeminiModel(), []string{"gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"})
-	var respText string
-	var lastErr error
-	for _, modelName := range modelsToTry {
-		geminiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", modelName)
-		req, err := http.NewRequest("POST", geminiURL, bytes.NewBuffer(payloadBytes))
+
+	// callGemini gửi 1 prompt và trả text phản hồi (thử lần lượt các model).
+	callGemini := func(prompt string) (string, error) {
+		payloadBytes, err := json.Marshal(map[string]interface{}{
+			"contents": []map[string]interface{}{
+				{"parts": []map[string]interface{}{{"text": prompt}}},
+			},
+		})
 		if err != nil {
-			lastErr = err
-			continue
+			return "", err
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-goog-api-key", apiKey)
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			b, _ := io.ReadAll(resp.Body)
+		var lastErr error
+		for _, modelName := range modelsToTry {
+			geminiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", modelName)
+			req, err := http.NewRequest("POST", geminiURL, bytes.NewBuffer(payloadBytes))
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("x-goog-api-key", apiKey)
+			resp, err := client.Do(req)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if resp.StatusCode != http.StatusOK {
+				b, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				lastErr = fmt.Errorf("model %s lỗi %d: %s", modelName, resp.StatusCode, string(b))
+				continue
+			}
+			var gResp struct {
+				Candidates []struct {
+					Content struct {
+						Parts []struct {
+							Text string `json:"text"`
+						} `json:"parts"`
+					} `json:"content"`
+				} `json:"candidates"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&gResp); err != nil {
+				resp.Body.Close()
+				lastErr = err
+				continue
+			}
 			resp.Body.Close()
-			lastErr = fmt.Errorf("model %s lỗi %d: %s", modelName, resp.StatusCode, string(b))
-			continue
+			if len(gResp.Candidates) > 0 && len(gResp.Candidates[0].Content.Parts) > 0 {
+				txt := strings.TrimSpace(gResp.Candidates[0].Content.Parts[0].Text)
+				if txt != "" {
+					return txt, nil
+				}
+			}
 		}
-		var gResp struct {
-			Candidates []struct {
-				Content struct {
-					Parts []struct {
-						Text string `json:"text"`
-					} `json:"parts"`
-				} `json:"content"`
-			} `json:"candidates"`
+		return "", fmt.Errorf("Gemini không trả bản dịch (lỗi cuối: %v)", lastErr)
+	}
+
+	// buildPrompt dựng prompt dịch cho một tập câu (indices 1-based giữ nguyên theo
+	// segment gốc để map lại). idxs song song với texts.
+	buildPrompt := func(idxs []int, texts []string) string {
+		var sb strings.Builder
+		for k, idx := range idxs {
+			fmt.Fprintf(&sb, "%d|||%s\n", idx, strings.ReplaceAll(texts[k], "\n", " "))
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&gResp); err != nil {
-			resp.Body.Close()
-			lastErr = err
-			continue
-		}
-		resp.Body.Close()
-		if len(gResp.Candidates) > 0 && len(gResp.Candidates[0].Content.Parts) > 0 {
-			respText = strings.TrimSpace(gResp.Candidates[0].Content.Parts[0].Text)
-			if respText != "" {
-				lastErr = nil
-				break
+		return fmt.Sprintf(
+			"Dịch các câu phụ đề sau sang %s. Mỗi dòng có định dạng SỐ|||NỘI DUNG.\n"+
+				"Yêu cầu BẮT BUỘC:\n"+
+				"- Dịch ĐẦY ĐỦ MỌI dòng, KHÔNG được bỏ sót dòng nào.\n"+
+				"- Giữ NGUYÊN số thứ tự đầu dòng, đúng định dạng SỐ|||BẢN DỊCH.\n"+
+				"- KHÔNG gộp, KHÔNG tách, KHÔNG thêm bớt dòng.\n"+
+				"- Chỉ trả về các dòng đã dịch, không giải thích.\n\n%s",
+			langLabel, sb.String())
+	}
+
+	// parseResp bóc "SỐ|||BẢN DỊCH" thành map index→text, gộp vào translated.
+	translated := make(map[int]string)
+	parseResp := func(respText string) {
+		for _, line := range strings.Split(respText, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, "|||", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			idx, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+			if err != nil {
+				continue
+			}
+			if v := strings.TrimSpace(parts[1]); v != "" {
+				translated[idx] = v
 			}
 		}
 	}
-	if respText == "" {
-		return nil, fmt.Errorf("Gemini không trả bản dịch (lỗi cuối: %v)", lastErr)
+
+	// missingIdxs trả về các index (1-based) chưa có bản dịch.
+	missingIdxs := func() ([]int, []string) {
+		var idxs []int
+		var texts []string
+		for i, s := range segments {
+			if _, ok := translated[i+1]; !ok {
+				idxs = append(idxs, i+1)
+				texts = append(texts, s.Text)
+			}
+		}
+		return idxs, texts
 	}
 
-	// Parse lại "SỐ|||BẢN DỊCH" về map index→text.
-	translated := make(map[int]string)
-	for _, line := range strings.Split(respText, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "|||", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		idx, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	// Lượt đầu: dịch tất cả. Sau đó dịch LẠI các câu còn thiếu (Gemini hay gộp/bỏ
+	// dòng khi danh sách dài) — tối đa 3 lượt để không bỏ sót câu nào (tránh lẫn
+	// nguyên văn gốc vào bản dịch). Câu vẫn thiếu sau 3 lượt mới giữ text gốc.
+	idxs := make([]int, len(segments))
+	texts := make([]string, len(segments))
+	for i, s := range segments {
+		idxs[i] = i + 1
+		texts[i] = s.Text
+	}
+	var firstErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		respText, err := callGemini(buildPrompt(idxs, texts))
 		if err != nil {
-			continue
+			if attempt == 0 {
+				firstErr = err
+			}
+		} else {
+			parseResp(respText)
 		}
-		translated[idx] = strings.TrimSpace(parts[1])
+		idxs, texts = missingIdxs()
+		if len(idxs) == 0 {
+			break
+		}
+	}
+	// Lượt đầu lỗi hoàn toàn (không dịch được câu nào) → trả lỗi để caller biết.
+	if len(translated) == 0 && firstErr != nil {
+		return nil, firstErr
 	}
 
-	// Áp bản dịch; câu nào thiếu bản dịch thì giữ text gốc.
+	// Áp bản dịch; câu nào vẫn thiếu sau các lượt retry thì đành giữ text gốc.
 	out := make([]subtitle.Segment, len(segments))
 	copy(out, segments)
 	for i := range out {
@@ -2319,7 +2372,7 @@ func (a *App) FetchGoogleSheetStructure(webAppURL string, rawURL string) ([]goog
 }
 
 // PushGoogleSheetRow đẩy 1 dòng dữ liệu vào Google Sheet qua Web App URL
-func (a *App) PushGoogleSheetRow(webAppURL string, gid string, tabName string, row []string, headers []string) error {
+func (a *App) PushGoogleSheetRow(webAppURL string, gid string, tabName string, row []string, headers []string) (*googlesheet.WebAppResponse, error) {
 	if a.googleSheetService == nil {
 		a.googleSheetService = googlesheet.NewService()
 	}
@@ -2327,7 +2380,7 @@ func (a *App) PushGoogleSheetRow(webAppURL string, gid string, tabName string, r
 }
 
 // PushGoogleSheetBatch đẩy danh sách nhiều dòng dữ liệu vào Google Sheet qua Web App URL
-func (a *App) PushGoogleSheetBatch(webAppURL string, gid string, tabName string, rows [][]string, headers []string) error {
+func (a *App) PushGoogleSheetBatch(webAppURL string, gid string, tabName string, rows [][]string, headers []string) (*googlesheet.WebAppResponse, error) {
 	if a.googleSheetService == nil {
 		a.googleSheetService = googlesheet.NewService()
 	}

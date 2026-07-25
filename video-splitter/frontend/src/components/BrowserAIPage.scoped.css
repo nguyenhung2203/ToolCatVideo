@@ -469,51 +469,6 @@
   color: var(--wx-brand-accent);
 }
 
-.img-action-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--wx-space-1);
-  justify-content: center;
-  height: 36px;
-  padding: 0 var(--wx-space-4);
-  font-size: var(--wx-fs-13);
-  font-weight: var(--wx-fw-bold);
-  border-radius: var(--wx-radius-md);
-  cursor: pointer;
-  transition: all 150ms ease;
-  border: none;
-}
-
-.start-generate-btn, .check-login-btn, .apply-btn {
-  background: var(--wx-gradient-button);
-  color: var(--wx-text-on-brand);
-  box-shadow: var(--wx-shadow-brand);
-}
-
-.start-generate-btn:hover, .check-login-btn:hover, .apply-btn:hover {
-  filter: brightness(1.1);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--wx-brand-primary) 35%, transparent);
-}
-
-.start-generate-btn:disabled, .check-login-btn:disabled, .apply-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-}
-
-.cancel-btn {
-  background: var(--wx-danger-solid);
-  color: var(--wx-text-inverse);
-}
-
-.cancel-btn:hover {
-  filter: brightness(1.1);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--wx-danger-solid) 35%, transparent);
-}
-
 .clean-profile-btn {
   border-color: color-mix(in srgb, var(--wx-danger-solid) 30%, transparent);
   color: var(--wx-danger-solid);
