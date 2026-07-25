@@ -1588,8 +1588,13 @@ func channelLayout(channels int) string {
 	}
 }
 
-// concatEscape escape đường dẫn cho file list của concat demuxer (chỉ dấu ').
+// concatEscape escape đường dẫn cho file list của concat demuxer.
+// Chuyển '\' → '/' vì ffmpeg concat demuxer phân tích path bên trong cặp nháy đơn
+// theo nghĩa literal — một số build ffmpeg trên Windows đọc backslash như ký tự escape
+// và sẽ hiểu sai đường dẫn. Forward slash hoạt động đúng trên mọi nền tảng.
+// Nháy đơn trong path được escape theo chuẩn POSIX: ' → '\''.
 func concatEscape(p string) string {
+	p = filepath.ToSlash(p) // backslash → forward slash cho concat demuxer
 	return strings.ReplaceAll(p, "'", `'\''`)
 }
 
@@ -1812,8 +1817,11 @@ func mergeMusicTracks(ctx context.Context, tracks []string) (string, error) {
 	// Đảm bảo thư mục bin chứa ffmpeg hoạt động
 	ffmpegPath := utils.GetBinPath("ffmpeg")
 
-	// Tạo file nhạc ghép tạm
-	tempDir := os.TempDir()
+	// Tạo file nhạc ghép tạm trong TrafficTool để cleanupStaleExportTemp dọn được
+	// nếu app crash giữa chừng. Không để ở root TempDir (os.TempDir()) vì sẽ tích
+	// lũy vô hạn không ai dọn.
+	tempDir := filepath.Join(os.TempDir(), "TrafficTool")
+	_ = os.MkdirAll(tempDir, 0755)
 	mergedPath := filepath.Join(tempDir, fmt.Sprintf("merged_bg_music_%d.mp3", time.Now().UnixNano()))
 
 	args := []string{"-y"}

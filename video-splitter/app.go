@@ -521,7 +521,16 @@ func cleanupStaleExportTemp() {
 			continue
 		}
 		name := e.Name()
-		if !strings.HasPrefix(name, "cliptmp_") && !strings.HasPrefix(name, "clearframe_") {
+		// Các file tạm cần dọn tại root TrafficTool/:
+		//  • cliptmp_*.mp4        — clip đã cắt chờ ghép intro (ExportClips prependMode)
+		//  • clearframe_*.jpg     — frame gốc trích ra làm ảnh bìa
+		//  • intro_*.mp4          — intro ảnh bìa tạm (prependIntroStreamCopy)
+		//  • merged_bg_music_*.mp3 — nhạc nền ghép tạm (mergeMusicTracks)
+		isCleanable := strings.HasPrefix(name, "cliptmp_") ||
+			strings.HasPrefix(name, "clearframe_") ||
+			strings.HasPrefix(name, "intro_") ||
+			strings.HasPrefix(name, "merged_bg_music_")
+		if !isCleanable {
 			continue
 		}
 		info, ierr := e.Info()
