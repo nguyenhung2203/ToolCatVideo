@@ -113,16 +113,20 @@ func noteGPUFailure(encoder, stage string, err error, combinedOutput []byte) {
 	alreadyDisabled := st.disabled && !justDisabled
 	gpuStateMu.Unlock()
 
-	if alreadyDisabled {
-		return
-	}
-
 	reason := lastFFmpegError(combinedOutput)
 	if reason == "" && err != nil {
 		reason = err.Error()
 	}
 	if reason == "" {
 		reason = "không rõ nguyên nhân"
+	}
+
+	// GPU đã bị tắt từ trước mà vẫn lỗi ở đây → vẫn phải ghi log. Bản cũ return
+	// im lặng nên từ clip thứ 4 trở đi nhật ký trống trơn dù vẫn đang lỗi.
+	if alreadyDisabled {
+		emitLog(fmt.Sprintf("⚠ GPU (%s) vẫn lỗi ở bước %s (đã tắt GPU, đang dùng CPU). Lý do: %s",
+			encoder, stage, reason))
+		return
 	}
 
 	if justDisabled {
@@ -134,40 +138,94 @@ func noteGPUFailure(encoder, stage string, err error, combinedOutput []byte) {
 		encoder, stage, reason))
 }
 
-// lastFFmpegError lọc ra dòng có ý nghĩa nhất trong output của ffmpeg. ffmpeg
-// in rất nhiều banner (version/configuration/Stream #...), dòng lỗi thật
-// thường nằm ở cuối và chứa các từ khóa dưới đây.
+// genericFFmpegLines là các dòng ffmpeg in ra khi BỎ CUỘC, không cho biết vì
+// sao. Bản cũ quét từ dưới lên và khớp ngay "Conversion failed!" nên log luôn
+// hiện đúng câu vô nghĩa đó, che mất nguyên nhân thật in ở phía trên (ví dụ
+// "No capable devices found", "Unknown encoder", "Invalid argument").
+var genericFFmpegLines = []string{
+	"Conversion failed",
+	"Error while filtering",
+	"Error opening output file",
+	"Error opening output files",
+	"Error opening input file",
+	"Error opening input files",
+	"Task finished with error code",
+	"Terminating thread with return code",
+}
+
+// specificFFmpegKeywords: dấu hiệu của dòng nói ĐÚNG nguyên nhân.
+var specificFFmpegKeywords = []string{
+	"No capable devices", "OpenEncodeSessionEx", "InitializeEncoder",
+	"Unknown encoder", "Encoder not found", "not supported", "Unsupported",
+	"No space left", "Permission denied", "No such file",
+	"Invalid argument", "Invalid data found", "Invalid", "invalid",
+	"Impossible to convert", "Cannot", "cannot", "Could not", "could not",
+	"Unable to", "moov atom not found", "Device creation failed",
+	"driver version", "out of memory", "Out of memory",
+	"failed", "Failed", "error", "Error", "ERROR",
+}
+
+// isGenericFFmpegLine cho biết dòng này chỉ là câu "đã lỗi" chung chung.
+func isGenericFFmpegLine(line string) bool {
+	for _, g := range genericFFmpegLines {
+		if strings.Contains(line, g) {
+			return true
+		}
+	}
+	return false
+}
+
+// lastFFmpegError lọc ra (các) dòng NÓI ĐÚNG nguyên nhân trong output ffmpeg.
+//
+// Chiến lược: quét từ dưới lên, BỎ QUA các dòng chung chung ("Conversion
+// failed!"...) để tìm dòng lỗi cụ thể. Gom tối đa maxReasonLines dòng cụ thể
+// (theo đúng thứ tự gốc) vì nguyên nhân thật hay đi thành cặp — ví dụ
+// "[h264_nvenc] OpenEncodeSessionEx failed: out of memory" đứng ngay trước
+// "[h264_nvenc] No capable devices found". Chỉ khi không có dòng nào cụ thể
+// mới đành dùng dòng chung chung để log không bị rỗng.
 func lastFFmpegError(out []byte) string {
 	if len(out) == 0 {
 		return ""
 	}
+	const maxReasonLines = 3
 	lines := strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n")
-	keywords := []string{
-		"error", "Error", "ERROR",
-		"Cannot", "cannot", "failed", "Failed",
-		"Invalid", "invalid", "No capable devices",
-		"OpenEncodeSessionEx", "not supported", "Unknown encoder",
-		"Impossible", "Conversion failed",
-	}
-	// Quét từ dưới lên: dòng lỗi cuối cùng mới là nguyên nhân dừng.
+
+	var specific []string
+	var generic string
+	var lastLine string
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
 		}
-		for _, kw := range keywords {
+		if lastLine == "" {
+			lastLine = line
+		}
+		if isGenericFFmpegLine(line) {
+			if generic == "" {
+				generic = line
+			}
+			continue
+		}
+		for _, kw := range specificFFmpegKeywords {
 			if strings.Contains(line, kw) {
-				return truncateLine(line)
+				// Chèn đầu để giữ thứ tự xuất hiện gốc (đang quét ngược).
+				specific = append([]string{line}, specific...)
+				break
 			}
 		}
-	}
-	// Không khớp từ khóa nào → lấy dòng cuối không rỗng.
-	for i := len(lines) - 1; i >= 0; i-- {
-		if line := strings.TrimSpace(lines[i]); line != "" {
-			return truncateLine(line)
+		if len(specific) >= maxReasonLines {
+			break
 		}
 	}
-	return ""
+
+	if len(specific) > 0 {
+		return truncateLine(strings.Join(specific, " | "))
+	}
+	if generic != "" {
+		return truncateLine(generic)
+	}
+	return truncateLine(lastLine)
 }
 
 func truncateLine(s string) string {

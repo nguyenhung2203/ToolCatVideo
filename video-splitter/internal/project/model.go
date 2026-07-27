@@ -226,7 +226,10 @@ type TransitionOp struct {
 // DefaultEditOps trả về EditOps trung tính (không áp thao tác nào).
 func DefaultEditOps() EditOps {
 	return EditOps{
-		Speed:    1.0,
+		Speed: 1.0,
+		// Pan giữa khung. Phải đặt tường minh vì exporter coi 0 là "sát mép trái/trên"
+		// (giá trị hợp lệ), không phải "chưa đặt".
+		Aspect:   AspectOp{PanX: 0.5, PanY: 0.5},
 		Color:    ColorOp{Saturation: 1.0},
 		Audio:    AudioOp{Volume: 1.0, MusicVolume: 1.0},
 		ZoomPan:  ZoomPanOp{Zoom: 1.08, Dir: "in"},
@@ -272,8 +275,20 @@ type AnalyzerConfig struct {
 	SceneThreshold   float64       `json:"sceneThreshold"`   // Ngưỡng nhạy scene detection (ContentDetector) — mặc định 27.0
 	MinClipDuration  float64       `json:"minClipDuration"`  // Độ dài tối thiểu 1 clip (giây) — mặc định 5.0
 	MaxClipDuration  float64       `json:"maxClipDuration"`  // Độ dài tối đa 1 clip (giây), vượt thì tự chia — mặc định 120.0
-	AutoAcceptScore  int           `json:"autoAcceptScore"`  // Ngưỡng điểm tự động chấp nhận ranh giới — mặc định 85
-	ReviewMinScore   int           `json:"reviewMinScore"`   // Ngưỡng điểm tối thiểu để cần duyệt — mặc định 60
+	// TargetClipDuration là độ dài MONG MUỐN của 1 clip (giây). Trước đây thuật toán
+	// chỉ có min/max nên không có khái niệm "clip nên dài bao nhiêu": gặp điểm cắt nào
+	// vượt ngưỡng là cắt ngay, khiến 1 đoạn nội dung bị băm thành 2-3 khúc vụn.
+	// Bộ chọn ranh giới tối ưu (selectBoundariesDP) dùng giá trị này làm mốc: nó sẵn
+	// sàng BỎ QUA một ranh giới mạnh nếu cắt ở đó tạo ra clip lệch xa mốc mong muốn.
+	// 0 = tắt, quay về hành vi tham lam cũ (cắt tại mọi ranh giới đạt điểm).
+	TargetClipDuration float64 `json:"targetClipDuration"`
+	// AutoAcceptScore là ngưỡng ĐƯỢC CẮT: chỉ ranh giới đạt điểm này mới thành điểm
+	// cắt thật. Trước đây bộ lọc chỉ loại tier reject nên ngưỡng cắt thực tế tụt về
+	// ReviewMinScore — mọi điểm "còn ngờ ngợ" đều bị cắt luôn dù không có UI nào để duyệt.
+	AutoAcceptScore int `json:"autoAcceptScore"`
+	// ReviewMinScore là ngưỡng để một ranh giới được GHI NHẬN làm gợi ý (tier review).
+	// Ranh giới tier review KHÔNG tự cắt; nó chỉ được dùng khi cần chia clip quá dài.
+	ReviewMinScore   int     `json:"reviewMinScore"`
 	SilenceThreshold float64       `json:"silenceThreshold"` // Ngưỡng dB cho silence — mặc định -30
 	SilenceDuration  float64       `json:"silenceDuration"`  // Thời lượng tối thiểu silence (giây) — mặc định 0.5
 	ProxyFPS         int           `json:"proxyFPS"`         // FPS proxy video — mặc định 4
@@ -310,11 +325,16 @@ func DefaultWeights() SignalWeights {
 func DefaultConfig() AnalyzerConfig {
 	return AnalyzerConfig{
 		Mode:             ModeSmart,
-		SceneThreshold:   25.0, // bảo thủ hơn 20: bớt bắt chuyển cảnh yếu → ít điểm rác
-		MinClipDuration:  3.0,  // clip tối thiểu 3s: chặn điểm cắt dày đặc (không ai làm clip 1s)
+		SceneThreshold:   15.0, // nhạy hơn (25 bỏ sót cut nhanh TikTok/Reels)
+		// 3s: cho phép cắt clip ngắn như TikTok compilation (clip vài giây).
+		// Bản cũ dùng 8s — đúng cho video dài nhưng gộp nhầm nhiều clip ngắn thành 1 đoạn dài.
+		MinClipDuration:  3.0,
 		MaxClipDuration:  60.0,
-		AutoAcceptScore:  60, // visual-only scene change (45 - 10 = 35) sẽ được xếp vào review candidate, không bị auto-accept tràn lan
-		ReviewMinScore:   35,
+		// Target = 0 khi min < 6s (không ép gộp clip ngắn lại).
+		// autoTargetDuration() bên frontend tự đặt theo logic này.
+		TargetClipDuration: 0,
+		AutoAcceptScore:    60,
+		ReviewMinScore:     35,
 		SilenceThreshold: -30,
 		SilenceDuration:  0.5,
 		ProxyFPS:         4,

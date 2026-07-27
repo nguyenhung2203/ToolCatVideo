@@ -447,9 +447,15 @@ def refine_clusters_on_source(source_path, clusters, ffmpeg_path="ffmpeg",
 
     refined = [c['ts'] for c in clusters]  # mặc định giữ nguyên nếu không refine
 
-    for i, cluster in enumerate(clusters):
-        if i not in refine_set:
-            continue
+    def _refine_one(i):
+        """Refine 1 cluster. Trả về (i, timestamp_moi) hoặc None nếu không đổi được.
+
+        Tách thành hàm riêng để chạy song song: mỗi lần refine là 1 tiến trình ffmpeg
+        seek + decode cửa sổ 1 giây — công việc I/O + CPU ngắn, độc lập hoàn toàn giữa
+        các cluster. Chạy tuần tự như trước là nghẽn thời gian lớn nhất của cả pipeline
+        (chế độ Kỹ tới 600 lần seek nối đuôi nhau).
+        """
+        cluster = clusters[i]
         rough_ts = cluster['ts']
         seek = max(0.0, rough_ts - window_sec)
         dur = window_sec * 2.0
@@ -470,11 +476,11 @@ def refine_clusters_on_source(source_path, clusters, ffmpeg_path="ffmpeg",
             info = proc.stderr.decode('utf-8', 'ignore')
         except Exception as e:
             print(f"refine-source seek loi @ {rough_ts:.2f}s: {e}", file=sys.stderr)
-            continue
+            return None
 
         n_frames = len(raw) // frame_bytes
         if n_frames < 2:
-            continue
+            return None
         arr = np.frombuffer(raw[:n_frames * frame_bytes], dtype=np.uint8).reshape(n_frames, H, W).astype(np.float32)
 
         # pts_time thật của từng khung, đúng thứ tự decode (khớp với thứ tự khung raw).
@@ -497,10 +503,20 @@ def refine_clusters_on_source(source_path, clusters, ffmpeg_path="ffmpeg",
 
         # Ưu tiên pts_time thật; chỉ fallback idx/fps khi showinfo không trả pts.
         if best_i < len(pts_list):
-            refined[i] = seek + pts_list[best_i]
-        else:
-            local_fps = n_frames / dur if dur > 0 else 30.0
-            refined[i] = seek + best_i / local_fps
+            return (i, seek + pts_list[best_i])
+        local_fps = n_frames / dur if dur > 0 else 30.0
+        return (i, seek + best_i / local_fps)
+
+    # Chạy song song các lần refine. Mỗi task tự spawn 1 ffmpeg nên số luồng lấy theo
+    # số CPU và chặn trần 8: cao hơn thì các tiến trình ffmpeg tranh CPU/ổ đĩa lẫn nhau,
+    # tổng thời gian không giảm thêm mà máy còn khựng khi người dùng đang dùng giao diện.
+    targets = sorted(refine_set)
+    if targets:
+        n_workers = min(8, max(2, (os.cpu_count() or 4)))
+        with ThreadPoolExecutor(max_workers=n_workers) as ex:
+            for res in ex.map(_refine_one, targets):
+                if res is not None:
+                    refined[res[0]] = res[1]
 
     _log_time("refine_pass2_source", t0)
     print(f"STATUS_LOG:Pass 2 (source): refine {len(refine_set)}/{len(clusters)} điểm ở fps gốc (pts thật).", flush=True)
@@ -1057,9 +1073,15 @@ def analyze_video(proxy_path, audio_path, source_path=None, ffmpeg_path="ffmpeg"
     #   max_refine    : số cluster được tinh chỉnh về fps gốc. Precise dùng trần cao
     #                   nhưng hữu hạn để video rất dài không tạo hàng nghìn lần seek.
     if mode == "precise":
-        k_detect, cluster_window, max_refine = 2.0, 0.30, 600
+        # cluster_window nâng 0.30 → 0.50: cửa sổ 0.30s cố tình KHÔNG gộp điểm gần nhau,
+        # nên một chuyển cảnh có fade tạo ra 2-3 candidate riêng cách nhau vài phần mười
+        # giây. Đó là nguồn "clip bị băm 2-3 khúc" trực tiếp nhất ở chế độ Kỹ. 0.50s vẫn
+        # đủ hẹp để phân biệt hai clip thật liền nhau (đã chặn dưới bởi MinClipDuration).
+        # max_refine hạ 600 → 320: refine giờ chạy song song nên 320 điểm đã nhanh hơn
+        # 600 điểm tuần tự trước đây, mà vẫn phủ đủ cho video dài.
+        k_detect, cluster_window, max_refine = 2.0, 0.50, 320
     else:  # smart (mặc định) — cân bằng tốc độ/độ chính xác
-        k_detect, cluster_window, max_refine = 3.0, 0.60, 200
+        k_detect, cluster_window, max_refine = 3.0, 0.60, 240
 
     # ── Bước 1: Chạy song song silence (I/O) + proxy scan (CPU) ──
     # Silence đọc audio stream → không tranh chấp với proxy scan (video stream)

@@ -606,6 +606,11 @@ type ExportResult struct {
 	// trỏ vào file không tồn tại (người dùng thấy ✅ nhưng nút Phát lỗi).
 	// Sự kiện clip_ai_thumb_completed sau đó mới là lúc file đích thực sự có.
 	Pending bool `json:"pending"`
+
+	// Stopped=true: TOÀN BỘ tiến trình xuất đã bị dừng giữa đường (người dùng bấm
+	// Dừng, hoặc một clip lỗi thật nên cả loạt bị hủy). Frontend phải ngừng xuất
+	// những video còn lại trong batch chứ không chạy tiếp.
+	Stopped bool `json:"stopped"`
 }
 
 // ExportClips cắt danh sách clip, chạy song song có giới hạn số job, mỗi clip được
@@ -818,6 +823,67 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 	var done int
 	var mu sync.Mutex
 
+	// === TIẾN ĐỘ MỊN ===
+	// clipFrac[i] = phần trăm hoàn thành (0..1) của clip thứ i. ffmpeg báo mốc thời
+	// gian đã encode liên tục nên tổng các phần này cho ra tiến độ thật của cả lần
+	// xuất — thanh phần trăm nhích đều thay vì đứng im ở 0% suốt một clip dài rồi
+	// nhảy thẳng lên 100%.
+	clipFrac := make([]float64, len(clips))
+	var fracMu sync.Mutex
+	var lastFracEmit time.Time
+	emitFrac := func(i int, f float64, force bool) {
+		if f < 0 {
+			f = 0
+		} else if f > 1 {
+			f = 1
+		}
+		fracMu.Lock()
+		clipFrac[i] = f
+		// Chặn nhịp phát sự kiện: nhiều clip chạy song song, mỗi clip báo ~5 lần/giây.
+		if !force && time.Since(lastFracEmit) < 120*time.Millisecond {
+			fracMu.Unlock()
+			return
+		}
+		lastFracEmit = time.Now()
+		sum := 0.0
+		for _, v := range clipFrac {
+			sum += v
+		}
+		fracMu.Unlock()
+		runtime.EventsEmit(a.ctx, "export_percent", map[string]any{
+			"fracDone": sum, "total": len(clips),
+		})
+	}
+
+	// === DỪNG NGAY KHI LỖI ===
+	// Trước đây một clip lỗi chỉ được ghi vào results rồi cả loạt vẫn chạy tiếp:
+	// người dùng ngồi đợi hết hàng trăm clip mới biết mọi clip đều lỗi vì cùng một
+	// nguyên nhân (hết đĩa, file nguồn hỏng, filter sai...). Nay lỗi THẬT đầu tiên
+	// hủy toàn bộ phần còn lại để người dùng sửa gốc rồi xuất lại.
+	var abortErr string
+	stopAllOnError := func(clipIndex int, reason string) {
+		mu.Lock()
+		first := abortErr == ""
+		if first {
+			abortErr = reason
+		}
+		mu.Unlock()
+		if !first {
+			return
+		}
+		runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf(
+			"⛔ DỪNG TOÀN BỘ TIẾN TRÌNH XUẤT vì Clip #%d lỗi: %s", clipIndex, reason))
+		runtime.EventsEmit(a.ctx, "export_log",
+			"→ Hãy xử lý nguyên nhân ở trên rồi bấm Xuất lại. Các clip chưa cắt đã bị hủy.")
+		a.exportCancelMu.Lock()
+		a.isExportCancelled = true
+		for _, cancel := range a.exportCancelFuncs {
+			cancel()
+		}
+		a.exportCancelFuncs = make(map[string]context.CancelFunc)
+		a.exportCancelMu.Unlock()
+	}
+
 	for i, clip := range clips {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -828,7 +894,7 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 			a.exportCancelMu.Lock()
 			if a.isExportCancelled {
 				a.exportCancelMu.Unlock()
-				res := ExportResult{ClipID: clip.ID, Index: clip.Index, Error: "Tiến trình xuất bị dừng"}
+				res := ExportResult{ClipID: clip.ID, Index: clip.Index, Error: "Tiến trình xuất bị dừng", Stopped: true}
 				results[i] = res
 				return
 			}
@@ -899,7 +965,8 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 			}
 
 			runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Đang cắt video...", filepath.Base(sourcePath), clip.Index))
-			err := exporter.CutVideo(clipCtx, sourcePath, clip, cutTarget, cfg.ExportPreset, cfg.ExportCRF, threads, cfg.HardwareAccel, cfg.Mode)
+			err := exporter.CutVideo(clipCtx, sourcePath, clip, cutTarget, cfg.ExportPreset, cfg.ExportCRF, threads, cfg.HardwareAccel, cfg.Mode,
+				func(frac float64) { emitFrac(i, frac, false) })
 			// Thời lượng kỳ vọng của FILE ĐÃ XUẤT phải trừ trim đầu/đuôi rồi chia tốc độ
 			// (speed>1 làm clip ngắn lại). Nếu tính theo thời lượng thô sẽ báo lệch giả cho
 			// mọi kịch bản có speed≠1 hoặc trim. Nới tolerance khi có speed vì atempo/setpts
@@ -950,6 +1017,20 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 			if clipCtx.Err() != nil {
 				res.OK = false
 				res.Error = "Tiến trình bị dừng"
+				res.Stopped = true
+			}
+
+			// Clip xong (dù OK hay lỗi) → chốt phần trăm của nó để tổng không bị treo
+			// lơ lửng ở 97% mãi.
+			if res.OK {
+				emitFrac(i, 1, true)
+			}
+
+			// LỖI THẬT (không phải do người dùng bấm Dừng) → hủy toàn bộ phần còn lại.
+			// res.Error có tiền tố "cảnh báo:" là clip vẫn dùng được (chỉ lệch thời
+			// lượng) nên KHÔNG dừng vì nó.
+			if !res.OK && clipCtx.Err() == nil {
+				stopAllOnError(clip.Index, res.Error)
 			}
 
 			// Cắt lỗi/bị dừng → dọn "chỗ giữ tên" (file rỗng đã tạo ở trên) và clip tạm,
@@ -1085,6 +1166,16 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 			// Câu log phải khớp trạng thái thật: clip pending CHƯA hoàn thành (còn chờ
 			// ghép ảnh bìa), clip bị dừng thì càng không "Hoàn thành".
 			logLine := fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Hoàn thành! (%s)", filepath.Base(sourcePath), clip.Index, statusWord(res.OK))
+			// LỖI phải nói rõ lỗi gì NGAY trên dòng log của clip đó. Bản cũ chỉ ghi
+			// "(LỖI)" nên muốn biết vì sao phải mò trong console của DevTools.
+			if !res.OK && res.Error != "" && clipCtx.Err() == nil {
+				logLine = fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): ❌ LỖI — %s",
+					filepath.Base(sourcePath), clip.Index, res.Error)
+			}
+			if res.OK && strings.HasPrefix(res.Error, "cảnh báo:") {
+				logLine = fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Hoàn thành nhưng có %s",
+					filepath.Base(sourcePath), clip.Index, res.Error)
+			}
 			if res.Pending {
 				logLine = fmt.Sprintf("Đang xử lý Video: %s (Clip #%d): Đã cắt xong, đang chờ ghép ảnh bìa...", filepath.Base(sourcePath), clip.Index)
 			}
@@ -1119,6 +1210,25 @@ func (a *App) ExportClips(projectName string, sourcePath string, clips []project
 		runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Đã cắt xong %d/%d clip (%d clip đang chờ Hàng Đợi AI ghép ảnh bìa).", okCount+pendingCount, len(clips), pendingCount))
 	} else {
 		runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Hoàn tất: %d/%d clip thành công.", okCount, len(clips)))
+	}
+
+	// Có lỗi thật → trả LỖI cho frontend để nó ngừng luôn các video kế tiếp trong
+	// hàng đợi xuất, thay vì chạy tiếp và lỗi y như vậy ở từng video còn lại.
+	if abortErr != "" {
+		// Clip bị hủy vì lỗi của clip khác đều mang lỗi "Tiến trình bị dừng" (chuỗi
+		// do goroutine cắt ghi ra khi context bị cancel), KHÔNG phải "Tiến trình
+		// xuất bị dừng" — so sai chuỗi thì con số luôn bằng 0.
+		cancelled := 0
+		for _, r := range results {
+			if !r.OK && !r.Pending && r.Error == "Tiến trình bị dừng" {
+				cancelled++
+			}
+		}
+		msg := fmt.Sprintf("Xuất bị dừng do lỗi: %s", abortErr)
+		if cancelled > 0 {
+			msg += fmt.Sprintf(" (đã hủy %d clip chưa cắt)", cancelled)
+		}
+		return results, fmt.Errorf("%s", msg)
 	}
 	return results, nil
 }
@@ -1175,6 +1285,26 @@ func (a *App) MergeClips(sourcePath string, clips []project.Clip, outPath string
 		cancel()
 	}()
 
+	// === TIẾN ĐỘ MỊN CHO LUỒNG GHÉP ===
+	// Ghép gồm N bước cắt phân đoạn + 1 bước nối. Coi mỗi bước là một "đơn vị" để
+	// thanh phần trăm nhích liên tục thay vì đứng im suốt cả lần ghép dài.
+	mergeSteps := len(clips) + 1
+	var mergeLastEmit time.Time
+	emitMergeFrac := func(stepIdx int, f float64, force bool) {
+		if f < 0 {
+			f = 0
+		} else if f > 1 {
+			f = 1
+		}
+		if !force && time.Since(mergeLastEmit) < 120*time.Millisecond {
+			return
+		}
+		mergeLastEmit = time.Now()
+		runtime.EventsEmit(a.ctx, "export_percent", map[string]any{
+			"fracDone": float64(stepIdx) + f, "total": mergeSteps,
+		})
+	}
+
 	var parts []string
 	for i, clip := range clips {
 		if mergeCtx.Err() != nil {
@@ -1182,12 +1312,15 @@ func (a *App) MergeClips(sourcePath string, clips []project.Clip, outPath string
 		}
 		runtime.EventsEmit(a.ctx, "export_log", fmt.Sprintf("Ghép: đang chuẩn bị phân đoạn %d/%d...", i+1, len(clips)))
 		p := filepath.Join(tmpDir, fmt.Sprintf("part_%03d.mp4", i))
-		if err := exporter.CutVideo(mergeCtx, sourcePath, clip, p, cfg.ExportPreset, cfg.ExportCRF, 0, cfg.HardwareAccel, cfg.Mode); err != nil {
+		stepIdx := i
+		if err := exporter.CutVideo(mergeCtx, sourcePath, clip, p, cfg.ExportPreset, cfg.ExportCRF, 0, cfg.HardwareAccel, cfg.Mode,
+			func(frac float64) { emitMergeFrac(stepIdx, frac, false) }); err != nil {
 			if mergeCtx.Err() != nil {
 				return "", fmt.Errorf("tiến trình ghép bị dừng")
 			}
 			return "", fmt.Errorf("lỗi chuẩn bị clip #%d: %v", clip.Index, err)
 		}
+		emitMergeFrac(stepIdx, 1, true)
 		parts = append(parts, p)
 	}
 
@@ -1205,12 +1338,14 @@ func (a *App) MergeClips(sourcePath string, clips []project.Clip, outPath string
 	if mergeCtx.Err() != nil {
 		return "", fmt.Errorf("tiến trình ghép bị dừng")
 	}
-	if err := exporter.ConcatClips(mergeCtx, parts, outPath, transType, transDur, cfg.ExportPreset, cfg.ExportCRF, cfg.HardwareAccel); err != nil {
+	if err := exporter.ConcatClips(mergeCtx, parts, outPath, transType, transDur, cfg.ExportPreset, cfg.ExportCRF, cfg.HardwareAccel,
+		func(frac float64) { emitMergeFrac(len(clips), frac, false) }); err != nil {
 		if mergeCtx.Err() != nil {
 			return "", fmt.Errorf("tiến trình ghép bị dừng")
 		}
 		return "", err
 	}
+	emitMergeFrac(len(clips), 1, true)
 	if _, err := exporter.VerifyOutput(outPath, 0, 0); err != nil {
 		return "", fmt.Errorf("video ghép không hợp lệ: %v", err)
 	}

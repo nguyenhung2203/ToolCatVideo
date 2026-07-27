@@ -1254,6 +1254,26 @@ func (r *flowRunner) run() ([]string, error) {
 				}
 
 				logDebug("Đang tải hình ảnh được chọn thứ %d/%d (chỉ mục trong nhóm: %d)...", idx+1, len(selectedIndexes), selIdx)
+
+				// Khi ẩn trình duyệt (ShowChrome=false), Chrome chạy không có cửa sổ thật:
+				// getBoundingClientRect() trả về {width:0, height:0} cho MỌI phần tử → mọi
+				// bộ lọc "isVisible = el.getBoundingClientRect().width > 0" đều sai → nút
+				// download không bao giờ tìm thấy → phải fallback. Thay vì lãng phí 5–10s
+				// timeout rồi mới fallback, ta phát hiện sớm và dùng thẳng Fetch API.
+				if !req.ShowChrome {
+					logDebug("Ẩn trình duyệt: bỏ qua bước mở overlay, dùng thẳng Fetch API tải ảnh %d/%d...", idx+1, len(selectedIndexes))
+					mile(fmt.Sprintf("Đang tải ảnh %d/%d (chế độ ẩn, Fetch API)...", idx+1, len(selectedIndexes)))
+					if fp, errFb := downloadDirectImageFallback(selIdx, customFileName); errFb == nil {
+						mile(fmt.Sprintf("✓ Đã tải xong ảnh %d/%d (Tải trực tiếp)", idx+1, len(selectedIndexes)))
+						downloadedPaths = append(downloadedPaths, fp)
+					} else {
+						logDebug("Fetch API ảnh %d thất bại: %v", idx+1, errFb)
+						mile(fmt.Sprintf("⚠ Không tải được ảnh %d/%d", idx+1, len(selectedIndexes)))
+					}
+					continue
+				}
+
+				// Trình duyệt hiện (ShowChrome=true): mở overlay chi tiết ảnh để tải bản HD.
 				mile(fmt.Sprintf("Đang mở chi tiết ảnh %d/%d...", idx+1, len(selectedIndexes)))
 
 				// Click the image card at index `selIdx` among the newly generated images
@@ -1912,6 +1932,53 @@ func (r *flowRunner) run() ([]string, error) {
 				customFileName := req.FileName
 				if expectedVideos > 1 {
 					customFileName = fmt.Sprintf("%s_%d", req.FileName, idx+1)
+				}
+
+				// Khi ẩn trình duyệt (ShowChrome=false), getBoundingClientRect() trả về {width:0}
+				// cho mọi phần tử → nút download không tìm thấy → WaitAndMoveDownload sẽ treo
+				// (waitDownload() block đến khi có PageDownloadWillBegin, không bao giờ xảy ra).
+				// Dùng thẳng downloadDirectVideoFallback qua Fetch API không cần cửa sổ.
+				if !req.ShowChrome {
+					if expectedVideos > 1 {
+						logDebug("Ẩn trình duyệt: dùng Fetch API tải thẳng video %d/%d...", idx+1, expectedVideos)
+						mile(fmt.Sprintf("Đang tải video %d/%d (chế độ ẩn, Fetch API)...", idx+1, expectedVideos))
+					} else {
+						logDebug("Ẩn trình duyệt: dùng Fetch API tải thẳng video...")
+						mile("Đang tải video (chế độ ẩn, Fetch API)...")
+					}
+					// Mở popup chi tiết bằng JS click (không cần cửa sổ foreground)
+					_, _ = page.Eval(`(targetIdx, totalExp) => {
+						const media = Array.from(document.querySelectorAll('[data-tile-id], video, canvas')).filter(el => {
+							if (el.closest('[role="dialog"]')) return false;
+							const r = el.getBoundingClientRect();
+							// Khi ẩn, rect luôn = 0. Dùng offsetWidth/offsetHeight thay thế.
+							return r.width > 0 || el.offsetWidth > 0 || el.tagName === 'VIDEO' || el.tagName === 'CANVAS';
+						});
+						if (media.length === 0) return;
+						const batch = media.slice(Math.max(0, media.length - totalExp));
+						const target = batch[targetIdx] || batch[batch.length - 1];
+						const clickTarget = target.closest('a, button, [data-tile-id]') || target;
+						clickTarget.click();
+					}`, idx, expectedVideos)
+					sleep(1500 * time.Millisecond)
+					if fp, errFb := downloadDirectVideoFallback(customFileName); errFb == nil {
+						if expectedVideos > 1 {
+							mile(fmt.Sprintf("✓ Đã tải xong video %d/%d (Tải trực tiếp)", idx+1, expectedVideos))
+						} else {
+							mile("✓ Đã tải xong video (Tải trực tiếp)")
+						}
+						downloadedPaths = append(downloadedPaths, fp)
+					} else {
+						logDebug("Fetch API video %d thất bại: %v", idx+1, errFb)
+						if expectedVideos > 1 {
+							mile(fmt.Sprintf("⚠ Không tải được video %d/%d", idx+1, expectedVideos))
+						}
+					}
+					continue
+				}
+
+				// Trình duyệt hiện (ShowChrome=true): mở overlay chi tiết để tải.
+				if expectedVideos > 1 {
 					mile(fmt.Sprintf("Đang mở chi tiết video %d/%d...", idx+1, expectedVideos))
 				} else {
 					mile("Đang mở chi tiết video...")

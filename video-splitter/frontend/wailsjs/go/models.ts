@@ -444,7 +444,8 @@ export namespace main {
 	    duration: number;
 	    error: string;
 	    pending: boolean;
-
+	    stopped: boolean;
+	
 	    static createFrom(source: any = {}) {
 	        return new ExportResult(source);
 	    }
@@ -458,6 +459,7 @@ export namespace main {
 	        this.duration = source["duration"];
 	        this.error = source["error"];
 	        this.pending = source["pending"];
+	        this.stopped = source["stopped"];
 	    }
 	}
 	export class ParsedSheetResult {
@@ -568,6 +570,7 @@ export namespace project {
 	    sceneThreshold: number;
 	    minClipDuration: number;
 	    maxClipDuration: number;
+	    targetClipDuration: number;
 	    autoAcceptScore: number;
 	    reviewMinScore: number;
 	    silenceThreshold: number;
@@ -589,6 +592,7 @@ export namespace project {
 	        this.sceneThreshold = source["sceneThreshold"];
 	        this.minClipDuration = source["minClipDuration"];
 	        this.maxClipDuration = source["maxClipDuration"];
+	        this.targetClipDuration = source["targetClipDuration"];
 	        this.autoAcceptScore = source["autoAcceptScore"];
 	        this.reviewMinScore = source["reviewMinScore"];
 	        this.silenceThreshold = source["silenceThreshold"];

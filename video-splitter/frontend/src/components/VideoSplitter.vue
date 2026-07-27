@@ -12,6 +12,7 @@ import BrowserAIImagePage from './BrowserAIImagePage.vue'
 import BrowserAIVideoPage from './BrowserAIVideoPage.vue'
 import RemixScenarioPage from './RemixScenarioPage.vue'
 import GoogleSheetSyncPage from './GoogleSheetSyncPage.vue'
+import LazyClipThumb from './common/LazyClipThumb.vue'
 import {
   Video, Scissors, Download, Settings, Sun, Moon, History,
   Plus, Trash2, Trash, RefreshCw, X, Check, Key, ChevronDown, ChevronUp,
@@ -421,6 +422,18 @@ const aiQueueState = reactive({
 // tiến trình + nút Dừng để chúng không biến mất khi cắt xong nhưng AI vẫn chạy.
 const isRunningAny = computed(() => isExporting.value || aiQueueState.isRunning)
 
+// CÓ tiến trình xuất/ghép nào đang chạy hay không, bất kể nó được bấm từ tab nào.
+// Tab Cắt & Xuất và trang Kịch bản dùng CHUNG một hàm exportClips và chung một map
+// hủy tiến trình ở backend, nên hai lượt chạy song song sẽ ghi đè tiến độ của nhau
+// và nút Dừng bên này hủy luôn ffmpeg bên kia.
+const isExportBusy = computed(() =>
+  isExporting.value || isMultiExportRunning.value || isScenarioExporting.value || isMergingClips.value)
+
+// Chỉ true khi CHÍNH tab Cắt & Xuất đang chạy xuất — KHÔNG phải khi trang Kịch bản xuất.
+// Dùng để khoá UI tab Cắt & Xuất: khi Kịch bản đang xuất, tab này vẫn dùng được bình thường
+// (xem clip, chỉnh cấu hình, kéo thả...) thay vì bị panel-disabled khoá hết mọi thứ.
+const isCutTabBusy = computed(() => isExporting.value && !isScenarioExporting.value)
+
 const aiThumbState = reactive({
   isExtractingFrames: false,
   extractedFrames: [] as string[],
@@ -749,7 +762,20 @@ const saveRemixScenarios = () => {
 // exportClips để lần xuất sau (từ tab Cắt & Xuất) quay lại dùng tick như cũ.
 const isScenarioExporting = ref(false)
 
+// Cờ "đang trong thân hàm exportClips". Cần biến riêng (không phải isExporting) vì
+// phần đầu hàm còn await đọc thời lượng video: bấm nhanh hai lần thì cả hai lần đều
+// lọt qua trước khi isExporting kịp bật.
+let exportInFlight = false
+
 const handleExportFromScenario = (scenarioId?: string) => {
+  // Chặn chạy chồng: nút này nằm ở trang Kịch bản, trước đây chỉ ẩn khi
+  // isScenarioExporting=true nên nếu đang xuất dở từ tab Cắt & Xuất rồi chuyển
+  // sang đây thì bấm được lần nữa → hai lượt xuất cùng ghi exportProgress /
+  // exportPercent, thanh tiến độ nhảy loạn và nút Dừng hủy lẫn của nhau.
+  if (isExportBusy.value) {
+    showToast('Đang có tiến trình xuất chạy dở. Hãy đợi xong hoặc bấm Dừng trước khi xuất lượt mới.', 'warning', 5000)
+    return
+  }
   loadRemixScenarios()
   forcedScenarioId = scenarioId || ''
   forceFullVideoExport = true
@@ -867,11 +893,16 @@ watch(activeView, (newVal) => {
 
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
-  sceneThreshold: 25.0,
+  sceneThreshold: 15.0,  // nhạy hơn: bắt được cut nhanh TikTok/Reels
+  // 3s: cho phép cắt clip ngắn (TikTok compilation vài giây).
+  // Bản cũ dùng 8s — đúng cho long-form nhưng gộp nhầm clip ngắn thành đoạn dài.
   minClipDuration: 3.0,
   maxClipDuration: 60.0,
-  autoAcceptScore: 60,
-  reviewMinScore: 35,
+  // target = 0 khi min < 6s: không ép gộp clip TikTok 3-5s thành đoạn 30s.
+  // autoTargetDuration() sẽ tự đặt theo logic min/max.
+  targetClipDuration: 0,
+  autoAcceptScore: 50,
+  reviewMinScore: 30,
   silenceThreshold: -30,
   silenceDuration: 0.5,
   proxyFPS: 4,
@@ -893,6 +924,8 @@ const loadDefaultConfig = async () => {
   try {
     const cfg = await GetDefaultConfig()
     Object.assign(analyzerConfig, cfg)
+    // Đảm bảo target luôn = (min+max)/2 ngư trước khi backend trả về target=0 (project cũ)
+    autoTargetDuration()
   } catch (e) {
     console.error('Lỗi tải config mặc định:', e)
   }
@@ -904,6 +937,23 @@ const resetConfig = async () => {
   addLog('Đã đặt lại cấu hình về mặc định.')
 }
 
+// Tự động tính targetClipDuration khi min hoặc max thay đổi.
+// Logic thông minh theo use-case:
+//   min < 6s  → target = 0  (TikTok/compilation: không ép gộp clip ngắn,
+//               cắt tại mọi boundary đạt ngưỡng — mỗi clip gốc 1 segment)
+//   min ≥ 6s  → target = (min+max)/2  (Long-form: gộp thành segment Shorts/Reels)
+const autoTargetDuration = () => {
+  const min = Number(analyzerConfig.minClipDuration) || 3
+  const max = Number(analyzerConfig.maxClipDuration) || 60
+  if (min < 6) {
+    // Chế độ clip ngắn: tắt target để không gộp clip TikTok 3-5s thành đoạn 30s
+    analyzerConfig.targetClipDuration = 0
+  } else {
+    // Chế độ long-form: gộp thành segment gần với trung bình min/max
+    analyzerConfig.targetClipDuration = Math.round((min + max) / 2 * 10) / 10
+  }
+}
+
 const onMinDurationChange = () => {
   let val = Number(analyzerConfig.minClipDuration)
   if (isNaN(val) || val < 1) val = 1
@@ -913,6 +963,7 @@ const onMinDurationChange = () => {
   if (analyzerConfig.minClipDuration > analyzerConfig.maxClipDuration) {
     analyzerConfig.maxClipDuration = analyzerConfig.minClipDuration
   }
+  autoTargetDuration() // tự cập nhật target = (min+max)/2
 }
 
 const onMaxDurationChange = () => {
@@ -924,6 +975,7 @@ const onMaxDurationChange = () => {
   if (analyzerConfig.maxClipDuration < analyzerConfig.minClipDuration) {
     analyzerConfig.minClipDuration = analyzerConfig.maxClipDuration
   }
+  autoTargetDuration() // tự cập nhật target = (min+max)/2
 }
 
 const isSettingsLoaded = ref(false)
@@ -1417,6 +1469,32 @@ onMounted(async () => {
         videoDoneCount.value = Math.min(exportProgress.value.total, videoDoneCount.value + 1)
       }
       thumbDoneCount.value = Math.min(exportProgress.value.total, thumbDoneCount.value + 1)
+    }
+  })
+  // Tiến độ MỊN theo thời gian thực từ ffmpeg (-progress). fracDone là "số clip đã
+  // xong" dạng thập phân trong PHẠM VI MỘT LẦN GỌI ExportClips, nên khi xuất nhiều
+  // video phải cộng thêm mốc của các video trước (exportFracBase).
+  EventsOn('export_percent', (p: { fracDone: number, total: number }) => {
+    if (!p || typeof p.fracDone !== 'number') return
+    // Luồng GHÉP dùng thanh riêng trong modal ghép: backend gửi mốc theo "bước"
+    // (N clip + 1 lần nối) nên cứ lấy trực tiếp fracDone/total, không dính vào
+    // mấy biến đếm clip của luồng xuất.
+    if (isMergingClips.value) {
+      const pct = p.total > 0 ? (p.fracDone / p.total) * 100 : 0
+      mergePercent.value = Math.min(100, Math.max(mergePercent.value, pct))
+      return
+    }
+    // Mẫu số: khi xuất nhiều video, tổng thật là tổng clip của cả hàng đợi
+    // (exportProgress.total) chứ không phải số clip của riêng video đang chạy.
+    const total = exportFracBase.value > 0 || isMultiExportRunning.value
+      ? (exportProgress.value.total || p.total)
+      : p.total
+    exportFracTotal.value = total
+    const next = exportFracBase.value + p.fracDone
+    // Chỉ nhận giá trị tăng: các goroutine cắt song song có thể gửi lệch nhịp, nếu
+    // nhận cả giá trị nhỏ hơn thì thanh sẽ giật qua giật lại.
+    if (next > exportFracDone.value) {
+      exportFracDone.value = next
     }
   })
   EventsOn('export_progress', (p: { done: number, total: number, clipId?: string, ok?: boolean, outPath?: string, pending?: boolean }) => {
@@ -2387,6 +2465,33 @@ const toggleSelectAll = () => {
 
 const exportProgress = ref({ done: 0, total: 0 })
 
+// === TIẾN ĐỘ MỊN ===
+// Backend báo "export_percent" liên tục theo mốc thời gian ffmpeg đã encode, nên
+// thanh phần trăm nhích đều trong lúc cắt một clip dài thay vì đứng im rồi nhảy
+// bậc mỗi khi xong một clip. fracTotal = 0 nghĩa là chưa có số liệu mịn → dùng
+// lại cách đếm theo số clip đã xong.
+const exportFracDone = ref(0)
+const exportFracTotal = ref(0)
+// Số clip đã xong của các VIDEO TRƯỚC trong lần xuất nhiều video: backend chỉ
+// biết tiến độ của video nó đang xử lý nên phải cộng thêm phần đã qua.
+const exportFracBase = ref(0)
+
+const resetExportFrac = () => {
+  exportFracDone.value = 0
+  exportFracTotal.value = 0
+  exportFracBase.value = 0
+}
+
+// Phần trăm hiển thị trên thanh tiến độ (0..100). Không bao giờ lùi lại so với
+// số clip đã hoàn thành để tránh cảm giác giật ngược.
+const exportPercent = computed(() => {
+  const total = exportProgress.value.total
+  if (total <= 0) return 0
+  const byClip = exportProgress.value.done / total
+  const smooth = exportFracTotal.value > 0 ? exportFracDone.value / exportFracTotal.value : 0
+  return Math.max(0, Math.min(100, Math.max(byClip, smooth) * 100))
+})
+
 const clipsForExport = () => {
   return selectedClips.value.size > 0
     ? activeClips.value.filter(c => selectedClips.value.has(c.id))
@@ -2524,6 +2629,28 @@ const makeFullVideoClip = async (path: string, idSuffix = ''): Promise<any | nul
 }
 
 const exportClips = async () => {
+  // CHỐT CHẶN CHẠY CHỒNG: nút Xuất ở tab "Cắt & Xuất" và nút "Lưu và Xuất Video" ở
+  // trang Kịch bản gọi CHUNG hàm này, lại dùng chung exportProgress/exportPercent và
+  // chung map hủy tiến trình ở backend. Bấm lượt thứ hai khi lượt đầu chưa xong thì
+  // hai luồng ghi lẫn tiến độ của nhau và nút Dừng hủy cả hai.
+  // KHÔNG dùng isExportBusy ở đây: handleExportFromScenario bật isScenarioExporting
+  // TRƯỚC khi gọi hàm này nên cờ đó sẽ tự chặn chính lượt vừa bấm.
+  if (exportInFlight || isExporting.value || isMultiExportRunning.value || isMergingClips.value) {
+    showToast('Đang có một tiến trình xuất chạy dở. Hãy đợi xong hoặc bấm Dừng Xuất trước khi xuất lượt mới.', 'warning', 5000)
+    return
+  }
+  exportInFlight = true
+
+  // Thoát sớm (chưa kịp xuất gì) PHẢI nhả hết cờ. Riêng isScenarioExporting do
+  // handleExportFromScenario bật trước khi gọi: không tắt ở đây thì nút bên trang
+  // Kịch bản kẹt mãi ở trạng thái "đang xuất" dù chẳng có gì chạy.
+  const abortStart = () => {
+    exportInFlight = false
+    isScenarioExporting.value = false
+    forceFullVideoExport = false
+    forcedScenarioId = ''
+  }
+
   let clipsToExportMap: Record<string, any[]> = {}
   const skippedNoDuration: string[] = []
 
@@ -2532,15 +2659,13 @@ const exportClips = async () => {
     const path = activeVideoPath.value
     if (!path) {
       showToast('Chưa có video nào đang mở để xuất!', 'warning')
-      forceFullVideoExport = false
-      forcedScenarioId = ''
+      abortStart()
       return
     }
     const fullClip = await makeFullVideoClip(path)
     if (!fullClip) {
       showToast('Không đọc được thời lượng video đang mở nên không thể xuất!', 'error')
-      forceFullVideoExport = false
-      forcedScenarioId = ''
+      abortStart()
       return
     }
     clipsToExportMap[path] = [fullClip]
@@ -2590,6 +2715,7 @@ const exportClips = async () => {
     } else {
       showToast('Vui lòng chọn hoặc nạp một video vào dự án để xuất!', 'warning')
     }
+    abortStart() // nhả exportInFlight + isScenarioExporting + forceFullVideoExport + forcedScenarioId
     return
   }
   if (skippedNoDuration.length > 0) {
@@ -2602,6 +2728,7 @@ const exportClips = async () => {
   exportStatusText.value = 'Đang chuẩn bị xuất video...'
   videoDoneCount.value = 0
   thumbDoneCount.value = 0
+  resetExportFrac()
   exportStartTime.value = Date.now()
   
   try {
@@ -2627,6 +2754,12 @@ const exportClips = async () => {
 
       // Kịch bản bật "tự nghe khi xuất": nghe Whisper từng clip ra .srt trước khi cắt.
       await autoGenSubtitlesForList(videoPath, list)
+
+      // Mốc tiến độ mịn của video này = số clip đã xong của các video TRƯỚC. Backend
+      // gửi fracDone tính riêng cho từng lần gọi ExportClips (0..len(list)) nên phải
+      // cộng mốc này, không thì sang video thứ 2 thanh phần trăm tụt về đầu.
+      exportFracBase.value = globalDone
+      exportFracDone.value = globalDone
 
       let lastDoneForThisVideo = 0
       const unlisten = EventsOn('export_progress', (data: any) => {
@@ -2654,11 +2787,23 @@ const exportClips = async () => {
       let results: Awaited<ReturnType<typeof ExportClips>>
       try {
         results = await ExportClips(projName, videoPath, list, exportDestDir, imageDestDir, analyzerConfig, exportJobs.value, thumbnailIntroDuration.value)
+      } catch (e) {
+        // Backend gặp LỖI THẬT → nó đã hủy hết clip còn lại và trả về lỗi. Phải
+        // ngừng luôn các video còn lại trong hàng đợi (trước đây chạy tiếp và lỗi
+        // y hệt ở từng video), nhưng vẫn lưu trạng thái các clip đã cắt xong.
+        const msg = String((e as any)?.message || e)
+        addLog('⛔ ' + msg)
+        showToast('Đã dừng xuất: ' + msg, 'error', 9000)
+        await SaveProject(videoPath, clipsMap.value[videoPath] || [], analyzerConfig)
+        return
       } finally {
         unlisten()
       }
 
-      const stopped = results.some(r => r.error === 'Tiến trình xuất bị dừng' || r.error === 'Tiến trình bị dừng')
+      // Backend đánh cờ stopped cho clip bị hủy giữa đường. Dùng cờ thay vì so chuỗi
+      // tiếng Việt (đổi câu thông báo là mất tín hiệu dừng), vẫn giữ so chuỗi để
+      // tương thích bản backend cũ.
+      const stopped = results.some(r => (r as any).stopped || r.error === 'Tiến trình xuất bị dừng' || r.error === 'Tiến trình bị dừng')
       if (stopped) {
         addLog('Tiến trình xuất video đã bị dừng.')
         return
@@ -2710,6 +2855,7 @@ const exportClips = async () => {
   } catch (err) {
     showToast('Lỗi xuất video: ' + err, 'error')
   } finally {
+    exportInFlight = false          // PHẢI reset trước tất cả, tránh kẹt gate mãi mãi
     isExporting.value = false
     isScenarioExporting.value = false
     if (!exportWithThumbnails.value && !aiQueueState.isRunning) {
@@ -2759,13 +2905,27 @@ const exportSelectedVideos = async () => {
       exportStatusText.value = 'Đang bắt đầu...'
       videoDoneCount.value = 0
       thumbDoneCount.value = 0
+      // Mỗi video là một lần gọi ExportClips riêng và thanh tiến độ ở đây đếm theo
+      // từng video → reset mốc tiến độ mịn về 0 trước mỗi video.
+      resetExportFrac()
       // Nếu có ≥2 preset được chọn: random prompt cho lần xuất này
       if (selectedPresetIds.value.size > 1) {
         analyzerConfig.prompt = getRandomPresetPrompt()
       }
-      const results = await ExportClips(projName, path, clips, exportDestDir, imageDestDir, analyzerConfig, exportJobs.value, thumbnailIntroDuration.value)
-      
-      const stopped = results.some(r => r.error === 'Tiến trình xuất bị dừng' || r.error === 'Tiến trình bị dừng')
+      // Backend LỖI THẬT → nó đã hủy các clip còn lại và trả lỗi. Dừng luôn cả hàng
+      // đợi video thay vì chạy tiếp và lỗi y hệt ở từng video còn lại.
+      let results: Awaited<ReturnType<typeof ExportClips>>
+      try {
+        results = await ExportClips(projName, path, clips, exportDestDir, imageDestDir, analyzerConfig, exportJobs.value, thumbnailIntroDuration.value)
+      } catch (e) {
+        const msg = String((e as any)?.message || e)
+        addLog('⛔ ' + msg)
+        showToast('Đã dừng xuất hàng loạt: ' + msg, 'error', 9000)
+        await SaveProject(path, clips, analyzerConfig)
+        return
+      }
+
+      const stopped = results.some(r => (r as any).stopped || r.error === 'Tiến trình xuất bị dừng' || r.error === 'Tiến trình bị dừng')
       if (stopped) {
         addLog('Tiến trình xuất hàng loạt đã bị dừng.')
         return
@@ -2807,6 +2967,11 @@ const mergeTransitionType = ref('')
 const mergeTransitionDuration = ref(0.5)
 const mergeOutputFile = ref('')
 const isMergingClips = ref(false)
+
+// Phần trăm MỊN cho luồng ghép (0..100). MergeClips coi mỗi phân đoạn cắt + bước nối
+// là một "đơn vị" và gửi qua cùng sự kiện 'export_percent', nên modal ghép có thanh
+// tiến độ riêng thay vì chỉ đứng im ở chữ "Đang Ghép Video...".
+const mergePercent = ref(0)
 
 const openMergeModal = () => {
   let selected = displayClips.value.filter(c => selectedClips.value.has(c.id))
@@ -2882,6 +3047,7 @@ const startMergeProcess = async () => {
   }
 
   isMergingClips.value = true
+  mergePercent.value = 0
   exportStatusText.value = `Đang ghép ${mergeClipsList.value.length} clip thành 1 video...`
 
   try {
@@ -2889,7 +3055,7 @@ const startMergeProcess = async () => {
       mergeClipsList.value.forEach(c => {
         if (!c.edit) {
           c.edit = {
-            aspect: { enabled: false, ratio: '9:16', mode: 'blur' },
+            aspect: { enabled: false, ratio: '9:16', mode: 'blur', panX: 0.5, panY: 0.5 },
             color: { enabled: false, brightness: 0, contrast: 0, saturation: 1, preset: '' },
             speed: 1.0, hflip: false, texts: [],
             watermark: { enabled: false, imgPath: '', x: '', y: '', opacity: 1, scale: 1 },
@@ -2956,17 +3122,24 @@ const loadProject = async (projId: string) => {
 
   if (proj.analyzerConfig) {
     Object.assign(analyzerConfig, proj.analyzerConfig)
+    // Project cũ chưa có targetClipDuration hoặc được lưu với giá trị 0 → tự tính lại
+    if (!analyzerConfig.targetClipDuration || analyzerConfig.targetClipDuration <= 0) {
+      autoTargetDuration()
+    }
   } else {
     // Kế thừa từ settings.json thay vì reset cứng
     if (globalSettingsConfig.value) {
       Object.assign(analyzerConfig, JSON.parse(JSON.stringify(globalSettingsConfig.value)))
     } else {
       analyzerConfig.mode = 'smart'
-      analyzerConfig.sceneThreshold = 25.0
+      analyzerConfig.sceneThreshold = 15.0
+      // Khớp project.DefaultConfig() bên Go: min=3s (TikTok/compilation),
+      // target=0 khi min<6s (không gộp clip ngắn thành đoạn dài).
       analyzerConfig.minClipDuration = 3.0
       analyzerConfig.maxClipDuration = 60.0
-      analyzerConfig.autoAcceptScore = 60
-      analyzerConfig.reviewMinScore = 35
+      autoTargetDuration() // = 0 vì min=3 < 6 — không gộp clip ngắn
+      analyzerConfig.autoAcceptScore = 50
+      analyzerConfig.reviewMinScore = 30
       analyzerConfig.exportPreset = 'fast'
       analyzerConfig.exportCRF = 23
       analyzerConfig.hardwareAccel = 'auto'
@@ -3547,7 +3720,9 @@ const deleteProject = async (summary: storage.ProjectSummary) => {
 
 // EditOps trung tính (khớp DefaultEditOps bên Go) — dùng khi clip chưa có edit.
 const defaultEdit = (): project.EditOps => project.EditOps.createFrom({
-  aspect: { enabled: false, ratio: '9:16', mode: 'crop' },
+  // panX/panY phải có mặt và = 0.5: bên Go pan 0 là giá trị hợp lệ (sát mép trái/trên),
+  // nên thiếu field → JSON zero value 0 → khung lệch hẳn về mép thay vì giữa.
+  aspect: { enabled: false, ratio: '9:16', mode: 'crop', panX: 0.5, panY: 0.5 },
   color: { enabled: false, brightness: 0, contrast: 0, saturation: 1, preset: '' },
   speed: 1.0,
   hflip: false, // Lật ngang mặc định tắt
@@ -3573,6 +3748,10 @@ const ensureEdit = (clip: project.Clip) => {
   const d = defaultEdit()
   if (!clip.edit) clip.edit = d
   if (!clip.edit.aspect) clip.edit.aspect = d.aspect
+  // Clip cũ có aspect nhưng chưa có panX/panY: 0.5 = giữa. Không để undefined vì Go
+  // đọc thành 0 = sát mép trái/trên (exporter coi 0 là giá trị hợp lệ, không phải "chưa đặt").
+  if (typeof clip.edit.aspect.panX !== 'number') clip.edit.aspect.panX = 0.5
+  if (typeof clip.edit.aspect.panY !== 'number') clip.edit.aspect.panY = 0.5
   if (!clip.edit.color) clip.edit.color = d.color
   if (!clip.edit.speed || clip.edit.speed <= 0) clip.edit.speed = 1.0
   if (clip.edit.hflip === undefined) clip.edit.hflip = false
@@ -4033,7 +4212,7 @@ const formatSize = (bytes: number) => {
             <span class="video-counter" style="margin-right: 8px;">({{ videoPaths.length }} video)</span>
 
             <!-- Xóa video đã chọn & Chọn tất cả (bên trái) -->
-            <label v-if="videoPaths.length > 0" :class="{ 'panel-disabled': isAnalyzing || isExporting }" class="select-all-label" @click.stop style="display: inline-flex; align-items: center; gap: 6px; height: 28px; font-size: 12px;">
+            <label v-if="videoPaths.length > 0" :class="{ 'panel-disabled': isAnalyzing || isCutTabBusy }" class="select-all-label" @click.stop style="display: inline-flex; align-items: center; gap: 6px; height: 28px; font-size: 12px;">
               <input type="checkbox" :checked="isAllVideosSelected" @change="toggleSelectAllVideos" class="clip-checkbox" />
               <span>Chọn tất cả video để xử lý</span>
             </label>
@@ -4042,7 +4221,7 @@ const formatSize = (bytes: number) => {
               v-if="videoPaths.length > 0 && selectedVideos.size > 0"
               variant="danger"
               size="sm"
-              :disabled="isAnalyzing || isExporting"
+              :disabled="isAnalyzing || isCutTabBusy"
               @click.stop="removeSelectedVideos"
             >
               Xóa {{ selectedVideos.size }} video đã chọn
@@ -4136,7 +4315,7 @@ const formatSize = (bytes: number) => {
       <!-- BỐ CỤC GIỮA: CẤU HÌNH & TRÌNH PHÁT PREVIEW -->
       <section class="section-middle-workspace">
         <!-- Bên Trái: Bảng Cấu Hình Dự Án (Cắt & Sửa) -->
-        <div class="project-settings-panel" :class="{ 'panel-disabled': isAnalyzing || isExporting }">
+        <div class="project-settings-panel" :class="{ 'panel-disabled': isAnalyzing || isCutTabBusy }">
           <div class="settings-section-header" style="margin-bottom: 6px;">
             <Scissors :size="14" style="color:var(--accent-color);" />
             <h3>Cấu hình cắt & Xuất</h3>
@@ -4157,12 +4336,20 @@ const formatSize = (bytes: number) => {
             <div class="compact-setting-grid-2" v-if="analyzerConfig.mode !== 'fixed'">
               <div class="compact-setting-item">
                 <label class="setting-title-lbl">Ngắn nhất (giây):</label>
-                <input type="number" v-model.number="analyzerConfig.minClipDuration" min="1" max="60" @change="onMinDurationChange" class="compact-input" />
+                <input type="number" v-model.number="analyzerConfig.minClipDuration" min="1" max="60" placeholder="3" @change="onMinDurationChange" class="compact-input" />
               </div>
               <div class="compact-setting-item">
                 <label class="setting-title-lbl">Dài nhất (giây):</label>
-                <input type="number" v-model.number="analyzerConfig.maxClipDuration" min="10" max="600" @change="onMaxDurationChange" class="compact-input" />
+                <input type="number" v-model.number="analyzerConfig.maxClipDuration" min="10" max="600" placeholder="60" @change="onMaxDurationChange" class="compact-input" />
               </div>
+            </div>
+            <div style="font-size: 10.5px; color: var(--text-muted); margin-top: 3px; padding: 0 2px;" v-if="analyzerConfig.mode !== 'fixed'">
+              <span v-if="analyzerConfig.minClipDuration < 6" style="color: #6db8ff;">
+                ⚡ Chế độ clip ngắn (min &lt; 6s): cắt tại mọi chuyển cảnh — phù hợp TikTok compilation
+              </span>
+              <span v-else style="color: #a0c878;">
+                📏 Chế độ long-form (min ≥ 6s): gộp thành segment ~{{ analyzerConfig.targetClipDuration }}s — phù hợp Shorts/Reels
+              </span>
             </div>
             <div class="compact-setting-row" v-else>
               <label class="setting-title-lbl">Thời lượng mỗi clip (giây):</label>
@@ -4406,7 +4593,7 @@ const formatSize = (bytes: number) => {
       </section>
 
       <!-- BỐ CỤC DƯỚI: DANH SÁCH CLIPS ĐÃ CẮT & XUẤT BẢN -->
-      <section class="section-bottom-clips" :class="{ 'panel-disabled': isAnalyzing || isExporting }" :style="{ paddingBottom: selectedClips.size > 0 ? '100px' : '16px' }">
+      <section class="section-bottom-clips" :class="{ 'panel-disabled': isAnalyzing || isCutTabBusy }" :style="{ paddingBottom: selectedClips.size > 0 ? '100px' : '16px' }">
         <div class="section-title-bar-clips">
           <div class="title-left-clips">
             <h2 style="display: flex; align-items: center; gap: 6px;">
@@ -4455,7 +4642,7 @@ const formatSize = (bytes: number) => {
               <div class="clip-card-header-bar">
                 <div class="header-left-wrap">
                   <span
-                    v-if="!isMultiVideoDisplay && !isExporting"
+                    v-if="!isMultiVideoDisplay && !isCutTabBusy"
                     class="clip-drag-handle"
                     title="Kéo thả vào clip khác để ghép"
                     style="display: inline-flex; align-items: center; cursor: grab; color: var(--wx-text-muted); padding: 0 2px;"
@@ -4509,30 +4696,18 @@ const formatSize = (bytes: number) => {
 
                 <!-- 2. Khung ảnh đại diện / Thumbnail (Tự động hiển thị sắc nét) -->
                 <div v-else class="thumb-box-single" @click="togglePlayCardClip(clip)" :title="clip.exportedPath ? 'Bấm để phát trực tiếp video đã xuất ngay tại đây' : 'Bấm để xem thử đoạn video này ngay tại đây'">
-                  <!-- Ảnh thumbnail chính (nếu có và tải thành công) -->
-                  <img
-                    v-if="getClipThumbImage(clip)"
-                    :src="getThumbUrl(getClipThumbImage(clip))"
-                    @error="handleThumbError(getClipThumbImage(clip))"
-                    style="width: 100%; height: 100%; object-fit: cover;"
+                  <!-- Ảnh xem trước tải lười. Trước đây chỗ này render <video preload="auto">
+                       trỏ vào FILE GỐC khi clip chưa có ảnh: video 1 tiếng + 40 thẻ nghĩa là
+                       40 bộ giải mã cùng lúc trong WebView2, mỗi cái seek/buffer trên file vài
+                       GB → ngốn ~5 GB RAM, renderer treo rồi chết. Giờ chỉ xin 1 ảnh JPG do
+                       ffmpeg trích ở backend, và chỉ xin khi thẻ lọt vào tầm nhìn. -->
+                  <LazyClipThumb
+                    :src="getClipThumbImage(clip)"
+                    :video-path="clip.exportedPath || clip._videoPath || activeVideoPath"
+                    :time-sec="clip.exportedPath ? 0.5 : (clip.startTime || 0.1)"
+                    :to-url="getThumbUrl"
+                    @error="handleThumbError"
                   />
-                  <!-- Fallback 1: Dùng video đã xuất (nếu có) kèm offset #t=0.5 để hiện ảnh xem trước sắc nét -->
-                  <video
-                    v-else-if="clip.exportedPath"
-                    :src="getThumbUrl(clip.exportedPath) + '#t=0.5'"
-                    preload="auto"
-                    style="width: 100%; height: 100%; object-fit: cover; pointer-events: none;"
-                  ></video>
-                  <!-- Fallback 2: Trích khung hình tại mốc startTime của video gốc -->
-                  <video
-                    v-else-if="clip._videoPath || activeVideoPath"
-                    :src="getThumbUrl(clip._videoPath || activeVideoPath) + '#t=' + (clip.startTime || 0.1)"
-                    preload="auto"
-                    style="width: 100%; height: 100%; object-fit: cover; pointer-events: none;"
-                  ></video>
-                  <div v-else class="thumb-placeholder-box" style="display: flex; align-items: center; justify-content: center; height: 100%; background: rgba(0,0,0,0.3); border-radius: 8px;">
-                    <Film :size="24" style="opacity: 0.4; color: var(--l-text-muted);" />
-                  </div>
                   <div class="play-overlay">
                     <Play :size="18" fill="currentColor" />
                   </div>
@@ -4556,7 +4731,7 @@ const formatSize = (bytes: number) => {
               </div>
 
               <div class="clip-card-actions-row">
-                <button v-if="!isExporting && (clip as any).segments && (clip as any).segments.length > 0" @click="unmergeClip(idx)" class="mini-act-btn flex-center" title="Tách clip ghép thành các đoạn ban đầu" style="display: inline-flex; align-items: center; gap: 4px; color: #a5b4fc; border-color: rgba(99,102,241,0.4);">
+                <button v-if="!isCutTabBusy && (clip as any).segments && (clip as any).segments.length > 0" @click="unmergeClip(idx)" class="mini-act-btn flex-center" title="Tách clip ghép thành các đoạn ban đầu" style="display: inline-flex; align-items: center; gap: 4px; color: #a5b4fc; border-color: rgba(99,102,241,0.4);">
                   <Unlink :size="12" />
                   Tách
                 </button>
@@ -4603,7 +4778,7 @@ const formatSize = (bytes: number) => {
               <input type="checkbox" v-model="exportWithThumbnails" style="width: 15px; height: 15px; accent-color: var(--wx-brand-primary);" />
               Xuất kèm Thumbnail
             </label>
-            <template v-if="exportWithThumbnails && !isExporting">
+            <template v-if="exportWithThumbnails && !isCutTabBusy">
               <span style="color: var(--wx-border-default); opacity: 0.6; font-size: 11px;">|</span>
               <div style="display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; color: var(--wx-text-secondary); white-space: nowrap;" title="Thời lượng chèn đoạn ảnh bìa (thumbnail) vào ĐẦU mỗi video ngắn">
                 <span>Bìa đầu clip:</span>
@@ -4615,7 +4790,7 @@ const formatSize = (bytes: number) => {
         </div>
 
         <!-- Thư mục xuất: Chọn riêng thư mục lưu Video và thư mục lưu Ảnh rộng rãi -->
-        <div v-if="!isExporting" style="display: flex; align-items: center; gap: 14px; flex: 1; margin: 0 12px; min-width: 0; align-self: center;">
+        <div v-if="!isCutTabBusy" style="display: flex; align-items: center; gap: 14px; flex: 1; margin: 0 12px; min-width: 0; align-self: center;">
           <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 120px;">
             <span style="font-size: 12px; font-weight: 600; color: var(--wx-text-primary); white-space: nowrap; flex: none;">Video:</span>
             <input type="text" v-model="outDir" class="file-path-input dl-pub-dir-input" readonly :title="`Thư mục lưu Video: ${outDir}`" style="flex: 1; height: 32px; font-size: 11.5px; min-width: 80px;" />
@@ -4648,13 +4823,21 @@ const formatSize = (bytes: number) => {
                  fontSize: '12px',
                  borderRadius: '8px',
                  border: '1px solid rgba(255, 255, 255, 0.06)',
-                 background: `linear-gradient(to right, rgba(16, 185, 129, 0.12) 0%, rgba(16, 185, 129, 0.12) ${exportProgress.done / exportProgress.total * 100}%, rgba(255, 255, 255, 0.01) ${exportProgress.done / exportProgress.total * 100}%)`
+                 background: `linear-gradient(to right, rgba(16, 185, 129, 0.16) 0%, rgba(16, 185, 129, 0.16) ${exportPercent}%, rgba(255, 255, 255, 0.01) ${exportPercent}%)`,
+                 transition: 'background 0.25s linear'
                }">
+            <!-- Phần trăm tổng: nhích liên tục theo tiến độ ffmpeg thật -->
+            <span style="font-weight: 800; white-space: nowrap; flex-shrink: 0; color: var(--success-color); min-width: 38px; text-align: right;">
+              {{ Math.round(exportPercent) }}%
+            </span>
+
+            <span style="color: var(--wx-border-default); flex-shrink: 0;">|</span>
+
             <!-- Tổng tiến độ Video -->
             <span style="font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
               🎬 Cắt Video: <strong style="color: var(--success-color);">{{ videoDoneCount }}/{{ exportProgress.total }}</strong>
             </span>
-            
+
             <span style="color: var(--wx-border-default); flex-shrink: 0;">|</span>
             
             <!-- Tổng tiến độ Thumbnail -->
@@ -4712,7 +4895,7 @@ const formatSize = (bytes: number) => {
       <KeepAlive><BrowserAIVideoPage v-if="activeView === 'ai-video'" :default-output-dir="outDir" :show-chrome="browserAIShowChrome" @back="activeView = 'split'" @apply-video="handleApplyAIVideo" @show-toast="showToast" /></KeepAlive>
 
       <!-- TRANG KỊCH BẢN XÀO NẤU: tạo/sửa/xóa combo EditOps. Reload lại danh sách khi quay về. -->
-      <KeepAlive><RemixScenarioPage v-if="activeView === 'scenarios'" :active-video-src="activeVideoSrc" :output-dir="outDir" :videos="videoPaths" :active-video-index="activeVideoIndex" :show-toast="showToast" :is-exporting="isScenarioExporting" :export-progress="exportProgress" :export-status-text="exportStatusText" :eta-text="getExportETA()" @back="activeView = 'split'; loadRemixScenarios()" @export="handleExportFromScenario" @stop-export="stopExport" @select-video="selectVideo" @select-external-video="handleSelectVideoForEdit" @update:outputDir="outDir = $event" /></KeepAlive>
+      <KeepAlive><RemixScenarioPage v-if="activeView === 'scenarios'" :active-video-src="activeVideoSrc" :output-dir="outDir" :videos="videoPaths" :active-video-index="activeVideoIndex" :show-toast="showToast" :is-exporting="isScenarioExporting" :is-export-busy="isExportBusy" :export-progress="exportProgress" :export-percent="exportPercent" :export-status-text="exportStatusText" :eta-text="getExportETA()" @back="activeView = 'split'; loadRemixScenarios()" @export="handleExportFromScenario" @stop-export="stopExport" @select-video="selectVideo" @select-external-video="handleSelectVideoForEdit" @update:outputDir="outDir = $event" /></KeepAlive>
 
       <!-- TRANG ĐỒNG BỘ GOOGLE SHEET & AI CONTENT -->
       <KeepAlive><GoogleSheetSyncPage v-if="activeView === 'google-sheet'" :show-toast="showToast" /></KeepAlive>
@@ -4906,8 +5089,15 @@ const formatSize = (bytes: number) => {
 
           <!-- Modal Footer Actions -->
           <div style="display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-top: 1px solid var(--wx-border-default, #cbd5e1); background: var(--wx-surface-sunken, #f8fafc);">
-            <div style="font-size: 12px; color: var(--wx-brand-primary); font-weight: 600;" v-if="isMergingClips">
-              ⏳ {{ exportStatusText || 'Đang tiến hành ghép video...' }}
+            <!-- Tiến độ ghép: % mịn theo tiến độ ffmpeg thật (sự kiện export_percent),
+                 vì một lần ghép có thể chạy vài phút mà trước đây chỉ hiện chữ chờ. -->
+            <div style="display: flex; flex-direction: column; gap: 4px; min-width: 240px;" v-if="isMergingClips">
+              <div style="font-size: 12px; color: var(--wx-brand-primary); font-weight: 600;">
+                ⏳ {{ Math.round(mergePercent) }}% — {{ exportStatusText || 'Đang tiến hành ghép video...' }}
+              </div>
+              <div style="height: 4px; background: rgba(127,127,127,0.25); border-radius: 2px; overflow: hidden;">
+                <div :style="{ width: Math.max(2, mergePercent) + '%' }" style="height: 100%; background: linear-gradient(90deg, #8b5cf6, #6366f1); transition: width 0.25s linear;"></div>
+              </div>
             </div>
             <div v-else></div>
 

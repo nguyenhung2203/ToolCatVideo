@@ -25,11 +25,34 @@ func WaitAndMoveDownload(
 	fileName string,
 	expectedType MediaType,
 ) (string, error) {
-	// 1. Wait for Google Chrome to register download
-	downloadInfo := waitDownload()
+	// 1. Wait for Google Chrome to register download.
+	// waitDownload() blocks until Chrome fires PageDownloadWillBegin — this NEVER returns
+	// when the browser is hidden and the button click didn't actually trigger a download
+	// (getBoundingClientRect returns 0 in windowless mode → button not found / not clicked).
+	// We run it in a goroutine with a 45-second context-aware timeout so the caller
+	// (and its LockDownload mutex) are never stuck.
+	const waitDownloadTimeout = 45 * time.Second
+	type dlResult struct {
+		info *proto.PageDownloadWillBegin
+	}
+	dlCh := make(chan dlResult, 1)
+	go func() {
+		dlCh <- dlResult{info: waitDownload()}
+	}()
+
+	var downloadInfo *proto.PageDownloadWillBegin
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(waitDownloadTimeout):
+		return "", errors.New("trình duyệt không bắt đầu tải file sau 45 giây (có thể cửa sổ bị ẩn hoặc nút tải không được kích hoạt)")
+	case res := <-dlCh:
+		downloadInfo = res.info
+	}
 	if downloadInfo == nil {
 		return "", errors.New("trình duyệt không bắt đầu tải file hoặc tiến trình bị hủy")
 	}
+
 
 	tempPath := filepath.Join(downloadDir, downloadInfo.GUID)
 	// Chrome tải ra file tạm ĐÚNG TÊN "GUID.crdownload" rồi đổi tên thành "GUID" khi

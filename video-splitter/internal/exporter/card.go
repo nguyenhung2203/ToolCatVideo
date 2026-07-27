@@ -21,6 +21,11 @@ import (
 // frameW/uiPreviewFrameW khi xuất để trông đúng như lúc chỉnh.
 const uiPreviewFrameW = 500.0
 
+// libassDefaultPlayResY là PlayResY libass tự dùng khi file phụ đề không khai PlayRes
+// (SRT thường). Cỡ chữ trong force_style được hiểu theo hệ toạ độ này, nên nó cũng là
+// mốc quy đổi khi ta tự ghi PlayResY = chiều cao khung thật.
+const libassDefaultPlayResY = 288.0
+
 // renderCardPNG dựng card/banner thành 1 ảnh PNG (straight alpha) đúng kích thước pixel
 // của card trong khung xuất, khớp với preview CSS ở RemixScenarioPage.vue. Trả về đường
 // dẫn file PNG tạm (caller tự thêm vào danh sách dọn dẹp) hoặc lỗi.

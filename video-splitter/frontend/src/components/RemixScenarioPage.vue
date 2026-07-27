@@ -9,7 +9,15 @@ const props = defineProps<{
   activeVideoSrc?: string
   outputDir?: string
   isExporting?: boolean
+  // Đang có MỘT lượt xuất chạy ở bất kỳ đâu (kể cả bắt đầu từ tab Cắt & Xuất).
+  // isExporting chỉ báo lượt xuất do CHÍNH trang này khởi động, nên nếu chỉ dựa vào
+  // nó thì nút "Lưu và Xuất Video" vẫn bấm được trong lúc tab kia đang xuất → chạy
+  // chồng hai lượt, tiến độ hai luồng ghi lẫn nhau.
+  isExportBusy?: boolean
   exportProgress?: { done: number; total: number }
+  // Phần trăm MỊN (0..100) tính từ tiến độ ffmpeg thời gian thực. Có giá trị này thì
+  // thanh nhích liên tục trong lúc encode, không đứng im ở 0% cho tới khi clip xong.
+  exportPercent?: number
   exportStatusText?: string
   etaText?: string
   videos?: string[]
@@ -55,6 +63,17 @@ interface DraftText {
 type DragTarget = 'video-pan' | 'watermark' | 'subtitle' | 'card' | `text:${string}` | null
 
 const STORAGE_KEY = 'remix_scenarios_list'
+
+// Phần trăm hiện trên widget "Đang xuất": ưu tiên exportPercent (mịn, tính từ tiến độ
+// ffmpeg thời gian thực). Không có thì mới quay về đếm theo số clip đã xong như cũ.
+const smoothPercent = computed(() => {
+  if (typeof props.exportPercent === 'number' && props.exportPercent > 0) {
+    return Math.min(100, Math.max(0, Math.round(props.exportPercent)))
+  }
+  const total = props.exportProgress?.total || 0
+  if (total <= 0) return 0
+  return Math.min(100, Math.round(((props.exportProgress?.done || 0) / total) * 100))
+})
 
 const scenarios = ref<RemixScenario[]>([])
 const editingId = ref<string>('')
@@ -2093,10 +2112,10 @@ onMounted(load)
             <Loader2 :size="14" class="spin-hourglass" style="color: #c084fc; flex-shrink: 0;" />
             <div style="display: flex; flex-direction: column; justify-content: center; gap: 2px;">
               <div style="font-size: 11px; font-weight: 700; color: #ffffff; line-height: 1; white-space: nowrap;">
-                Đang xuất {{ Math.round(((exportProgress?.done || 0) / (exportProgress?.total || 1)) * 100) }}% ({{ exportProgress?.done || 0 }}/{{ exportProgress?.total || 1 }})
+                Đang xuất {{ smoothPercent }}% ({{ exportProgress?.done || 0 }}/{{ exportProgress?.total || 1 }})
               </div>
               <div style="width: 110px; height: 4px; background: rgba(255,255,255,0.2); border-radius: 2px; overflow: hidden;">
-                <div :style="{ width: Math.max(8, Math.round(((exportProgress?.done || 0) / (exportProgress?.total || 1)) * 100)) + '%' }" style="height: 100%; background: linear-gradient(90deg, #6366f1, #a855f7); transition: width 0.3s ease;"></div>
+                <div :style="{ width: Math.max(2, smoothPercent) + '%' }" style="height: 100%; background: linear-gradient(90deg, #6366f1, #a855f7); transition: width 0.25s linear;"></div>
               </div>
             </div>
           </div>
@@ -2116,11 +2135,14 @@ onMounted(load)
           v-else
           variant="success"
           size="sm"
+          :disabled="isExportBusy"
           @click="exportCurrentScenario"
-          title="Lưu kịch bản và tiến hành xuất video ngay"
+          :title="isExportBusy
+            ? 'Đang có một lượt xuất chạy ở tab Cắt & Xuất Video — hãy đợi xong hoặc bấm Dừng ở tab đó'
+            : 'Lưu kịch bản và tiến hành xuất video ngay'"
         >
           <Video :size="14" />
-          <span>Lưu và Xuất Video</span>
+          <span>{{ isExportBusy ? 'Đang xuất ở tab khác...' : 'Lưu và Xuất Video' }}</span>
         </BaseButton>
       </div>
     </header>

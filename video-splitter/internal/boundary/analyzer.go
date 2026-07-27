@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -352,67 +353,280 @@ func tierFor(score int, cfg project.AnalyzerConfig) string {
 }
 
 // effectiveScoringConfig tạo bộ chấm điểm nội bộ theo chế độ mà không sửa cấu hình
-// người dùng đã lưu. Tự động giữ nguyên để cân bằng. Nhanh chỉ nới đủ cho hard-cut
-// rõ từ FFmpeg được giữ lại. Kỹ tăng vai trò hình ảnh/layout và giảm continuity
-// penalty để không loại nhầm ranh giới thật khi nhạc hoặc lời nói chạy xuyên qua cut.
-func effectiveScoringConfig(cfg project.AnalyzerConfig) (project.SignalWeights, int) {
-	w := cfg.Weights
-	reviewMin := cfg.ReviewMinScore
+// người dùng đã lưu.
+//
+// LƯU Ý — ngữ nghĩa 3 chế độ đã được sửa lại cho khớp với TÊN của chúng. Bản trước
+// mọi phép điều chỉnh đều một chiều theo hướng NỚI LỎNG (visual chỉ kéo lên, phạt
+// liền mạch chỉ kẹp xuống, ngưỡng chỉ hạ xuống), nên không chế độ nào thắt lại được.
+// Hệ quả: "Kỹ" là chế độ CẮT NHIỀU NHẤT chứ không phải chính xác nhất — nó vừa hạ
+// ngưỡng, vừa giảm phạt liền mạch còn 5, trong khi phía Python còn hạ cả ngưỡng phát
+// hiện. Người dùng bấm "Kỹ" tưởng cắt cẩn thận hơn, thực tế nó băm vụn nhất.
+//
+// Ngữ nghĩa mới:
+//
+//	Nhanh : bảo thủ nhất — chỉ hard cut / màn hình đen thật rõ. Ít clip, chạy nhanh.
+//	Tự động: cân bằng.
+//	Kỹ    : quét dày candidate (phía Python) nhưng chấp nhận NGHIÊM hơn — ít clip mà
+//	        đúng, vị trí cắt chuẩn từng khung. Không phải "nhiều clip hơn".
+//
+// lenWeight là trọng số độ lệch chiều dài dùng cho bộ chọn ranh giới tối ưu:
+// càng cao thì càng ưu tiên clip đều nhau quanh TargetClipDuration.
+func effectiveScoringConfig(cfg project.AnalyzerConfig) (w project.SignalWeights, reviewMin int, lenWeight float64) {
+	w = cfg.Weights
+	reviewMin = cfg.ReviewMinScore
+	lenWeight = 1.0
 
 	switch cfg.Mode {
-	case project.ModeSmart:
-		// Tự động là chế độ lai: hard cut hình ảnh cực rõ (100/100) phải vừa đủ
-		// qua ngưỡng review mặc định, còn scene vừa/yếu vẫn cần audio/black/layout
-		// bổ trợ để tránh cắt nhầm khi chỉ đổi góc quay.
-		if w.ContinuityPen > 10 {
-			w.ContinuityPen = 10
-		}
 	case project.ModeFast:
-		if w.VisualChange < 50 {
-			w.VisualChange = 50
+		// Nhanh chỉ có tín hiệu thô từ FFmpeg (scene 0.35, black, silence) — không
+		// có refine, không có layout. Giữ phạt liền mạch ĐỦ MẠNH và nâng ngưỡng để
+		// chỉ ranh giới thật rõ được cắt; đây là chế độ đánh đổi độ phủ lấy tốc độ.
+		if reviewMin < 45 {
+			reviewMin = 45
 		}
-		if w.ContinuityPen > 10 {
-			w.ContinuityPen = 10
-		}
-		if reviewMin > 25 {
-			reviewMin = 25
+		// Ít candidate → dựa nhiều hơn vào mốc độ dài để clip không dài ngắn thất thường.
+		lenWeight = 1.4
+	case project.ModeSmart:
+		// Cân bằng: nới phạt liền mạch một chút so với mặc định vì đã có SpeechBreak
+		// đo thật, không cần phạt toàn phần.
+		if w.ContinuityPen > 12 {
+			w.ContinuityPen = 12
 		}
 	case project.ModePrecise:
-		if w.VisualChange < 55 {
-			w.VisualChange = 55
+		// Kỹ: NÂNG ngưỡng và TĂNG phạt liền mạch (ngược hẳn bản cũ). Python đã sinh
+		// candidate dày và refine về fps gốc, nên việc của Go là chọn lọc nghiêm —
+		// nếu đây cũng nới lỏng thì hai tầng cùng chiều sẽ cho ra clip vụn.
+		if reviewMin < 40 {
+			reviewMin = 40
 		}
-		if w.LayoutChange < 30 {
-			w.LayoutChange = 30
+		if w.ContinuityPen < 18 {
+			w.ContinuityPen = 18
 		}
-		if w.AudioChange < 25 {
-			w.AudioChange = 25
+		// Tin vào tín hiệu hơn là vào mốc độ dài, vì candidate đã được tinh chỉnh kỹ.
+		lenWeight = 0.8
+	}
+
+	return w, reviewMin, lenWeight
+}
+
+// selectBoundaries chọn TẬP ranh giới tối ưu bằng quy hoạch động thay vì duyệt tham
+// lam từng điểm.
+//
+// Vì sao cần: bản cũ quyết định từng điểm cắt ĐỘC LẬP ("điểm này có vượt ngưỡng
+// không?") rồi gom cụm tham lam trong cửa sổ MinClipDuration. Cách đó không có khái
+// niệm "clip nên dài bao nhiêu", nên gặp ranh giới đạt điểm ở giây thứ 6 là cắt ngay
+// — chính là hiện tượng 1 đoạn nội dung bị băm thành 2-3 khúc.
+//
+// Cách làm: tối thiểu hoá tổng chi phí trên TOÀN video
+//
+//	cost(đoạn a→b) = lenWeight × ((độ dài − target)/target)² − score(b)/100
+//	ràng buộc      : MinClipDuration ≤ độ dài ≤ MaxClipDuration
+//
+// Nhờ xét toàn cục, thuật toán sẵn sàng BỎ QUA ranh giới mạnh ở giây 6 để chọn ranh
+// giới yếu hơn ở giây 33 nếu tổng chi phí thấp hơn. Đây là bài toán segmentation kinh
+// điển (cùng dạng Knuth-Plass dùng ngắt dòng văn bản), giải bằng DP O(n²) trên số
+// ranh giới ứng viên — với vài trăm điểm là tức thời.
+//
+// Trả về danh sách ranh giới đã chọn, theo thứ tự thời gian.
+func selectBoundaries(scored []scoredBoundary, cfg project.AnalyzerConfig, totalDuration float64, lenWeight float64) []scoredBoundary {
+	target := cfg.TargetClipDuration
+	// target <= 0 → người dùng tắt tính năng: quay về gom cụm tham lam như cũ.
+	if target <= 0 || totalDuration <= 0 || len(scored) == 0 {
+		return greedyCluster(scored, cfg)
+	}
+
+	minD := cfg.MinClipDuration
+	maxD := cfg.MaxClipDuration
+	if maxD <= 0 {
+		maxD = totalDuration
+	}
+	// Cấu hình vô lý (min > max) → không DP được, trả về tham lam cho an toàn.
+	if minD > maxD {
+		return greedyCluster(scored, cfg)
+	}
+
+	// Node 0 = đầu video (t=0); node 1..n = các ranh giới ứng viên; node n+1 = cuối video.
+	n := len(scored)
+	times := make([]float64, n+2)
+	times[0] = 0
+	for i, b := range scored {
+		times[i+1] = b.timestamp
+	}
+	times[n+1] = totalDuration
+
+	inf := math.Inf(1)
+	// best[j] = tổng chi phí tối thiểu để cắt đoạn [0, times[j]] với j là điểm cắt.
+	best := make([]float64, n+2)
+	prev := make([]int, n+2)
+	for j := range best {
+		best[j] = inf
+		prev[j] = -1
+	}
+	best[0] = 0
+
+	// segCost tính chi phí một đoạn từ node i tới node j. Chi phí LUÔN >= 0.
+	//
+	// Điểm ranh giới vào công thức dưới dạng HÌNH PHẠT chất lượng (1 - score/100), không
+	// phải phần thưởng (-score/100). Khác biệt này quyết định cả thuật toán: nếu là phần
+	// thưởng thì mỗi nhát cắt được cộng tới -1.0 điểm lợi, trong khi một clip 10s lệch mốc
+	// 30s chỉ bị phạt 0.44 — DP sẽ luôn thấy "cắt thêm" là có lợi và băm vụn video, đúng
+	// hiện tượng cần trị. Với hình phạt, thêm một đoạn là thêm một khoản chi phí >= 0 nên
+	// nhát cắt phải TỰ BIỆN MINH bằng việc giảm độ lệch chiều dài của các đoạn quanh nó.
+	segCost := func(i, j int) float64 {
+		length := times[j] - times[i]
+		dev := (length - target) / target
+		cost := lenWeight * dev * dev
+		// Node cuối (kết thúc video) không do ranh giới nào tạo ra → không xét chất lượng.
+		if j <= n {
+			cost += 1.0 - float64(scored[j-1].score)/100.0
 		}
-		if w.ContinuityPen > 5 {
-			w.ContinuityPen = 5
-		}
-		if reviewMin > 25 {
-			reviewMin = 25
+		return cost
+	}
+
+	for j := 1; j <= n+1; j++ {
+		for i := 0; i < j; i++ {
+			if best[i] == inf {
+				continue
+			}
+			length := times[j] - times[i]
+			if length < minD {
+				continue
+			}
+			// Đoạn cuối được phép ngắn hơn min (phần dư của video) nhưng vẫn phải
+			// tôn trọng max; bước gộp clip ngắn ở sau sẽ xử lý phần dư.
+			if length > maxD {
+				continue
+			}
+			if c := best[i] + segCost(i, j); c < best[j] {
+				best[j] = c
+				prev[j] = i
+			}
 		}
 	}
 
-	return w, reviewMin
+	// Nếu không tới được node cuối (ví dụ video ngắn hơn min, hoặc mọi đoạn khả thi
+	// đều vượt max vì thiếu ranh giới), lùi về tham lam rồi để splitLongClips lo.
+	if best[n+1] == inf {
+		return greedyCluster(scored, cfg)
+	}
+
+	// Truy vết ngược, bỏ node 0 và node cuối vì chúng không phải ranh giới thật.
+	var picked []scoredBoundary
+	for j := prev[n+1]; j > 0; j = prev[j] {
+		picked = append(picked, scored[j-1])
+	}
+	// Đảo lại thành thứ tự thời gian tăng dần.
+	for l, r := 0, len(picked)-1; l < r; l, r = l+1, r-1 {
+		picked[l], picked[r] = picked[r], picked[l]
+	}
+	return picked
+}
+
+// greedyCluster là hành vi gom cụm cũ: giữ ranh giới điểm cao nhất trong mỗi cửa sổ
+// MinClipDuration. Dùng khi tắt TargetClipDuration hoặc khi DP không tìm được lời giải.
+func greedyCluster(scored []scoredBoundary, cfg project.AnalyzerConfig) []scoredBoundary {
+	var filtered []scoredBoundary
+	for _, b := range scored {
+		if len(filtered) == 0 {
+			filtered = append(filtered, b)
+			continue
+		}
+		last := &filtered[len(filtered)-1]
+		if b.timestamp-last.timestamp < cfg.MinClipDuration {
+			if b.score > last.score {
+				*last = b
+			}
+		} else {
+			filtered = append(filtered, b)
+		}
+	}
+	return filtered
+}
+
+// filterByProminence chỉ giữ ranh giới TRỘI HƠN HẲN vùng lân cận, thay vì so với một
+// ngưỡng tuyệt đối.
+//
+// Vì sao cần: MV ca nhạc, gameplay hay video edit nhanh có chuyển cảnh liên tục nên
+// điểm nào cũng "cao" theo thang tuyệt đối — ngưỡng cố định không phân biệt được đâu
+// là ranh giới nội dung, đâu là nhịp dựng bình thường. So tương đối với lân cận thì
+// bộ lọc tự thích nghi với từng loại video: video ít chuyển cảnh giữ gần như mọi
+// điểm, video băm liên tục chỉ giữ các đỉnh thật.
+//
+// Điều kiện giữ: score >= mean(lân cận) + k × std(lân cận), hoặc là điểm cao nhất
+// trong cửa sổ. Ranh giới điểm rất cao (>= AutoAcceptScore) luôn được giữ.
+func filterByProminence(scored []scoredBoundary, windowSec float64, k float64, keepAbove int) []scoredBoundary {
+	// Dưới 4 điểm thì thống kê lân cận vô nghĩa — giữ nguyên.
+	if len(scored) < 4 || windowSec <= 0 {
+		return scored
+	}
+
+	var out []scoredBoundary
+	for i, b := range scored {
+		if b.score >= keepAbove {
+			out = append(out, b)
+			continue
+		}
+
+		// Thu thập điểm của các ranh giới khác trong cửa sổ ±windowSec.
+		var sum, sumSq float64
+		count := 0
+		isLocalMax := true
+		for j, o := range scored {
+			if j == i || abs(o.timestamp-b.timestamp) > windowSec {
+				continue
+			}
+			sum += float64(o.score)
+			sumSq += float64(o.score) * float64(o.score)
+			count++
+			if o.score > b.score {
+				isLocalMax = false
+			}
+		}
+
+		// Không có lân cận → điểm đứng một mình, không phải nhiễu dày đặc.
+		if count == 0 || isLocalMax {
+			out = append(out, b)
+			continue
+		}
+
+		mean := sum / float64(count)
+		variance := sumSq/float64(count) - mean*mean
+		if variance < 0 {
+			variance = 0
+		}
+		std := math.Sqrt(variance)
+		if float64(b.score) >= mean+k*std {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // CalculateBoundaries tính Boundary Score cho từng candidate, loại bỏ điểm dưới ngưỡng,
 // gom cụm điểm gần nhau (giữ điểm mạnh nhất), rồi dựng danh sách clip kèm confidence/tier/reason.
 // sourcePath dùng để snap boundary sang keyframe gần nhất (tối ưu cho stream-copy).
 func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, totalDuration float64, sourcePath string) []project.Clip {
-	w, reviewMin := effectiveScoringConfig(cfg)
+	w, reviewMin, lenWeight := effectiveScoringConfig(cfg)
 	tierCfg := cfg
 	tierCfg.ReviewMinScore = reviewMin
 
-	// === BƯỚC 1: Tính Boundary Score, loại điểm dưới ngưỡng review (tier reject) ===
+	// === BƯỚC 1: Tính Boundary Score. Target=0 (mode clip ngắn) chấp nhận
+	// cả review-tier; còn lại chỉ dùng auto-tier để khống chế số lượng điểm cắt.
+	shortClipMode := cfg.TargetClipDuration <= 0
 	var scored []scoredBoundary
 	for _, c := range candidates {
 		score, signals := boundaryScore(c, w)
 		tier := tierFor(score, tierCfg)
-		if tier == project.TierReject {
-			continue // dưới ReviewMinScore → không dùng làm ranh giới
+		// short clip mode (target=0): chấp nhận review-tier để bắt cut TikTok nhanh
+		// (thường chỉ đạt 30-50 điểm do thiếu silence/black, không qua ngưỡng auto)
+		if shortClipMode {
+			if tier == project.TierReject {
+				continue
+			}
+		} else {
+			if tier != project.TierAuto {
+				continue
+			}
 		}
 		scored = append(scored, scoredBoundary{
 			timestamp:  c.Timestamp,
@@ -470,22 +684,18 @@ func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, tot
 	}
 	scored = validScored
 
-	// === BƯỚC 2: Gom cụm — giữ boundary điểm cao nhất trong mỗi cửa sổ MinClipDuration ===
-	var filtered []scoredBoundary
-	for _, b := range scored {
-		if len(filtered) == 0 {
-			filtered = append(filtered, b)
-			continue
-		}
-		last := &filtered[len(filtered)-1]
-		if b.timestamp-last.timestamp < cfg.MinClipDuration {
-			if b.score > last.score {
-				*last = b
-			}
-		} else {
-			filtered = append(filtered, b)
-		}
+	// === BƯỚC 2a: Lọc theo độ trội so với lân cận ===
+	// Cửa sổ lấy theo mốc độ dài mong muốn (tối thiểu 15s): trong phạm vi một clip,
+	// chỉ những đỉnh thật mới đáng làm ranh giới. Ranh giới rất mạnh (>= autoAccept + 20)
+	// luôn được giữ để không bỏ sót chuyển cảnh hiển nhiên.
+	promWindow := cfg.TargetClipDuration / 2
+	if promWindow < 15 {
+		promWindow = 15
 	}
+	scored = filterByProminence(scored, promWindow, 0.5, cfg.AutoAcceptScore+20)
+
+	// === BƯỚC 2b: Chọn TẬP ranh giới tối ưu toàn cục (DP) thay vì gom cụm tham lam ===
+	filtered := selectBoundaries(scored, cfg, totalDuration, lenWeight)
 
 	// === BƯỚC 3: Dựng danh sách clip sơ bộ. Ranh giới BẮT ĐẦU clip mang tier/score
 	// của boundary tạo ra nó (boundary tại StartTime). ===
@@ -513,7 +723,7 @@ func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, tot
 	// dẫn tới một clip dài bằng cả video. Ta chia nó thành nhiều đoạn: ưu tiên
 	// cắt tại candidate mạnh gần mốc mong muốn; nếu không có, cắt cứng theo thời gian.
 	if cfg.MaxClipDuration > 0 {
-		clips = splitLongClips(clips, candidates, cfg)
+		clips = splitLongClips(clips, candidates, cfg, w)
 	}
 
 	// === BƯỚC 5: Gộp clip quá ngắn (< MinClipDuration) với clip liền kề ===
@@ -576,7 +786,15 @@ func buildClip(start, end float64, meta scoredBoundary) project.Clip {
 // Mỗi lần cắt, tìm candidate mạnh gần mốc "start + MaxClipDuration"; nếu không có
 // candidate phù hợp (video liên tục), cắt cứng đúng tại mốc thời gian đó. Nhờ vậy
 // video dài luôn được chia đều thay vì trả về một clip duy nhất.
-func splitLongClips(clips []project.Clip, candidates []Candidate, cfg project.AnalyzerConfig) []project.Clip {
+func splitLongClips(clips []project.Clip, candidates []Candidate, cfg project.AnalyzerConfig, w project.SignalWeights) []project.Clip {
+	// Bước chia dùng mốc MONG MUỐN, không dùng mốc TỐI ĐA. Trước đây mỗi nhát cắt đặt
+	// tại start+MaxClipDuration nên clip tự chia luôn dài sát trần (60s) — lệch hẳn so
+	// với độ dài người dùng thực sự muốn. Chỉ khi tắt target mới quay về dùng max.
+	step := cfg.TargetClipDuration
+	if step <= 0 || step > cfg.MaxClipDuration {
+		step = cfg.MaxClipDuration
+	}
+
 	var out []project.Clip
 	for _, clip := range clips {
 		// Bỏ qua clip chưa biết EndTime (totalDuration<=0, app.go sẽ xử lý).
@@ -591,10 +809,14 @@ func splitLongClips(clips []project.Clip, candidates []Candidate, cfg project.An
 			reason: clip.Reason, signals: clip.Signals,
 		}
 		for clip.EndTime-start > cfg.MaxClipDuration {
-			target := start + cfg.MaxClipDuration
-			cut := findSplitPointNear(candidates, start, clip.EndTime, target, cfg)
+			target := start + step
+			cut := findSplitPointNear(candidates, start, clip.EndTime, target, cfg, w)
 			if cut <= start {
 				cut = target // không có candidate → cắt cứng theo thời gian
+			}
+			// Không để nhát cắt vượt trần (khi step=max và không tìm được candidate gần).
+			if cut > start+cfg.MaxClipDuration {
+				cut = start + cfg.MaxClipDuration
 			}
 			out = append(out, buildClip(start, cut, startMeta))
 			start = cut
@@ -611,20 +833,28 @@ func splitLongClips(clips []project.Clip, candidates []Candidate, cfg project.An
 
 // findSplitPointNear tìm candidate mạnh nhất nằm gần mốc target trong [start, end],
 // đảm bảo hai đoạn tạo ra vẫn >= MinClipDuration. Trả về 0 nếu không có ứng viên.
-func findSplitPointNear(candidates []Candidate, start, end, target float64, cfg project.AnalyzerConfig) float64 {
+func findSplitPointNear(candidates []Candidate, start, end, target float64, cfg project.AnalyzerConfig, w project.SignalWeights) float64 {
 	bestScore := -1
 	bestTimestamp := 0.0
+
+	// Cửa sổ tìm kiếm quanh mốc mong muốn. Lấy theo target (mốc thực tế đang nhắm) chứ
+	// không theo MaxClipDuration: khi target nhỏ hơn max nhiều, cửa sổ tính theo max sẽ
+	// rộng quá và kéo nhát cắt lệch xa mốc.
+	window := (target - start) * 0.3
+	if window <= 0 {
+		window = cfg.MaxClipDuration * 0.3
+	}
 
 	for _, c := range candidates {
 		if c.Timestamp <= start+cfg.MinClipDuration || c.Timestamp >= end-cfg.MinClipDuration {
 			continue // giữ hai đoạn >= MinClipDuration
 		}
-		// Chỉ xét candidate quanh mốc mong muốn (±30% MaxClipDuration) để đoạn đều nhau.
-		window := cfg.MaxClipDuration * 0.3
 		if abs(c.Timestamp-target) > window {
 			continue
 		}
-		score, _ := boundaryScore(c, cfg.Weights)
+		// Dùng trọng số ĐÃ hiệu chỉnh theo chế độ, không phải cfg.Weights thô — nếu không
+		// thì điểm ở đây lệch hẳn so với điểm dùng ở bước chọn ranh giới chính.
+		score, _ := boundaryScore(c, w)
 		// Ưu tiên điểm cao và gần mốc target.
 		proximity := int(window - abs(c.Timestamp-target))
 		totalScore := score + proximity
