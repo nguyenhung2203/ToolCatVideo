@@ -1,3 +1,23 @@
 build/bin
 node_modules
 frontend/dist
+
+# Test / temp output
+scripts/test_out/
+scripts/**/*.json
+scripts/**/*.txt
+scripts/**/*.mp4
+scripts/**/*.wav
+scripts/**/*.go
+
+# Python
+python_worker/__pycache__/
+python_worker/*.pyc
+**/__pycache__/
+**/*.pyc
+
+# Bench binary
+bench-boundaries.exe
+
+# Wails build artifacts
+*.log
