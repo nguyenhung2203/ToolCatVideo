@@ -893,16 +893,16 @@ watch(activeView, (newVal) => {
 
 const analyzerConfig = reactive(new project.AnalyzerConfig({
   mode: 'smart',
-  sceneThreshold: 15.0,  // nhạy hơn: bắt được cut nhanh TikTok/Reels
-  // 3s: cho phép cắt clip ngắn (TikTok compilation vài giây).
-  // Bản cũ dùng 8s — đúng cho long-form nhưng gộp nhầm clip ngắn thành đoạn dài.
-  minClipDuration: 3.0,
+  sceneThreshold: 25.0,
+  // Phải khớp project.DefaultConfig() bên Go. minClipDuration 8s (không phải 3s):
+  // 3 giây vừa là ngưỡng gộp vừa là cửa sổ gom cụm nên để thấp là cho phép băm vụn.
+  minClipDuration: 8.0,
   maxClipDuration: 60.0,
-  // target = 0 khi min < 6s: không ép gộp clip TikTok 3-5s thành đoạn 30s.
-  // autoTargetDuration() sẽ tự đặt theo logic min/max.
-  targetClipDuration: 0,
-  autoAcceptScore: 50,
-  reviewMinScore: 30,
+  // Độ dài MONG MUỐN của 1 clip — mốc để bộ chọn ranh giới tối ưu bỏ qua điểm cắt
+  // tạo ra clip quá vụn. 0 = tắt (quay về cắt tại mọi ranh giới đạt điểm).
+  targetClipDuration: 30.0,
+  autoAcceptScore: 60,
+  reviewMinScore: 35,
   silenceThreshold: -30,
   silenceDuration: 0.5,
   proxyFPS: 4,
@@ -924,8 +924,6 @@ const loadDefaultConfig = async () => {
   try {
     const cfg = await GetDefaultConfig()
     Object.assign(analyzerConfig, cfg)
-    // Đảm bảo target luôn = (min+max)/2 ngư trước khi backend trả về target=0 (project cũ)
-    autoTargetDuration()
   } catch (e) {
     console.error('Lỗi tải config mặc định:', e)
   }
@@ -937,21 +935,22 @@ const resetConfig = async () => {
   addLog('Đã đặt lại cấu hình về mặc định.')
 }
 
-// Tự động tính targetClipDuration khi min hoặc max thay đổi.
-// Logic thông minh theo use-case:
-//   min < 6s  → target = 0  (TikTok/compilation: không ép gộp clip ngắn,
-//               cắt tại mọi boundary đạt ngưỡng — mỗi clip gốc 1 segment)
-//   min ≥ 6s  → target = (min+max)/2  (Long-form: gộp thành segment Shorts/Reels)
-const autoTargetDuration = () => {
-  const min = Number(analyzerConfig.minClipDuration) || 3
-  const max = Number(analyzerConfig.maxClipDuration) || 60
-  if (min < 6) {
-    // Chế độ clip ngắn: tắt target để không gộp clip TikTok 3-5s thành đoạn 30s
-    analyzerConfig.targetClipDuration = 0
-  } else {
-    // Chế độ long-form: gộp thành segment gần với trung bình min/max
-    analyzerConfig.targetClipDuration = Math.round((min + max) / 2 * 10) / 10
+// Kẹp mốc mong muốn vào trong [ngắn nhất, dài nhất]. Nếu để nó nằm ngoài khoảng này
+// thì bộ chọn ranh giới sẽ nhắm một độ dài không bao giờ đạt được, mọi đoạn đều bị
+// phạt lệch như nhau và mốc mong muốn mất tác dụng.
+const clampTargetDuration = () => {
+  let val = Number(analyzerConfig.targetClipDuration)
+  if (isNaN(val) || val <= 0) {
+    analyzerConfig.targetClipDuration = 0 // 0 = tắt, quay về hành vi cũ
+    return
   }
+  if (val < analyzerConfig.minClipDuration) val = analyzerConfig.minClipDuration
+  if (val > analyzerConfig.maxClipDuration) val = analyzerConfig.maxClipDuration
+  analyzerConfig.targetClipDuration = val
+}
+
+const onTargetDurationChange = () => {
+  clampTargetDuration()
 }
 
 const onMinDurationChange = () => {
@@ -963,7 +962,7 @@ const onMinDurationChange = () => {
   if (analyzerConfig.minClipDuration > analyzerConfig.maxClipDuration) {
     analyzerConfig.maxClipDuration = analyzerConfig.minClipDuration
   }
-  autoTargetDuration() // tự cập nhật target = (min+max)/2
+  clampTargetDuration()
 }
 
 const onMaxDurationChange = () => {
@@ -975,7 +974,7 @@ const onMaxDurationChange = () => {
   if (analyzerConfig.maxClipDuration < analyzerConfig.minClipDuration) {
     analyzerConfig.minClipDuration = analyzerConfig.maxClipDuration
   }
-  autoTargetDuration() // tự cập nhật target = (min+max)/2
+  clampTargetDuration()
 }
 
 const isSettingsLoaded = ref(false)
@@ -3122,24 +3121,20 @@ const loadProject = async (projId: string) => {
 
   if (proj.analyzerConfig) {
     Object.assign(analyzerConfig, proj.analyzerConfig)
-    // Project cũ chưa có targetClipDuration hoặc được lưu với giá trị 0 → tự tính lại
-    if (!analyzerConfig.targetClipDuration || analyzerConfig.targetClipDuration <= 0) {
-      autoTargetDuration()
-    }
   } else {
     // Kế thừa từ settings.json thay vì reset cứng
     if (globalSettingsConfig.value) {
       Object.assign(analyzerConfig, JSON.parse(JSON.stringify(globalSettingsConfig.value)))
     } else {
       analyzerConfig.mode = 'smart'
-      analyzerConfig.sceneThreshold = 15.0
-      // Khớp project.DefaultConfig() bên Go: min=3s (TikTok/compilation),
-      // target=0 khi min<6s (không gộp clip ngắn thành đoạn dài).
-      analyzerConfig.minClipDuration = 3.0
+      analyzerConfig.sceneThreshold = 25.0
+      // Giữ khớp với project.DefaultConfig() bên Go: min 8s (3s cho phép băm clip
+      // vụn) và mốc mong muốn 30s cho bộ chọn ranh giới tối ưu.
+      analyzerConfig.minClipDuration = 8.0
       analyzerConfig.maxClipDuration = 60.0
-      autoTargetDuration() // = 0 vì min=3 < 6 — không gộp clip ngắn
-      analyzerConfig.autoAcceptScore = 50
-      analyzerConfig.reviewMinScore = 30
+      analyzerConfig.targetClipDuration = 30.0
+      analyzerConfig.autoAcceptScore = 60
+      analyzerConfig.reviewMinScore = 35
       analyzerConfig.exportPreset = 'fast'
       analyzerConfig.exportCRF = 23
       analyzerConfig.hardwareAccel = 'auto'
@@ -4336,20 +4331,21 @@ const formatSize = (bytes: number) => {
             <div class="compact-setting-grid-2" v-if="analyzerConfig.mode !== 'fixed'">
               <div class="compact-setting-item">
                 <label class="setting-title-lbl">Ngắn nhất (giây):</label>
-                <input type="number" v-model.number="analyzerConfig.minClipDuration" min="1" max="60" placeholder="3" @change="onMinDurationChange" class="compact-input" />
+                <input type="number" v-model.number="analyzerConfig.minClipDuration" min="1" max="60" @change="onMinDurationChange" class="compact-input" />
               </div>
               <div class="compact-setting-item">
                 <label class="setting-title-lbl">Dài nhất (giây):</label>
-                <input type="number" v-model.number="analyzerConfig.maxClipDuration" min="10" max="600" placeholder="60" @change="onMaxDurationChange" class="compact-input" />
+                <input type="number" v-model.number="analyzerConfig.maxClipDuration" min="10" max="600" @change="onMaxDurationChange" class="compact-input" />
               </div>
             </div>
-            <div style="font-size: 10.5px; color: var(--text-muted); margin-top: 3px; padding: 0 2px;" v-if="analyzerConfig.mode !== 'fixed'">
-              <span v-if="analyzerConfig.minClipDuration < 6" style="color: #6db8ff;">
-                ⚡ Chế độ clip ngắn (min &lt; 6s): cắt tại mọi chuyển cảnh — phù hợp TikTok compilation
-              </span>
-              <span v-else style="color: #a0c878;">
-                📏 Chế độ long-form (min ≥ 6s): gộp thành segment ~{{ analyzerConfig.targetClipDuration }}s — phù hợp Shorts/Reels
-              </span>
+            <!-- Mốc mong muốn: tham số quyết định clip dài bao nhiêu. Trước đây chỉ có
+                 min/max nên thuật toán không biết clip "nên" dài bao nhiêu, gặp điểm cắt
+                 nào đạt điểm là cắt ngay → 1 đoạn nội dung bị băm thành 2-3 khúc vụn. -->
+            <div class="compact-setting-row" v-if="analyzerConfig.mode !== 'fixed'" style="margin-top: 6px;">
+              <label class="setting-title-lbl" :title="'Độ dài mong muốn của mỗi clip. Thuật toán sẽ bỏ qua điểm cắt tạo ra clip lệch xa mốc này. Đặt 0 để tắt (cắt tại mọi điểm đạt ngưỡng như bản cũ).'">
+                Mong muốn (giây): <span style="color: var(--wx-text-muted); font-weight: 500;">0 = tắt</span>
+              </label>
+              <input type="number" v-model.number="analyzerConfig.targetClipDuration" min="0" max="600" @change="onTargetDurationChange" class="compact-input" style="width: 100%;" />
             </div>
             <div class="compact-setting-row" v-else>
               <label class="setting-title-lbl">Thời lượng mỗi clip (giây):</label>

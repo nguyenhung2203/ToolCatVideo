@@ -610,29 +610,23 @@ func CalculateBoundaries(candidates []Candidate, cfg project.AnalyzerConfig, tot
 	tierCfg := cfg
 	tierCfg.ReviewMinScore = reviewMin
 
-	// === BƯỚC 1: Tính Boundary Score. Target=0 (mode clip ngắn) chấp nhận
-	// cả review-tier; còn lại chỉ dùng auto-tier để khống chế số lượng điểm cắt.
-	shortClipMode := cfg.TargetClipDuration <= 0
+	// === BƯỚC 1: Tính Boundary Score. CHỈ tier auto được dùng làm điểm cắt ===
+	// Trước đây bước này chỉ loại tier reject, nên tier review ("cần người duyệt")
+	// cũng thành điểm cắt thật — ngưỡng cắt thực tế tụt từ AutoAcceptScore về
+	// ReviewMinScore và mọi điểm còn ngờ ngợ đều bị cắt, dù không có UI nào để duyệt.
+	// Nay tier review chỉ được giữ làm ứng viên dự phòng cho bước chia clip quá dài
+	// (splitLongClips), nơi cắt tại ranh giới yếu vẫn tốt hơn cắt cứng theo thời gian.
 	var scored []scoredBoundary
 	for _, c := range candidates {
 		score, signals := boundaryScore(c, w)
-		tier := tierFor(score, tierCfg)
-		// short clip mode (target=0): chấp nhận review-tier để bắt cut TikTok nhanh
-		// (thường chỉ đạt 30-50 điểm do thiếu silence/black, không qua ngưỡng auto)
-		if shortClipMode {
-			if tier == project.TierReject {
-				continue
-			}
-		} else {
-			if tier != project.TierAuto {
-				continue
-			}
+		if tierFor(score, tierCfg) != project.TierAuto {
+			continue
 		}
 		scored = append(scored, scoredBoundary{
 			timestamp:  c.Timestamp,
 			score:      score,
 			confidence: score,
-			tier:       tier,
+			tier:       project.TierAuto,
 			reason:     c.Reason,
 			signals:    signals,
 		})

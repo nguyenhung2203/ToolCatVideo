@@ -324,15 +324,15 @@ func DefaultWeights() SignalWeights {
 // DefaultConfig trả về cấu hình mặc định
 func DefaultConfig() AnalyzerConfig {
 	return AnalyzerConfig{
-		Mode:             ModeSmart,
-		SceneThreshold:   15.0, // nhạy hơn (25 bỏ sót cut nhanh TikTok/Reels)
-		// 3s: cho phép cắt clip ngắn như TikTok compilation (clip vài giây).
-		// Bản cũ dùng 8s — đúng cho video dài nhưng gộp nhầm nhiều clip ngắn thành 1 đoạn dài.
-		MinClipDuration:  3.0,
-		MaxClipDuration:  60.0,
-		// Target = 0 khi min < 6s (không ép gộp clip ngắn lại).
-		// autoTargetDuration() bên frontend tự đặt theo logic này.
-		TargetClipDuration: 0,
+		Mode:           ModeSmart,
+		SceneThreshold: 25.0, // bảo thủ hơn 20: bớt bắt chuyển cảnh yếu → ít điểm rác
+		// 8s thay 3s: 3 giây không phải một clip có nghĩa với nền tảng nào, mà đây lại
+		// là hàng rào chống cắt dày DUY NHẤT (vừa là cửa sổ gom cụm, vừa là ngưỡng gộp).
+		// Để 3s tức cho phép băm 3 giây một nhát.
+		MinClipDuration: 8.0,
+		MaxClipDuration: 60.0,
+		// Mốc mong muốn 30s: nằm giữa min 8s và max 60s, khớp độ dài Shorts/Reels phổ biến.
+		TargetClipDuration: 30.0,
 		AutoAcceptScore:    60,
 		ReviewMinScore:     35,
 		SilenceThreshold: -30,
